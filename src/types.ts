@@ -19,6 +19,8 @@ export interface WorldConfig {
   companionName?: string;
   /** What she calls her partner in the plugin's own words; 伙伴 when unset. */
   partnerName?: string;
+  /** Her layered persona, edited in the world console; defaults to `<world>/persona.md`. */
+  personaFile?: string;
   /** The world prompt template; defaults to `<world>/world-prompt.md` when it exists, else the shipped one. */
   worldPromptFile?: string;
   /** The alarm wording template; defaults to `<world>/alarm.md` when it exists, else the shipped one. */
@@ -29,6 +31,8 @@ export interface WorldConfig {
   bridge?: boolean;
   /** reach_out also shows a system notification (Windows only); on by default. */
   toast?: boolean;
+  /** Names besides this machine the console and the bridge answer to (a LAN address or domain behind a reverse proxy). */
+  allowedHosts?: string[];
 }
 export interface ConversationRecord {
   schemaVersion: 1;

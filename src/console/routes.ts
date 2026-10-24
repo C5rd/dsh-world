@@ -1,42 +1,89 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
+import { PERSONA_LAYERS, type Persona } from '../persona.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
+/** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
+export const WRITE_HEADER = 'x-dsh-world';
+const MAX_BODY_BYTES = 64 * 1024;
 export interface ConsoleSources {
   snapshot(): Promise<unknown>;
   activity(day: string, outsideOnly: boolean): unknown;
   diary(date: string): string | undefined;
 }
-export interface ConsoleResult { status: number; body: unknown; headers?: Record<string, string> }
+/** What the console can change: whether her world runs, and her persona and world prompt. */
+export interface ConsoleActions {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean } };
+  savePersona(persona: Partial<Persona>): void;
+  /** An empty text goes back to the shipped template. */
+  saveWorldPrompt(text: string): void;
+  /** CNY a day for her home; undefined removes the limit. */
+  setDailyBudget(yuan: number | undefined): void;
+}
+export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
+const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
+const bad = (error: string): JsonResult => ({ status: 400, body: { error } });
 
-/** Every route only reads; nothing here changes her life or memory. */
-export async function handleConsole(sources: ConsoleSources, method: string, rawUrl: string): Promise<ConsoleResult> {
-  const url = new URL(rawUrl, 'http://localhost');
-  if (url.pathname !== CONSOLE_PREFIX && !url.pathname.startsWith(CONSOLE_PREFIX + '/')) return { status: 404, body: { error: 'not found' } };
-  if (method !== 'GET') return { status: 405, body: { error: 'the world console is read-only' }, headers: { allow: 'GET' } };
-  switch (url.pathname.slice(CONSOLE_PREFIX.length)) {
-    case '/console/snapshot': return { status: 200, body: await sources.snapshot() };
-    case '/console/activity': return { status: 200, body: sources.activity(url.searchParams.get('day') ?? '', url.searchParams.get('outside') === '1') };
-    case '/console/diary': {
-      const date = url.searchParams.get('date') ?? '';
-      const text = sources.diary(date);
-      return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : { status: 200, body: { date, text } };
+function persona(body: Record<string, unknown> | undefined): Partial<Persona> | undefined {
+  if (!body) return undefined;
+  const entries = Object.entries(body);
+  if (!entries.every(([key, value]) => (PERSONA_LAYERS as readonly string[]).includes(key) && typeof value === 'string')) return undefined;
+  return Object.fromEntries(entries) as Partial<Persona>;
+}
+async function write(actions: ConsoleActions, path: string, body: Record<string, unknown> | undefined): Promise<JsonResult> {
+  switch (path) {
+    case '/console/start': await actions.start(); return ok();
+    case '/console/stop': await actions.stop(); return ok();
+    case '/console/persona': { const layers = persona(body); if (!layers) return bad('persona layers must be strings'); actions.savePersona(layers); return ok(); }
+    case '/console/budget': {
+      const daily = body?.daily;
+      if (daily !== null && (typeof daily !== 'number' || !Number.isFinite(daily) || daily < 0)) return bad('daily must be a non-negative number or null');
+      actions.setDailyBudget(daily === null ? undefined : daily); return ok();
     }
+    case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };
   }
 }
-export function consoleRoute(sources: ConsoleSources) {
+
+/** Reads are open to the console page; writes need POST, the write header and a JSON body. */
+export async function handleConsole(sources: ConsoleSources, actions: ConsoleActions, request: ConsoleRequest): Promise<JsonResult> {
+  const url = new URL(request.url, 'http://localhost');
+  if (url.pathname !== CONSOLE_PREFIX && !url.pathname.startsWith(CONSOLE_PREFIX + '/')) return { status: 404, body: { error: 'not found' } };
+  const path = url.pathname.slice(CONSOLE_PREFIX.length);
+  if (request.method === 'POST') {
+    if (!request.write) return { status: 403, body: { error: 'forbidden' } };
+    return write(actions, path, request.body);
+  }
+  if (request.method !== 'GET') return { status: 405, body: { error: 'method not allowed' }, headers: { allow: 'GET, POST' } };
+  switch (path) {
+    case '/console/snapshot': return ok(await sources.snapshot());
+    case '/console/activity': return ok(sources.activity(url.searchParams.get('day') ?? '', url.searchParams.get('outside') === '1'));
+    case '/console/diary': {
+      const date = url.searchParams.get('date') ?? '';
+      const text = sources.diary(date);
+      return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : ok({ date, text });
+    }
+    case '/console/prompts': return ok(actions.prompts());
+    default: return { status: 404, body: { error: 'not found' } };
+  }
+}
+export function consoleRoute(sources: ConsoleSources, actions: ConsoleActions, allowedHosts: readonly string[] = []) {
   return {
     kind: 'prefix' as const, path: CONSOLE_PREFIX,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
-      let status: number, payload: unknown, extra: Record<string, string> = {};
+      let result: JsonResult;
       try {
-        if (req.headers['sec-fetch-site'] === 'cross-site') { status = 403; payload = { error: 'cross-site requests are not allowed' }; }
-        else { const result = await handleConsole(sources, req.method ?? 'GET', req.url ?? '/'); status = result.status; payload = result.body; extra = result.headers ?? {}; }
-      } catch {
-        status = 500; payload = { error: 'internal error' }; extra = {};
-      }
-      res.writeHead(status, { ...extra, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(JSON.stringify(payload));
+        if (req.headers['sec-fetch-site'] === 'cross-site' || !knownHost(req.headers.host, allowedHosts)) result = { status: 403, body: { error: 'cross-site requests are not allowed' } };
+        else {
+          const method = req.method ?? 'GET';
+          const write = method === 'POST' && req.headers[WRITE_HEADER] === '1' && String(req.headers['content-type'] ?? '').startsWith('application/json');
+          const body = write ? jsonObject(await readBody(req, MAX_BODY_BYTES)) : undefined;
+          result = write && body === undefined ? bad('a JSON object body is required') : await handleConsole(sources, actions, { method, url: req.url ?? '/', write, body });
+        }
+      } catch { result = { status: 500, body: { error: 'internal error' } }; }
+      sendJson(res, result);
     },
   };
 }

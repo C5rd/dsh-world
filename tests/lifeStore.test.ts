@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLifeStore, durableWrite } from '../src/life/lifeStore.ts';
+import { createWorldSwitch } from '../src/worldSwitch.ts';
 import { readdirSync, renameSync } from 'node:fs';
 
 async function dir(t: test.TestContext) { const root = await mkdtemp(join(tmpdir(), 'dsh-life-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
@@ -75,4 +76,15 @@ test('durableWrite rethrows a non-retryable error immediately', async t => {
   assert.throws(() => durableWrite(file, 'new', () => { calls++; throw fail('ENOSPC'); }), { code: 'ENOSPC' });
   assert.equal(calls, 1);
   assert.deepEqual(readdirSync(root).filter(name => name.endsWith('.tmp')), []);
+});
+test('a new world waits for start; a world with a life line from before the switch is running; the switch outlasts a restart', async t => {
+  const fresh = await dir(t);
+  assert.equal(createWorldSwitch(fresh).running(), false);
+  const old = await dir(t); await writeFile(join(old, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home' }));
+  const power = createWorldSwitch(old);
+  assert.equal(power.running(), true);
+  power.set(false);
+  assert.equal(createWorldSwitch(old).running(), false, 'stopped stays stopped, life.json or not');
+  createWorldSwitch(fresh).set(true);
+  assert.equal(createWorldSwitch(fresh).running(), true);
 });

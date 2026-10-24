@@ -4,6 +4,7 @@ import { createSystemMessage, createUserMessage, isAgentLoopRequest, type Stream
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
+import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive } from './sourceArchive.ts';
@@ -33,7 +34,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const archive = createSourceArchive(ctx, config, store, archived);
   const history = createHistory(store);
   const names = world?.prompt.names ?? worldNames(config);
-  const prompts = world && createPromptSections(config, world, ctx.logger);
+  const faults = new Faults();
+  const prompts = world && createPromptSections(config, world, { faults, logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
   const attaching = new WeakMap<Session, Promise<void>>();
   const disposers: (() => void)[] = [];
@@ -88,7 +90,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
   }
 
-  async function start(): Promise<void> {
+  /** `fresh`: her world was just started from the console, so what was said while it was stopped is not archived. */
+  async function start(options: { fresh?: boolean } = {}): Promise<void> {
     try {
       disposers.push(ctx.on('session/event', (session, event) => {
         if (!belongsToWorld(session, config)) return;
@@ -125,7 +128,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
           else yield chunk;
         }
       }));
-      await archive.catchUp();
+      await archive.catchUp(options.fresh);
+      if (options.fresh) for (const agent of ctx.agents.list()) if (belongsToWorld(agent.session, config)) await archive.skip(agent.id);
       for (const agent of ctx.agents.list()) { prompts?.add(agent); await attach(agent); }
     } catch (error) { await stop(); throw error; }
   }
@@ -133,8 +137,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     return stopping ??= (async () => {
       prompts?.clear();
       for (const dispose of disposers.splice(0).reverse()) dispose();
-      try { await archive.flush(); } finally { store.close(); }
+      await archive.flush();
     })();
   }
-  return { start, flush: archive.flush, stop };
+  return { start, flush: archive.flush, stop, faults: () => faults.list() };
 }

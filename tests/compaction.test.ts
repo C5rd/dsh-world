@@ -132,10 +132,10 @@ test('her own alarm messages stay in the summarized input and the instruction sa
   await ctx.plugin(TokenMeter).await();
   await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
   const handle = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-  handle.agent.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '【你的时间】闹钟响了。ALARM_NOTE ' + 'context '.repeat(100) }] })); await handle.agent.whenIdle();
+  handle.agent.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '【我的时间】闹钟响了。ALARM_NOTE ' + 'context '.repeat(100) }] })); await handle.agent.whenIdle();
   assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal));
   const input = summaries[0].messages;
   assert.ok(input.some(message => message.source?.kind === 'dsh-world-life' && JSON.stringify(message.content).includes('ALARM_NOTE')));
   const instruction = JSON.stringify(input.find(message => message.source?.kind === 'dsh-world-summary-input')!.content);
-  assert.ok(instruction.includes('以【你的时间】开头的消息是你自己定的闹钟和留给自己的话，不是用户说的话；把它们当作你自己的安排来记，不要算作用户发言。'));
+  assert.ok(instruction.includes('以【我的时间】（较早的是【你的时间】）开头的消息是你自己定的闹钟和留给自己的话，不是用户说的话；把它们当作你自己的安排来记，不要算作用户发言。'));
 });

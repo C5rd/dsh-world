@@ -18,7 +18,7 @@ test('the shipped alarm template has every section', () => {
   const { sections, error } = readAlarmMessages(undefined);
   assert.equal(error, undefined);
   for (const key of MESSAGE_KEYS) assert.ok(sections[key].length > 0, key);
-  assert.ok(!sections['闹钟响了'].includes('【你的时间】'), 'the mark is the plugin\'s, not the template\'s');
+  assert.ok(!sections['闹钟响了'].includes('【我的时间】'), 'the mark is the plugin\'s, not the template\'s');
 });
 test('sections are split on ## headings; text before the first heading is ignored', () => {
   const sections = parseSections('<!-- 说明 -->\r\n## 甲\r\n第一行\r\n\r\n第二行\r\n## 乙\r\n\r\n## 丙  \r\n内容');
@@ -29,18 +29,18 @@ test('a world alarm.md replaces sections one by one; an unreadable one falls bac
   const file = join(dir, 'alarm.md');
   await writeFile(file, '## 闹钟响了\n叮！{{time}} 到啦{{#note}}：{{note}}{{/note}}\n## 结尾提醒\n');
   const own = readAlarmMessages(file);
-  assert.equal(wakeText(plan, now, 'Asia/Seoul', '09:00', own), '【你的时间】叮！2026-10-23T21:00:00+09:00 到啦：看完那集', 'an empty tail section drops the tail');
-  assert.match(wakeText({ ...plan, source: 'fallback', note: '' }, now, 'UTC', '09:00', own), /^【你的时间】早上了，新的一天。你上次没说接下来做什么，就按平常的时间叫你起来。$/, 'sections it leaves out keep the shipped wording; its empty tail applies to every alarm');
+  assert.equal(wakeText(plan, now, 'Asia/Seoul', '09:00', own), '【我的时间】叮！2026-10-23T21:00:00+09:00 到啦：看完那集', 'an empty tail section drops the tail');
+  assert.match(wakeText({ ...plan, source: 'fallback', note: '' }, now, 'UTC', '09:00', own), /^【我的时间】早上了，新的一天。我上次没说接下来做什么，就按平常的时间起来。$/, 'sections it leaves out keep the shipped wording; its empty tail applies to every alarm');
   await rm(file); await mkdir(file);
   const broken = readAlarmMessages(file);
   assert.match(broken.error!, /闹钟模板 .* 读不了，先用默认的/);
-  assert.match(wakeText(plan, now, 'UTC', '09:00', broken), /^【你的时间】2026-10-23T12:00:00\+00:00 到了，这是你说好做到的时间/);
+  assert.match(wakeText(plan, now, 'UTC', '09:00', broken), /^【我的时间】2026-10-23T12:00:00\+00:00 到了，这是我说好做到的时间/);
 });
 test('templates can use her names, and her note is never read as a template', async t => {
   const file = join(await tempDir(t), 'alarm.md');
   await writeFile(file, '## 闹钟响了\n{{name}}，起来啦，{{partner}}在等你。{{note}}\n## 结尾提醒\n');
   const text = wakeText({ ...plan, note: '{{name}}' }, now, 'UTC', '09:00', readAlarmMessages(file), { name: '小鱼', partner: '阿明' });
-  assert.equal(text, '【你的时间】小鱼，起来啦，阿明在等你。{{name}}');
+  assert.equal(text, '【我的时间】小鱼，起来啦，阿明在等你。{{name}}');
 });
 test('the example time carries the configured zone\'s offset, in descriptions and errors alike', () => {
   assert.equal(exampleTime('Asia/Seoul'), '2026-10-23T21:00:00+09:00');

@@ -41,7 +41,7 @@ test('real host sends A memory in B once, keeps it across a same-step retry, and
   hostTime(ctx);
   const store = createArchiveStore({ ...config, root });
   const world = createWorldRuntime(ctx, config, store);
-  await world.start(); cleanup.push(() => world.stop());
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const a = await ctx.agents.create({ sessionId: SessionId('a'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   a.agent.followup(user('remember exact words')); await a.agent.whenIdle(); await world.flush();
   const b = await ctx.agents.create({ sessionId: SessionId('b'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
@@ -58,7 +58,7 @@ test('real host sends A memory in B once, keeps it across a same-step retry, and
   const days = await readdir(join(root, 'worlds/fish/conversations'));
   const rows = (await Promise.all(days.map(day => readFile(join(root, 'worlds/fish/conversations', day), 'utf8')))).join('').trim().split('\n').map(s => JSON.parse(s));
   assert.equal(rows.length, 4);
-  assert.ok(rows.every(r => !r.content.includes('Time sampled') && !r.content.includes('最近的聊天记忆')));
+  assert.ok(rows.every(r => !r.content.includes('Time sampled') && !r.content.includes('最近的聊天记录')));
 });
 test('tool continuation keeps call/result pairing and does not re-admit the frozen memory block', async t => {
   const requests: GenerateOptions[] = [];
@@ -76,7 +76,7 @@ test('tool continuation keeps call/result pairing and does not re-admit the froz
   ctx.tools.register(defineTool({ name: 'clock', description: 'test', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'tool result' }));
   const store = createArchiveStore({ ...config, root });
   await store.commitRecords([record('seed', { content: 'earlier memory' })]);
-  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop());
+  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('tool-session'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('use clock')); await handle.agent.whenIdle();
   assert.equal(requests.length, 2);
@@ -104,7 +104,7 @@ test('memory loads through pre-step, host time stays last, and tool-step compact
   await ctx.plugin(ToolFreeCompaction, { auto: true, timeZone: 'Asia/Seoul', headroomTokens: 0, thresholdRatio: 0.0002, maxTokens: 128 }).await();
   const store = createArchiveStore({ ...config, root });
   await store.commitRecords([record('stock-seed', { content: 'memory from yesterday ' + 'detail '.repeat(30) })]);
-  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop());
+  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('stock'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hello ' + 'words '.repeat(200))); await handle.agent.whenIdle();
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
@@ -122,7 +122,7 @@ test('memory loads through pre-step, host time stays last, and tool-step compact
 test('proactive assistant text is archived without turning its scheduler prompt into a user message', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('proactive hello'));
   const store = createArchiveStore({ ...config, root }); const world = createWorldRuntime(ctx, config, store);
-  await world.start(); cleanup.push(() => world.stop());
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('proactive'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(createUserMessage({ source: { kind: 'test-schedule' }, content: [{ type: 'text', text: 'internal scheduled trigger' }] }));
   await handle.agent.whenIdle(); await world.flush();
@@ -133,12 +133,12 @@ test('unload, reload, restored sessions and fork inheritance preserve IDs withou
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   let store = createArchiveStore({ ...config, root }); let world = createWorldRuntime(ctx, config, store);
-  await world.start(); cleanup.push(() => world.stop());
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const options = { provider: 'test', model: 'test' };
   let a = await ctx.agents.create({ sessionId: SessionId('original'), meta: { agentPreset: 'companion' }, agentOptions: options });
   a.agent.followup(user('first exact message')); await a.agent.whenIdle(); await world.flush();
   const seed = a.agent.session.snapshotEvents();
-  await a.dispose(); await world.stop();
+  await a.dispose(); await world.stop(); store.close();
   store = createArchiveStore({ ...config, root }); world = createWorldRuntime(ctx, config, store); await world.start();
   a = await ctx.agents.resume({ resumeSessionId: SessionId('original'), agentOptions: options });
   a.agent.followup(user('second exact message')); await a.agent.whenIdle(); await world.flush();
@@ -154,7 +154,7 @@ test('successful compaction reloads the newest archive once, including newer con
   await mountCompaction(ctx);
   const store = createArchiveStore({ ...config, root });
   await store.commitRecords([{ schemaVersion: 1, worldId: 'fish', recordId: 'old', sourceSessionId: 'old', sourceMessageId: 'old', sourceSeq: 1, turnId: 'old:1', role: 'assistant', occurredAt: '2026-01-01T00:00:00.000Z', content: 'full original memory', status: 'complete' }]);
-  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop());
+  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('compact'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('first ' + 'context '.repeat(200))); await handle.agent.whenIdle();
   await store.commitRecords([{ schemaVersion: 1, worldId: 'fish', recordId: 'new', sourceSessionId: 'other', sourceMessageId: 'new', sourceSeq: 1, turnId: 'other:1', role: 'assistant', occurredAt: '2026-10-23T23:59:00.000Z', content: 'new memory from another conversation', status: 'complete' }]);
@@ -172,7 +172,7 @@ test('successful compaction reloads the newest archive once, including newer con
 test('overflow remains eligible for host recovery and reports an explicit capacity failure if recovery cannot fit', async t => {
   let calls = 0;
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { calls++; yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'provider context exceeded' } } }; });
-  const world = createWorldRuntime(ctx, config, createArchiveStore({ ...config, root })); await world.start(); cleanup.push(() => world.stop());
+  const store = createArchiveStore({ ...config, root }); const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   ctx.on('agent/request-error', async () => calls < 2 ? { kind: 'retry' } : undefined);
   const handle = await ctx.agents.create({ sessionId: SessionId('capacity'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('too large')); await handle.agent.whenIdle();
@@ -190,7 +190,7 @@ test('automatic tool-free compaction is followed by the latest 200 turns before 
   await ctx.plugin(ToolFreeCompaction, { auto: true, timeZone: 'Asia/Seoul', thresholdRatio: 0.0002, retainTokens: 0, headroomTokens: 0, maxTokens: 128 }).await();
   const store = createArchiveStore({ ...config, root });
   await store.commitRecords(Array.from({ length: 200 }, (_, i) => record(`seed${i}`, { turnId: `seed:${i}`, sourceSessionId: 'seed', occurredAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), content: `seed-message-${i}` })));
-  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop());
+  const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   ctx.systemPrompt.context({ name: 'test-runtime', order: 0, text: 'CURRENT_RUNTIME_CONTEXT' });
   const handle = await ctx.agents.create({ sessionId: SessionId('auto-compact'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('first')); await handle.agent.whenIdle();
@@ -243,10 +243,17 @@ test('works as installed: with no config the standard preset gets the world prom
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   isolateHome(t, root);
   const systemOf = (request: GenerateOptions) => request.messages.filter(m => m.role === 'system').map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n');
+  // A new world waits for its partner to press start: nothing is added and nothing is remembered.
+  const fresh = ctx.plugin(worldPlugin, {}); await fresh.await();
+  const before = await ctx.agents.create({ sessionId: SessionId('before-start'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
+  before.agent.followup(user('还没开始')); await before.agent.whenIdle();
+  assert.ok(!systemOf(requests[0]!).includes('我不只是一个助手') && !kinds(requests[0]!).includes('dsh-world-history'));
+  await fresh.dispose(); await before.dispose(); requests.length = 0;
+  await writeFile(join(root, 'worlds/default/world.json'), JSON.stringify({ running: true }));
   const plugin = ctx.plugin(worldPlugin, {}); cleanup.push(() => plugin.dispose()); await plugin.await();
   const standard = await ctx.agents.create({ sessionId: SessionId('installed'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   standard.agent.followup(user('第一次见面')); await standard.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /你不只是一个助手[\s\S]*## 我是谁\n你眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
+  assert.match(systemOf(requests[0]!), /我不只是一个助手[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
   await plugin.dispose();
   const archive = createArchiveStore({ worldId: 'default', agentPreset: 'standard', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, root });
   const records = await archive.readPage({ worldId: 'default', limit: 10 }).then(page => page.records).finally(() => archive.close());
@@ -257,7 +264,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const second = await ctx.agents.create({ sessionId: SessionId('installed-2'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   second.agent.followup(user('又见面了')); await second.agent.whenIdle();
   assert.match(systemOf(requests.at(-1)!), /^[\s\S]*我自己的开头，小鱼。在 [^\n]*我是谁\.md。/);
-  assert.ok(!systemOf(requests.at(-1)!).includes('你不只是一个助手'));
+  assert.ok(!systemOf(requests.at(-1)!).includes('我不只是一个助手'));
   assert.equal(errors.length, 0);
 });
 test('the bundled patch inserts the row enabled', async () => {
@@ -272,7 +279,7 @@ function isolateHome(t: TestContext, root: string) {
 /** Fake desktop host services; `ctx.provide(name, value)` registers each on the root fiber in Cordis 4. */
 function provideLifeHost(ctx: Context) {
   const routes: { path: string }[] = []; const unregistered: string[] = []; let created = 0;
-  ctx.provide('webServer', { getOrigin: () => 'http://127.0.0.1:0', register: (route: { path: string }) => { routes.push(route); return () => { unregistered.push(route.path); }; } });
+  ctx.provide('webServer', { getOrigin: () => 'http://127.0.0.1:0', register: (route: { path: string }) => { routes.push(route); return () => { unregistered.push(route.path); routes.splice(routes.indexOf(route), 1); }; } });
   ctx.provide('permissionPresets', { set: () => {} });
   ctx.provide('sessionController', {
     create: async ({ agentPreset }: { agentPreset: string }) => ({ sessionId: (await ctx.agents.create({ sessionId: SessionId(`life-home-${++created}`), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent.id }),
@@ -290,10 +297,15 @@ function captureErrors(ctx: Context) {
   ctx.logger.exporter({ export: message => { if (message.type === 'error') logged.push(message.args.map(arg => arg instanceof Error ? arg.message : String(arg)).join(' ')); } });
   return logged;
 }
+/** Presses a console button (a write: POST, the write header, a JSON body). */
+async function consolePost(routes: { path: string }[], url: string, body: object = {}) {
+  const result = await routeCall(routes, '/dsh-world', url, { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify(body));
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+}
 async function consoleGet(routes: { path: string }[], url: string) {
   const route = routes.find(entry => entry.path === '/dsh-world') as unknown as { handler(req: unknown, res: unknown): Promise<void> };
   let status = 0; let body = '';
-  await route.handler({ method: 'GET', url, headers: {} }, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } });
+  await route.handler({ method: 'GET', url, headers: { host: '127.0.0.1:0' } }, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } });
   assert.equal(status, 200, body);
   return JSON.parse(body);
 }
@@ -306,32 +318,48 @@ async function firstWakeDone(ctx: Context, root: string): Promise<{ homeSessionI
   for (const agent of ctx.agents.list()) await agent.whenIdle();
   return JSON.parse(await readFile(join(root, 'worlds/fish/life.json'), 'utf8'));
 }
-test('life is on by default, waits for its host services, and stays off when turned off', async t => {
-  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
+test('her world waits for start in the console; start builds the home and greets her, stop takes everything down and outlasts a reload', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   isolateHome(t, root);
-  const waiting = ctx.plugin(worldPlugin, config); await waiting.await(); await waiting.dispose();
-  assert.equal((await readdir(join(root, 'worlds/fish'))).includes('life.json'), false, 'no desktop host services, no life line');
+  const life = () => readdir(join(root, 'worlds/fish')).then(files => files.includes('life.json'), () => false);
   const { routes, unregistered } = provideLifeHost(ctx);
-  const off = ctx.plugin(worldPlugin, { ...config, life: false }); await off.await(); await off.dispose();
-  assert.equal((await readdir(join(root, 'worlds/fish'))).includes('life.json'), false, 'turned off, even with the host services');
-  assert.equal(routes.length, 0);
   const logged = captureErrors(ctx);
-  const on = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => on.dispose()); await on.await();
-  await until(async () => (await readdir(join(root, 'worlds/fish'))).includes('life.json'), 'life.json');
-  assert.ok((await readdir(join(root, 'worlds/fish'))).includes('life.json'));
-  assert.deepEqual(routes.map(route => route.path), ['/dsh-world']);
-  assert.ok(!(await readdir(join(root, 'worlds/fish'))).includes('bridge.json'), 'no bridge unless bridge is on');
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'the console route');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).running, false);
+  assert.equal(await life(), false, 'no home before start'); assert.equal(ctx.agents.list().length, 0);
+
+  await consolePost(routes, '/dsh-world/console/start');
   // The first wake runs a home turn, which ends without plan_next and so arms the fallback alarm.
   const { homeSessionId, alarm } = await firstWakeDone(ctx, root);
   assert.equal(alarm?.source, 'fallback');
-  assert.deepEqual(logged, []); assert.equal(errors.length, 0);
-  await on.dispose();
-  assert.deepEqual(unregistered, ['/dsh-world']);
-  // A stopped life line no longer reacts to home turns: no new fallback alarm is written.
-  const before = await readFile(join(root, 'worlds/fish/life.json'), 'utf8');
+  assert.ok(!(await readdir(join(root, 'worlds/fish'))).includes('bridge.json'), 'no bridge unless bridge is on');
+  const started = await consoleGet(routes, '/dsh-world/console/snapshot');
+  assert.equal(started.running, true); assert.equal(started.life.homeSessionId, homeSessionId);
+
+  await consolePost(routes, '/dsh-world/console/stop');
+  const stopped = await consoleGet(routes, '/dsh-world/console/snapshot');
+  assert.equal(stopped.running, false); assert.equal(stopped.life, null);
+  // Stopped: her home turns change nothing, get no memory block or world prompt, and are not archived.
+  const lifeBefore = await readFile(join(root, 'worlds/fish/life.json'), 'utf8');
   const home = ctx.agents.get(SessionId(homeSessionId!))!;
-  home.followup(user('after unload')); await home.whenIdle(); await ctx.sessions.flush(home.session);
-  assert.equal(await readFile(join(root, 'worlds/fish/life.json'), 'utf8'), before);
+  home.followup(user('while stopped')); await home.whenIdle(); await ctx.sessions.flush(home.session);
+  assert.equal(await readFile(join(root, 'worlds/fish/life.json'), 'utf8'), lifeBefore);
+  assert.ok(!kinds(requests.at(-1)!).includes('dsh-world-history') && !textOf(requests.at(-1)!).includes('# 我的世界'));
+
+  // The stop outlasts a reload; start again resumes the same home, and the words said while stopped stay out of memory.
+  await plugin.dispose(); assert.deepEqual(unregistered, ['/dsh-world']);
+  const again = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => again.dispose()); await again.await();
+  await until(async () => routes.length === 1, 'the console route again');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).running, false);
+  await consolePost(routes, '/dsh-world/console/start');
+  await until(async () => (await consoleGet(routes, '/dsh-world/console/snapshot')).life?.homeSessionId === homeSessionId, 'the same home');
+  await again.dispose();
+  const archive = createArchiveStore({ ...config, root });
+  const records = await archive.readPage({ worldId: 'fish', limit: 50 }).then(page => page.records).finally(() => archive.close());
+  assert.ok(!records.some(r => r.content === 'while stopped'), records.map(r => r.content).join('|'));
+  assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
 test('a corrupt life.json leaves the life line off, the console showing why, and the memory plugin running', async t => {
   const requests: GenerateOptions[] = [];
@@ -392,7 +420,7 @@ async function fakeStandalonePet(t: TestContext) {
 async function routeCall(routes: { path: string }[], path: string, url: string, headers: Record<string, string>, body: string) {
   const route = routes.find(entry => entry.path === path) as unknown as { handler(req: unknown, res: unknown): Promise<void> };
   let status = 0; let text = '';
-  await route.handler(Object.assign(Readable.from([Buffer.from(body)]), { method: 'POST', url, headers }), { writeHead: (code: number) => { status = code; }, end: (value: string) => { text = value; } });
+  await route.handler(Object.assign(Readable.from([Buffer.from(body)]), { method: 'POST', url, headers: { host: '127.0.0.1:0', ...headers } }), { writeHead: (code: number) => { status = code; }, end: (value: string) => { text = value; } });
   return { status, body: JSON.parse(text) };
 }
 test('with the bridge and an outlet, words from a local app enter the home and the archive, and her reply goes to the outlet', async t => {
@@ -409,6 +437,8 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   const plugin = ctx.plugin(worldPlugin, { ...config, companionName: '小鱼', life: true, bridge: true, toast: false, outlets }); cleanup.push(() => plugin.dispose()); await plugin.await();
   await until(async () => routes.length === 2, 'the bridge and console routes');
   assert.deepEqual(routes.map(route => route.path), ['/dsh-world/bridge/say', '/dsh-world']);
+  assert.equal((await routeCall(routes, '/dsh-world/bridge/say', '/dsh-world/bridge/say', { 'x-dsh-world-token': 'any' }, '{}')).status, 503, 'no bridge before start');
+  await consolePost(routes, '/dsh-world/console/start');
   const { homeSessionId } = await firstWakeDone(ctx, root);
   const bridgeFile = join(root, 'worlds/fish/bridge.json');
   const { origin, token, pid, startedAt, name } = JSON.parse(await readFile(bridgeFile, 'utf8'));

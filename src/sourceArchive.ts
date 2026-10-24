@@ -22,7 +22,8 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
   const failures = new Map<string, unknown>();
   let tail = Promise.resolve();
 
-  async function replay(sessionId: string): Promise<void> {
+  /** Copies what the archive has not seen yet; `skip` moves past it without keeping it. */
+  async function replay(sessionId: string, skip = false): Promise<void> {
     const id = SessionId(sessionId);
     const live = ctx.sessions.get(id);
     if (live) await ctx.sessions.flush(live);
@@ -34,12 +35,18 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
         if (!events.length) break;
         const records = events.flatMap(event => {
           if (event.type === 'turn/start') turn = event.data.turn;
-          return extractConversationRecords(event, { ...config, header: handle.header, inheritedEventCount: handle.inheritedEventCount, turn });
+          return skip ? [] : extractConversationRecords(event, { ...config, header: handle.header, inheritedEventCount: handle.inheritedEventCount, turn });
         });
         nextSeq = events.at(-1)!.seq + 1;
         await store.commitRecords(records, { sessionId: id, nextSeq, turn });
       }
     } finally { await handle.close(); }
+  }
+  /** Runs after every queued replay. */
+  function enqueue(work: () => Promise<void>): Promise<void> {
+    const job = tail.then(work);
+    tail = job.catch(error => { ctx.logger.error(error); });
+    return job;
   }
   function schedule(sessionId: string): Promise<void> {
     // Not archived itself, it still waits for the replays already queued, so its memory block is current.
@@ -57,11 +64,18 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
   }
   return {
     schedule,
-    /** Every session the archive has seen, replayed again so nothing written while the plugin was off is missed. */
-    async catchUp(): Promise<void> {
+    /**
+     * Every session the archive has seen, replayed again so nothing written while the plugin was not loaded is
+     * missed; with `skip`, what was said while her world was stopped is passed over instead.
+     */
+    async catchUp(skip = false): Promise<void> {
       let after = '';
-      for (let ids = store.sourcePage(after); ids.length; ids = store.sourcePage(after)) for (const id of ids) { await schedule(id); after = id; }
+      for (let ids = store.sourcePage(after); ids.length; ids = store.sourcePage(after)) {
+        for (const id of ids) { if (skip) await enqueue(() => replay(id, true)); else await schedule(id); after = id; }
+      }
     },
+    /** Moves past everything a session holds now without keeping it (said while her world was stopped). */
+    skip: (sessionId: string) => enqueue(() => replay(sessionId, true)),
     /** Waits for every queued replay; rejects while any session still has an unresolved failure. */
     async flush(): Promise<void> {
       let current: Promise<void>;

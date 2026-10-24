@@ -168,17 +168,17 @@ function fakeBridge(say: (text: string) => Promise<{ id: string }> = async () =>
   const said: string[] = [];
   return { said, checkToken: token => token === 'secret', say: async text => { said.push(text); return say(text); }, start() {}, stop() {}, faults: () => [] } as Bridge & { said: string[] };
 }
-async function call(bridge: Bridge, request: { method?: string; url?: string; headers?: Record<string, string>; body?: string }) {
-  const req = Object.assign(Readable.from(request.body === undefined ? [] : [Buffer.from(request.body)]), { method: request.method ?? 'POST', url: request.url ?? BRIDGE_PATH, headers: request.headers ?? {} });
+async function call(bridge: Bridge | undefined, request: { method?: string; url?: string; headers?: Record<string, string>; body?: string }) {
+  const req = Object.assign(Readable.from(request.body === undefined ? [] : [Buffer.from(request.body)]), { method: request.method ?? 'POST', url: request.url ?? BRIDGE_PATH, headers: { host: '127.0.0.1:3080', ...request.headers } });
   let status = 0; let headers: Record<string, string> = {}; let body = '';
-  await bridgeRoute(bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
+  await bridgeRoute(() => bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
   return { status, headers, body: JSON.parse(body) };
 }
 const ok = { 'x-dsh-world-token': 'secret', 'content-type': 'application/json' };
 
 test('the say route accepts trimmed text with the right token and answers 202 without waiting', async () => {
   const bridge = fakeBridge();
-  const route = bridgeRoute(bridge);
+  const route = bridgeRoute(() => bridge);
   assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/dsh-world/bridge/say' });
   assert.deepEqual(await call(bridge, { headers: ok, body: JSON.stringify({ text: '  在吗  ' }) }), { status: 202, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: { accepted: true, id: 'm1' } });
   assert.deepEqual(bridge.said, ['在吗']);
@@ -190,12 +190,17 @@ test('the say route refuses a bad token, cross-site requests, other methods and 
   assert.deepEqual(await call(bridge, { body }), { status: 403, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: { error: 'forbidden' } });
   assert.equal((await call(bridge, { headers: { 'x-dsh-world-token': 'wrong' }, body })).status, 403);
   assert.equal((await call(bridge, { headers: { ...ok, 'sec-fetch-site': 'cross-site' }, body })).status, 403);
+  assert.equal((await call(bridge, { headers: { ...ok, host: 'evil.example:3080' }, body })).status, 403, 'a rebound name');
   const get = await call(bridge, { method: 'GET', headers: ok });
   assert.equal(get.status, 405); assert.equal(get.headers.allow, 'POST');
   for (const bad of ['{ torn', '[]', JSON.stringify({ text: 3 }), JSON.stringify({ text: '   ' }), JSON.stringify({ text: '鲸'.repeat(2001) }), JSON.stringify({ text: 'x'.repeat(70_000) })]) {
     assert.deepEqual((await call(bridge, { headers: ok, body: bad })).status, 400, bad.slice(0, 20));
   }
   assert.deepEqual(bridge.said, []);
+});
+test('the say route answers 503 while her world is stopped (no bridge)', async () => {
+  assert.deepEqual((await call(undefined, { headers: ok, body: JSON.stringify({ text: '在吗' }) })).body, { error: 'home unavailable' });
+  assert.equal((await call(undefined, { headers: { ...ok, 'sec-fetch-site': 'cross-site' }, body: '{}' })).status, 403);
 });
 test('the say route answers 503 when the home is unavailable and never echoes internals', async () => {
   const unavailable = fakeBridge(async () => { throw new HomeUnavailable('session C:\\secret broke'); });

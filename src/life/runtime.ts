@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-agent-loop';
@@ -5,27 +7,36 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import '../hostContract.ts';
 import { errorText, Faults } from '../faults.ts';
+import { keepSelfCopy } from '../self.ts';
+import { formatLocalTime } from '../timeContext.ts';
 import { belongsToWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
-import { homeTitle, worldNames } from '../worldPrompt.ts';
-import { arrivalText, cancelReply, checkReply, earlyStopText, nextLocalTime, planReply, resolveAlarmTime, wakeText } from './alarm.ts';
+import { homeTitle, roomTitle, worldNames } from '../worldPrompt.ts';
+import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewText, wakeText } from './alarm.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
 import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
+import { stepCost } from './pricing.ts';
 import type { LifeStore } from './lifeStore.ts';
 import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
 import { createToolRegistry } from './toolRegistry.ts';
 import { alarmDescriptions, lifeTools } from './tools.ts';
-import type { Alarm, LifeOptions } from './types.ts';
+import type { Alarm, Greeting, LifeOptions, Review, WakeRecord } from './types.ts';
 
-export interface LifeDeps { ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers }
+const withValue = <K extends string>(key: K, value: string | undefined) => (value === undefined ? {} : { [key]: value }) as Partial<Record<K, string>>;
+export interface LifeDeps {
+  ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
+  /** CNY her home may spend a day; undefined or absent is no limit. */
+  dailyBudget?: () => number | undefined;
+}
 
 /**
  * Her life line: one pending alarm, kept in life.json and delivered into her home with `agent.steer`, the
- * tools she sets it with, and the home itself. The parts live in their own modules; this wires them.
+ * tools she sets it with, the home itself, a new home's greeting and the evening look back. The parts live in
+ * their own modules; this wires them.
  */
 export function createLifeRuntime(deps: LifeDeps) {
   const { ctx, config, options, store, host } = deps;
@@ -56,8 +67,15 @@ export function createLifeRuntime(deps: LifeDeps) {
   };
 
   // Her alarm.
-  // A new home's greeting goes first; then her alarm.
-  const timer = createAlarmTimer({ clock, timers: deps.timers ?? realTimers, dueAlarm: () => state.arrival ?? state.alarm?.at, fire: () => void deliver() });
+  // What is delivered next: a new home's greeting first, then whichever of the look back and her alarm is due sooner.
+  type Job = { kind: 'greeting'; at: string; greeting: Greeting } | { kind: 'review'; at: string; review: Review } | { kind: 'alarm'; at: string; alarm: Alarm };
+  function nextJob(): Job | undefined {
+    const { greeting, review, alarm } = state;
+    if (greeting) return { kind: 'greeting', at: greeting.at, greeting };
+    if (review && (!alarm || Date.parse(review.at) <= Date.parse(alarm.at))) return { kind: 'review', at: review.at, review };
+    return alarm && { kind: 'alarm', at: alarm.at, alarm };
+  }
+  const timer = createAlarmTimer({ clock, timers: deps.timers ?? realTimers, dueAlarm: () => nextJob()?.at, fire: () => void deliver() });
   const morning = (now: Date): Alarm => ({ at: nextLocalTime(now, options.fallbackWakeTime, timeZone).toISOString(), note: '', setAt: now.toISOString(), source: 'fallback' });
   /** A new alarm replaces a failing one, so its backoff and fault go with it. Saved or not, it is armed. */
   function setAlarm(alarm: Alarm): void {
@@ -69,7 +87,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   }
   /** Nothing pending means resting until the next morning. Unsaved, it still rings while the app keeps running. */
   function fallbackAlarm(): void {
-    if (state.alarm || state.arrival || stopped) return;
+    if (state.alarm || state.greeting || stopped) return;
     try { setAlarm(morning(clock())); }
     catch (error) { faults.set('alarm', `断线保护闹钟没能保存：${errorText(error)}`); ctx.logger.error(error); }
   }
@@ -92,34 +110,57 @@ export function createLifeRuntime(deps: LifeDeps) {
 
   // Delivery: one at a time; a failure backs off, and a newer alarm keeps its own time.
   function deliver(): Promise<void> {
-    if (stopped || (!state.arrival && !state.alarm)) return delivery ?? Promise.resolve();
-    return delivery ??= (state.arrival ? greet(state.arrival) : send(state.alarm!)).finally(() => { delivery = undefined; });
+    const job = nextJob();
+    if (stopped || !job) return delivery ?? Promise.resolve();
+    return delivery ??= (job.kind === 'alarm' ? send(job.alarm) : job.kind === 'review' ? lookBack(job.review) : greet(job.greeting)).finally(() => { delivery = undefined; });
   }
-  /** A new home's first words, so it has a turn (the host lists no session without one) and she knows she moved. */
-  async function greet(since: string): Promise<void> {
+  const wake = (source: WakeRecord['source'], scheduledAt: string, now: Date): WakeRecord => ({ scheduledAt, deliveredAt: now.toISOString(), source, lateMs: Math.max(0, now.getTime() - Date.parse(scheduledAt)) });
+  /**
+   * A message of the plugin's own, taken off the schedule while it is sent and put back if it fails: it backs
+   * off like an alarm, and its turn is never asked about as an early stop.
+   */
+  async function sayOwn(what: string, source: WakeRecord['source'], scheduledAt: string, take: () => void, putBack: () => void, text: (now: Date) => string): Promise<void> {
     let now = clock();
     try {
       const agent = await home.open();
       if (stopped) return;
-      delete state.arrival;
+      take();
       now = clock();
       earlyStop.startsOwnTurn();
-      await say(agent, arrivalText(timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+      await say(agent, text(now));
     } catch (error) {
       ctx.logger.error(error);
       if (stopped) return;
       earlyStop.ownTurnFailed();
-      state.arrival ??= since;
-      faults.set('delivery', `新家的第一句话没送到，${timer.failed()} 分钟后重试：${errorText(error)}`);
+      putBack();
+      faults.set('delivery', `${what}没送到，${timer.failed()} 分钟后重试：${errorText(error)}`);
       return;
     }
     if (stopped) return;
     faults.clear('delivery', 'home');
-    record(() => {
-      store.write(state);
-      store.appendWake({ scheduledAt: since, deliveredAt: now.toISOString(), source: 'first', lateMs: Math.max(0, now.getTime() - Date.parse(since)) });
-    });
+    record(() => { store.write(state); store.appendWake(wake(source, scheduledAt, now)); });
     timer.reset();
+  }
+  /**
+   * A new home's first words, so it has a turn (the host lists no session without one) and she knows she moved;
+   * or the word that her world has started again.
+   */
+  const greet = (greeting: Greeting) => sayOwn(greeting.kind === 'arrival' ? '新家的第一句话' : '重新开始的那句话', greeting.kind === 'arrival' ? 'first' : 'return', greeting.at,
+    () => { delete state.greeting; }, () => { state.greeting ??= greeting; },
+    () => greetingText(greeting.kind, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+  /** The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. */
+  function lookBack(review: Review): Promise<void> {
+    let snapshot: string | undefined;
+    const take = () => {
+      try { snapshot = keepSelfCopy(options.selfFile, review.day); faults.clear('snapshot'); }
+      catch (error) { faults.set('snapshot', `我是谁没能留底：${errorText(error)}`); ctx.logger.error(error); }
+      state.review = nextReview(clock(), timeZone);
+    };
+    const existing = (dir: string) => { const file = join(options.worldDir, dir, `${review.day}.jsonl`); return existsSync(file) ? file : undefined; };
+    return sayOwn('每日回顾', 'review', review.at, take, () => { state.review = review; }, now => reviewText(review, now, {
+      ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
+      diaryDir: options.diaryDir, selfFile: options.selfFile,
+    }, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
   }
   async function send(alarm: Alarm): Promise<void> {
     let now = clock();
@@ -162,6 +203,25 @@ export function createLifeRuntime(deps: LifeDeps) {
     void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
   }
 
+  // What her home spends: each model step priced as it lands; past the daily budget she is told once that day.
+  function spent(usage: Parameters<typeof stepCost>[0], model: string): void {
+    const now = clock(); const day = formatLocalTime(now, timeZone).slice(0, 10);
+    const spend = state.spend?.day === day ? state.spend : (state.spend = { day, yuan: 0 });
+    spend.yuan += stepCost(usage, model, now);
+    const budget = deps.dailyBudget?.();
+    const remind = budget !== undefined && spend.yuan >= budget && !spend.reminded;
+    if (remind) spend.reminded = true;
+    record(() => store.write(state));
+    if (!remind) return;
+    const text = budgetText(spend.yuan, budget, alarmMessages(), templateValues());
+    void home.open().then(agent => {
+      if (stopped) return;
+      // Into the running turn at its next step, or a turn of its own that is not asked about.
+      if (agent.status !== 'running') earlyStop.startsOwnTurn();
+      return say(agent, text);
+    }).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
+  }
+
   // Her tools and her home.
   const notifier: Notifier = {
     ...(deps.notifier.toast ? { toast: (title: string, body: string) => faults.track('toast', '系统通知没送到', () => deps.notifier.toast!(title, body)) } : {}),
@@ -174,12 +234,12 @@ export function createLifeRuntime(deps: LifeDeps) {
   });
   const attach = (agent: Agent) => { if (!stopped && belongsToWorld(agent.session, config)) tools.attach(agent); };
   const home = createHome({
-    host, roomDir: options.roomDir, agentPreset: config.agentPreset, title: homeTitle(names), faults, logger: ctx.logger,
+    host, roomDir: options.roomDir, agentPreset: config.agentPreset, title: homeTitle(names), roomTitle: roomTitle(names), faults, logger: ctx.logger,
     current: () => state.homeSessionId,
     // A new home greets her at once (the pending alarm moves in too and rings at its own time).
     moveIn(sessionId) {
       state.homeSessionId = sessionId;
-      state.arrival = clock().toISOString();
+      state.greeting = { at: clock().toISOString(), kind: 'arrival' };
       tools.releaseOldHomes();
       store.write(state);
     },
@@ -188,7 +248,8 @@ export function createLifeRuntime(deps: LifeDeps) {
   });
   const journal = createJournal({ store, faults, roomDir: options.roomDir, logger: ctx.logger });
 
-  async function start(): Promise<void> {
+  /** `resumed`: started again from the console; unless an alarm of her own is pending, she is told she is back. */
+  async function start(options: { resumed?: boolean } = {}): Promise<void> {
     disposers.push(
       ctx.on('agent/created', ({ agent }) => { attach(agent); return undefined; }),
       ctx.on('agent/disposed', ({ agent }) => tools.forget(agent)),
@@ -203,6 +264,7 @@ export function createLifeRuntime(deps: LifeDeps) {
         journal.world(session, event);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
+        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model);
         if (event.type === 'user/message' && event.data.source.kind === 'user') earlyStop.partnerSpoke();
         if (event.type !== 'turn/end') return;
         home.turnEnded(session.id);
@@ -212,8 +274,11 @@ export function createLifeRuntime(deps: LifeDeps) {
       }),
     );
     for (const agent of ctx.agents.list()) attach(agent);
+    if (!state.review) { state.review = nextReview(clock(), timeZone); record(() => store.write(state)); }
     try {
       const agent = await home.open(); faults.clear('home');
+      // The morning fallback is the plugin's, not a plan of hers: starting again wakes her rather than leaving her asleep till then.
+      if (options.resumed && !state.greeting && state.alarm?.source !== 'plan') { state.greeting = { at: clock().toISOString(), kind: 'return' }; record(() => store.write(state)); }
       // A restart with nothing scheduled and no turn to end would otherwise never wake her again.
       if (agent.status !== 'running') fallbackAlarm();
     } catch (error) { if (!stopped) { faults.set('home', `家打不开：${errorText(error)}`); ctx.logger.error(error); } }
@@ -228,7 +293,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   }
   return {
     start, stop, planNext, checkAlarm, cancelAlarm, deliver,
-    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, faults: faults.list() }),
+    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list() }),
     /** Resolves once no alarm delivery is in flight (its durability flush can outlast the turn it starts). */
     settled: async () => { while (delivery) await delivery; },
     home: () => home.open(),

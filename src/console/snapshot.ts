@@ -6,60 +6,60 @@ import type { LifeStore } from '../life/lifeStore.ts';
 import type { LifeRuntime } from '../life/runtime.ts';
 import type { ArchiveStore } from '../store.ts';
 import type { WorldConfig } from '../types.ts';
-import { worldNames } from '../worldPrompt.ts';
+import type { WorldNames } from '../worldPrompt.ts';
 import type { ConsoleSources } from './routes.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
-  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g) ?? []).length;
+  const cjk = (text.match(/[㐀-鿿豈-﫿　-〿＀-￯]/g) ?? []).length;
   return Math.round(cjk * 0.6 + (text.length - cjk) / 3.5);
 }
-/** Repeated polling within a few seconds reuses one computation; a failed one is not cached. */
-function cachedSnapshot(compute: () => Promise<unknown>): () => Promise<unknown> {
+export interface SnapshotDeps {
+  ctx: Context;
+  config: WorldConfig;
+  archive: ArchiveStore;
+  names(): WorldNames;
+  /** Absent when the life line could not be set up. */
+  lifeStore?: LifeStore;
+  /** The running life line; undefined while her world is stopped. */
+  life(): LifeRuntime | undefined;
+  diaryDir: string;
+  running(): boolean;
+  /** CNY a day for her home; undefined is no limit. */
+  dailyBudget(): number | undefined;
+  /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
+  faults(): string[];
+}
+/** Read-only views for the console; repeated polling within a few seconds reuses one snapshot until `invalidate`. */
+export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidate(): void } {
+  const { config, archive, lifeStore } = deps;
+  const history = createHistory(archive);
+  const diary = createDiaryReader(deps.diaryDir);
   let cached: { at: number; value: Promise<unknown> } | undefined;
-  return () => {
-    if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.value;
-    const entry = { at: Date.now(), value: compute() };
-    cached = entry;
-    entry.value.catch(() => { if (cached === entry) cached = undefined; });
-    return entry.value;
-  };
-}
-async function memoryOf(config: WorldConfig, archive: ArchiveStore, history: ReturnType<typeof createHistory>) {
-  const turns = await history.loadRecentTurns(config.worldId, 200);
-  return { turns: turns.length, windowTurns: 200, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, worldNames(config), config.archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() };
-}
-export function consoleSources(ctx: Context, config: WorldConfig, archive: ArchiveStore, store: LifeStore, life: LifeRuntime, diaryDir: string, moreFaults: () => string[] = () => []): ConsoleSources {
-  const history = createHistory(archive);
-  const diary = createDiaryReader(diaryDir);
+  async function compute(): Promise<unknown> {
+    const life = deps.life()?.snapshot();
+    const home = life?.homeSessionId ? deps.ctx.agents.get(SessionId(life.homeSessionId)) : undefined;
+    const turns = await history.loadRecentTurns(config.worldId, 200);
+    return {
+      worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
+      budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
+      life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
+      health: [...(life?.faults ?? []), ...deps.faults()],
+      memory: { turns: turns.length, windowTurns: 200, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), config.archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
+      diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
+    };
+  }
   return {
-    snapshot: cachedSnapshot(async () => {
-      const life_ = life.snapshot();
-      const homeAgent = life_.homeSessionId ? ctx.agents.get(SessionId(life_.homeSessionId)) : undefined;
-      return {
-        worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(),
-        life: { homeSessionId: life_.homeSessionId, status: homeAgent ? homeAgent.status : 'cold', alarm: life_.alarm, recentWakes: store.wakes().slice(-5).reverse() },
-        health: [...life_.faults, ...moreFaults()],
-        memory: await memoryOf(config, archive, history),
-        compactions: store.compactions().slice(-5).reverse(),
-        diaryDates: diary.dates(), activityDays: store.activityDays(),
-      };
-    }),
-    activity: (day, outsideOnly) => store.activity(day).filter(record => !outsideOnly || record.outside).reverse(),
-    diary: date => diary.read(date),
-  };
-}
-/** The life line failed to start: the console still shows why, with memory and the diary, and no life state. */
-export function degradedSources(config: WorldConfig, archive: ArchiveStore, diaryDir: string, fault: string): ConsoleSources {
-  const history = createHistory(archive);
-  const diary = createDiaryReader(diaryDir);
-  return {
-    snapshot: cachedSnapshot(async () => ({
-      worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(),
-      life: null, health: [fault], memory: await memoryOf(config, archive, history),
-      compactions: [], diaryDates: diary.dates(), activityDays: [],
-    })),
-    activity: () => [],
+    snapshot() {
+      if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.value;
+      const entry = { at: Date.now(), value: compute() };
+      cached = entry;
+      entry.value.catch(() => { if (cached === entry) cached = undefined; });
+      return entry.value;
+    },
+    invalidate() { cached = undefined; },
+    activity: (day, outsideOnly) => lifeStore?.activity(day).filter(record => !outsideOnly || record.outside).reverse() ?? [],
     diary: date => diary.read(date),
   };
 }

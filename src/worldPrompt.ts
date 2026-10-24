@@ -11,10 +11,16 @@ export function worldNames(config: { companionName?: string; partnerName?: strin
   return { companion: config.companionName?.trim() || 'TA', partner: config.partnerName?.trim() || '伙伴' };
 }
 export const homeTitle = (names: WorldNames) => `${names.companion}的家`;
+/** Her room as a workspace in the host's sidebar. */
+export const roomTitle = (names: WorldNames) => `${names.companion}的房间`;
 
 export interface WorldPrompt {
   /** Her template, when present; the shipped default otherwise. */
   file?: string;
+  /** Her layered persona (`persona.md`), placed above the world prompt when written. */
+  persona?: string;
+  /** Where the daily exports of her archive are (`<world>/conversations`). */
+  conversationsDir?: string;
   names: WorldNames;
   /** Present when the life line runs: room, diary, world line, ask-first rules. */
   life?: LifeOptions;
@@ -51,8 +57,8 @@ export function renderTemplate(template: string, flags: Record<string, boolean>,
  */
 export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: { file: string; text: string } | undefined, home: boolean): string {
   const { life, names } = prompt;
-  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self) }, {
-    name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '',
+  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir) }, {
+    name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '', conversationsDir: prompt.conversationsDir ?? '',
     ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.fallbackWakeTime } : {}),
   });
 }

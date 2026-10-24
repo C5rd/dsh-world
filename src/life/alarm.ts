@@ -1,9 +1,11 @@
 import { formatLocalTime } from '../timeContext.ts';
-import type { Alarm } from './types.ts';
+import type { Alarm, Review } from './types.ts';
 import { ALARM_MARK, exampleTime, fillMessage, readAlarmMessages, type AlarmMessages } from './messages.ts';
 
 const MIN_ALARM_MS = 60_000;
 const LATE_NOTICE_MS = 2 * 60_000;
+/** Every evening at this local time she looks back on the day. */
+export const REVIEW_TIME = '23:00';
 
 export function resolveAlarmTime(input: { at?: string; after_minutes?: number }, now: Date, timeZone = 'UTC'): Date {
   if ((input.at === undefined) === (input.after_minutes === undefined)) throw new Error('请只给 at 或 after_minutes 其中一个');
@@ -54,20 +56,35 @@ export function formatDuration(ms: number): string {
 }
 /**
  * What she hears when an alarm rings. The wording comes from the alarm template (`extra` carries her
- * names for templates that use them); the 【你的时间】 mark is always the plugin's own.
+ * names for templates that use them); the 【我的时间】 mark is always the plugin's own.
  */
 export function wakeText(alarm: Alarm, now: Date, timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
-  const late = now.getTime() - Date.parse(alarm.at);
   const base = { ...extra, timeZone, fallbackWakeTime };
-  const lateText = late >= LATE_NOTICE_MS ? fillMessage(messages, '晚到说明', { ...base, lateBy: formatDuration(late) }) : '';
+  const lateText = lateNotice(now.getTime() - Date.parse(alarm.at), messages, base);
   const body = alarm.source === 'fallback' ? fillMessage(messages, '早上兜底', { ...base, late: lateText })
     : fillMessage(messages, '闹钟响了', { ...base, time: formatLocalTime(new Date(alarm.at), timeZone), note: alarm.note, late: lateText }, { note: Boolean(alarm.note) });
   return withTail(body, messages, base);
 }
-/** What a new home says the moment it is built. */
-export function arrivalText(timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+/** What a new home says the moment it is built, or her home when her world starts again. */
+export function greetingText(kind: 'arrival' | 'return', timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
   const base = { ...extra, timeZone, fallbackWakeTime };
-  return withTail(fillMessage(messages, '第一次到家', base), messages, base);
+  return withTail(fillMessage(messages, kind === 'arrival' ? '第一次到家' : '重新开始', base), messages, base);
+}
+/** The next evening look back after `now`, and the day it looks back on. */
+export function nextReview(now: Date, timeZone: string): Review {
+  const at = nextLocalTime(now, REVIEW_TIME, timeZone);
+  return { at: at.toISOString(), day: formatLocalTime(at, timeZone).slice(0, 10) };
+}
+/** Where her day is written down; a file that does not exist is left out. */
+export interface ReviewFiles { conversations?: string; activity?: string; diaryDir: string; selfFile: string; snapshot?: string }
+/** The evening look back: the day, where to read it, and her 我是谁 to rewrite if she has changed. */
+export function reviewText(review: Review, now: Date, files: ReviewFiles, timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+  const base = { ...extra, timeZone, fallbackWakeTime };
+  const values = { ...base, date: review.day, diaryDir: files.diaryDir, selfFile: files.selfFile, conversations: files.conversations ?? '', activity: files.activity ?? '', snapshot: files.snapshot ?? '', late: lateNotice(now.getTime() - Date.parse(review.at), messages, base) };
+  return withTail(fillMessage(messages, '每日回顾', values, { conversations: Boolean(files.conversations), activity: Boolean(files.activity), snapshot: Boolean(files.snapshot) }), messages, base);
+}
+function lateNotice(late: number, messages: AlarmMessages, values: Record<string, string>): string {
+  return late >= LATE_NOTICE_MS ? fillMessage(messages, '晚到说明', { ...values, lateBy: formatDuration(late) }) : '';
 }
 function withTail(body: string, messages: AlarmMessages, values: Record<string, string>): string {
   const tail = fillMessage(messages, '结尾提醒', values);
@@ -82,16 +99,20 @@ const local = (at: string | Date, timeZone: string) => formatLocalTime(new Date(
 /** plan_next's answer. Replacing her own plan says what it carried, while she can still copy it over; the plugin's own alarms are replaced silently. */
 export function planReply(at: Date, replaced: Alarm | undefined, timeZone: string): string {
   const old = replaced?.source === 'plan' ? `（替换了原来做到 ${local(replaced.at, timeZone)} 的安排${replaced.note ? `：「${replaced.note}」。还想留着里面的事，就写进新的 note` : ''}。）` : '';
-  return `好，到 ${local(at, timeZone)} 提醒你。${old}`;
+  return `记下了，到 ${local(at, timeZone)} 提醒我。${old}`;
 }
 export function checkReply(alarm: Alarm | undefined, now: Date, timeZone: string): string {
   if (!alarm) return '现在没有闹钟。';
   const left = Date.parse(alarm.at) - now.getTime();
-  const when = `${local(alarm.at, timeZone)}（${left > 0 ? `还有 ${formatDuration(left)}` : '已经到点，正在叫你'}）`;
-  if (alarm.source === 'plan') return `你说好${alarm.note ? `做「${alarm.note}」` : ''}做到 ${when}。`;
-  return `你现在没有自己定的闹钟。下一次会在 ${when}按平常的时间叫你。`;
+  const when = `${local(alarm.at, timeZone)}（${left > 0 ? `还有 ${formatDuration(left)}` : '已经到点，正在叫我'}）`;
+  if (alarm.source === 'plan') return `我说好${alarm.note ? `做「${alarm.note}」` : ''}做到 ${when}。`;
+  return `我现在没有自己定的闹钟。下一次会在 ${when}按平常的时间叫我。`;
 }
 export function cancelReply(cancelled: Alarm | undefined, next: Alarm | undefined, timeZone: string): string {
-  if (cancelled?.source !== 'plan') return `现在没有你自己定的闹钟，不用取消。${next ? `下一次会在 ${local(next.at, timeZone)} 按平常的时间叫你。` : ''}`;
-  return `好，取消了做到 ${local(cancelled.at, timeZone)} 的安排${cancelled.note ? `：「${cancelled.note}」` : ''}。不另定的话，就休息到 ${next ? local(next.at, timeZone) : '明早'}。`;
+  if (cancelled?.source !== 'plan') return `现在没有我自己定的闹钟，不用取消。${next ? `下一次会在 ${local(next.at, timeZone)} 按平常的时间叫我。` : ''}`;
+  return `取消了做到 ${local(cancelled.at, timeZone)} 的安排${cancelled.note ? `：「${cancelled.note}」` : ''}。不另定的话，我就休息到 ${next ? local(next.at, timeZone) : '明早'}。`;
+}
+/** Told once a day, when her home has spent past the daily budget. */
+export function budgetText(spent: number, budget: number, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+  return `${ALARM_MARK}${fillMessage(messages, '额度用完', { ...extra, spent: spent.toFixed(2), budget: budget.toFixed(2) })}`;
 }
