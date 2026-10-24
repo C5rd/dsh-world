@@ -55,6 +55,9 @@ test('history renders local timestamps, role, source and explicit data framing w
   const turns = await history.loadRecentTurns('fish', 200);
   const text = renderHistory(turns, 'Asia/Seoul', { companion: 'jingjing', partner: '伙伴' });
   assert.ok(text.startsWith('这是你和伙伴最近的聊天记忆：最新的 1 轮真实交流')); assert.ok(text.includes('新到旧')); assert.ok(text.includes('Asia/Seoul 本地时间'));
+  const home = renderHistory(turns, 'Asia/Seoul', { companion: '鲸鲸', partner: '伙伴' }, true);
+  assert.ok(home.startsWith('这是你在家里（「鲸鲸的家」）最近的相处记忆：最新的 1 轮真实交流，有你和伙伴说的话，也有你自己过日子时说的话。'), home);
+  assert.ok(home.includes('换过家或更早在别的窗口里聊的会不一样') && !home.includes('同一个对话窗口'));
   assert.ok(text.includes('"time":"2026-10-23T21:30:00+09:00"')); assert.ok(!text.includes('12:30:00.000Z'));
   assert.equal(turns[0].messages[0].occurredAt, '2026-10-23T12:30:00.000Z', 'the archive itself stays in UTC');
   const [line] = text.split('\n').slice(1).map(row => JSON.parse(row));

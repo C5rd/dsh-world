@@ -27,7 +27,7 @@ function cachedSnapshot(compute: () => Promise<unknown>): () => Promise<unknown>
 }
 async function memoryOf(config: WorldConfig, archive: ArchiveStore, history: ReturnType<typeof createHistory>) {
   const turns = await history.loadRecentTurns(config.worldId, 200);
-  return { turns: turns.length, windowTurns: 200, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, worldNames(config))), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() };
+  return { turns: turns.length, windowTurns: 200, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, worldNames(config), config.archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() };
 }
 export function consoleSources(ctx: Context, config: WorldConfig, archive: ArchiveStore, store: LifeStore, life: LifeRuntime, diaryDir: string, moreFaults: () => string[] = () => []): ConsoleSources {
   const history = createHistory(archive);

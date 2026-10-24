@@ -84,7 +84,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       session.append('system/message', { turn, step, message: createSystemMessage('') }, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
       state.injected.delete(message.id);
     }
-    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names);
+    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
   }
 

@@ -135,6 +135,7 @@ test('archiveScope home: only her home is archived, and every world session stil
   const chat = await ctx.agents.create({ sessionId: SessionId('chat'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   chat.agent.followup(user('said in a chat window')); await chat.agent.whenIdle();
   assert.match(textOf(requests.at(-1)!.messages), /said at home[\s\S]*earlier memory/, 'a chat window remembers what happened at home, newest first');
+  assert.match(textOf(requests.at(-1)!.messages), /这是你在家里（「小鱼的家」）最近的相处记忆/);
   await world.flush();
   const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(r => r.content);
   assert.ok(archived.includes('said at home') && !archived.includes('said in a chat window'), archived.join('|'));
