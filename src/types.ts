@@ -9,7 +9,7 @@ export interface WorldConfig {
   life?: boolean;
   /** Her diary directory; defaults to `<world>/diary`. */
   diaryDir?: string;
-  /** Minutes until the fallback alarm when a home turn ends without one. */
+  /** Local HH:MM of the morning wake when no alarm is pending (she set none, or cancelled hers); 09:00 by default. */
   fallbackWakeTime?: string;
   /** Her own "who I am" file, part of the world prompt; defaults to `<world>/room/我是谁.md` in the plugin. */
   selfFile?: string;
