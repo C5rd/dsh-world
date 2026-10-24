@@ -2,9 +2,7 @@ import { formatLocalTime } from '../timeContext.ts';
 import type { Alarm } from './types.ts';
 import { ALARM_MARK, exampleTime, fillMessage, readAlarmMessages, type AlarmMessages } from './messages.ts';
 
-export const MIN_ALARM_MS = 60_000;
-/** setTimeout's ceiling; longer alarms are re-armed in segments. */
-export const MAX_TIMER_MS = 2_147_483_647;
+const MIN_ALARM_MS = 60_000;
 const LATE_NOTICE_MS = 2 * 60_000;
 
 export function resolveAlarmTime(input: { at?: string; after_minutes?: number }, now: Date, timeZone = 'UTC'): Date {
@@ -28,15 +26,13 @@ const offsetMs = (at: number, timeZone: string) => {
 };
 /** The first instant strictly after `now` whose local time in `timeZone` is hhmm:00; a time skipped by a DST gap lands on the first instant after the gap. */
 export function nextLocalTime(now: Date, hhmm: string, timeZone: string): Date {
-  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm);
-  if (!match) throw new Error(`无效的时间 ${hhmm}，需要 HH:MM`);
-  const [hour, minute] = [Number(match[1]), Number(match[2])];
+  const [hour, minute] = hhmm.split(':').map(Number) as [number, number];
   const today = formatLocalTime(now, timeZone);
   const [y, mo, d] = [Number(today.slice(0, 4)), Number(today.slice(5, 7)), Number(today.slice(8, 10))];
   for (let k = 0; k < 3; k++) {
     const wall = Date.UTC(y, mo - 1, d + k, hour, minute);
     const date = new Date(wall).toISOString().slice(0, 10);
-    const want = `${date}T${match[1]}:${match[2]}:00`;
+    const want = `${date}T${hhmm}:00`;
     const around = [offsetMs(wall - 86_400_000, timeZone), offsetMs(wall + 86_400_000, timeZone)];
     const hits = [...new Set(around)].map(offset => wall - offset).filter(at => formatLocalTime(new Date(at), timeZone).slice(0, 19) === want);
     let at = hits.length ? Math.min(...hits.filter(h => h > now.getTime()), Infinity) : NaN;
@@ -69,4 +65,27 @@ export function wakeText(alarm: Alarm, now: Date, timeZone: string, fallbackWake
     : fillMessage(messages, '闹钟响了', { ...base, time: formatLocalTime(new Date(alarm.at), timeZone), note: alarm.note, late: lateText }, { note: Boolean(alarm.note) });
   const tail = fillMessage(messages, '结尾提醒', base);
   return `${ALARM_MARK}${body}${tail ? `\n${tail}` : ''}`;
+}
+/** What she hears when a home turn stops well before the time she said she would keep at it. */
+export function earlyStopText(alarm: Alarm, now: Date, timeZone: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+  const body = fillMessage(messages, '提前停下', { ...extra, timeZone, time: formatLocalTime(new Date(alarm.at), timeZone), now: formatLocalTime(now, timeZone), note: alarm.note }, { note: Boolean(alarm.note) });
+  return `${ALARM_MARK}${body}`;
+}
+const local = (at: string | Date, timeZone: string) => formatLocalTime(new Date(at), timeZone);
+/** plan_next's answer. Replacing her own plan says what it carried, while she can still copy it over; the plugin's own alarms are replaced silently. */
+export function planReply(at: Date, replaced: Alarm | undefined, timeZone: string): string {
+  const old = replaced?.source === 'plan' ? `（替换了原来做到 ${local(replaced.at, timeZone)} 的安排${replaced.note ? `：「${replaced.note}」。还想留着里面的事，就写进新的 note` : ''}。）` : '';
+  return `好，到 ${local(at, timeZone)} 提醒你。${old}`;
+}
+export function checkReply(alarm: Alarm | undefined, now: Date, timeZone: string): string {
+  if (!alarm) return '现在没有闹钟。';
+  const left = Date.parse(alarm.at) - now.getTime();
+  const when = `${local(alarm.at, timeZone)}（${left > 0 ? `还有 ${formatDuration(left)}` : '已经到点，正在叫你'}）`;
+  if (alarm.source === 'plan') return `你说好${alarm.note ? `做「${alarm.note}」` : ''}做到 ${when}。`;
+  if (alarm.source === 'fallback') return `你现在没有自己定的闹钟。下一次会在 ${when}按平常的时间叫你。`;
+  return `下一次是家里的第一次唤醒，在 ${when}。`;
+}
+export function cancelReply(cancelled: Alarm | undefined, next: Alarm | undefined, timeZone: string): string {
+  if (cancelled?.source !== 'plan') return `现在没有你自己定的闹钟，不用取消。${next ? `下一次会在 ${local(next.at, timeZone)} 按平常的时间叫你。` : ''}`;
+  return `好，取消了做到 ${local(cancelled.at, timeZone)} 的安排${cancelled.note ? `：「${cancelled.note}」` : ''}。不另定的话，就休息到 ${next ? local(next.at, timeZone) : '明早'}。`;
 }

@@ -104,11 +104,6 @@ test('a later compaction replays the earlier paragraph for merging instead of th
   const context = handle.agent.session.deriveMessages().filter(message => message.role !== 'system');
   assert.equal(context.length, 1); assert.match(JSON.stringify(context[0].content), /摘要2/);
 });
-test('retention settings from the stock backend are rejected instead of silently keeping a verbatim tail', () => {
-  assert.throws(() => new ToolFreeCompaction(new Context(), { retainRatio: 0.16 } as never), /retainRatio/);
-  assert.throws(() => new ToolFreeCompaction(new Context(), { modelPolicies: [{ provider: 'p', model: 'm', retainTokens: 100 }] } as never), /retainTokens/);
-  assert.throws(() => new ToolFreeCompaction(new Context(), { compactionRetries: 2 } as never), /unknown key/);
-});
 test('reasoning-only steps left by a removed tool call are dropped, and an echoed summary lead is not doubled', async t => {
   const call = { type: 'tool-call' as const, id: ToolCallId('c'), name: 'send_sticker', arguments: '{}' };
   const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });

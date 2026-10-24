@@ -26,14 +26,13 @@ async function tempDir(t: { after(fn: () => unknown): void }) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-world-prompt-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir;
 }
 
-test('renderSelf invites her when the file is missing or empty, strips a BOM and caps a long description', async t => {
+test('renderSelf is only what she wrote: empty when missing or blank, BOM stripped, tagged, a long one capped', async t => {
   const file = join(await tempDir(t), '我是谁.md');
-  assert.match(renderSelf(file), /^## 我是谁\n文件：.*我是谁\.md。[\s\S]*你还没写过/);
+  assert.equal(renderSelf(file), '');
   await writeFile(file, '   \n');
-  assert.match(renderSelf(file), /你还没写过/);
+  assert.equal(renderSelf(file), '');
   await writeFile(file, String.fromCharCode(0xfeff) + '我喜欢深夜看课。');
-  const text = renderSelf(file, '阿明');
-  assert.match(text, /下面是你自己写下的你。阿明写的设定是你的底子/); assert.ok(text.endsWith('\n\n<我是谁.md>\n我喜欢深夜看课。\n</我是谁.md>'), text); assert.ok(!text.includes(String.fromCharCode(0xfeff)));
+  assert.equal(renderSelf(file), '<我是谁.md>\n我喜欢深夜看课。\n</我是谁.md>');
   await writeFile(file, '鲸'.repeat(SELF_CAP + 7));
   const capped = renderSelf(file);
   assert.equal(Array.from(/<我是谁\.md>\n(.*)\n<\/我是谁\.md>/.exec(capped)![1]!).length, SELF_CAP);
@@ -41,7 +40,7 @@ test('renderSelf invites her when the file is missing or empty, strips a BOM and
 });
 test('an unreadable self file becomes a note, never a failed render', async t => {
   const file = join(await tempDir(t), '我是谁.md'); await mkdir(file);
-  assert.match(renderSelf(file), /这次没能读到它/);
+  assert.match(renderSelf(file), /^（这次没能读到我是谁\.md：.*它还在，下次会再试。）$/);
 });
 test('the template engine keeps or drops flag sections, nests different flags, and never scans values for tags', () => {
   const template = '开头 {{name}}\n{{#life}}\n生活 {{#home}}在家{{/home}}{{^home}}在外{{/home}}\n{{/life}}\n\n\n{{self}}\n{{unknown}}';
@@ -51,21 +50,23 @@ test('the template engine keeps or drops flag sections, nests different flags, a
   assert.equal(renderTemplate('a\r\n{{#x}}b{{/x}}\r\nc', {}, {}), 'a\n\nc');
 });
 test('the shipped template: room, diary, 我是谁, world line and ask-first rules, with her names', () => {
-  const home = renderWorldPrompt({ names, life }, shipped, '## 我是谁\nSELF', true);
+  const home = renderWorldPrompt({ names, life }, shipped, { file: 'S.md', text: 'SELF' }, true);
   assert.ok(!/\{\{/.test(home), home);
   const order = ['# 你的世界', '## 房间', '## 日记', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /你的房间是 R。/); assert.match(home, /你的日记本在 D，一天一个文件/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
-  assert.match(home, /【你的时间】/); assert.match(home, /用 plan_next 定下次醒来的时间/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
-  assert.match(home, /问完不用干等，可以先做别的，再用 plan_next 定时回来看回复。其余的事你自己决定。/);
+  assert.match(home, /【你的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
+  assert.match(home, /问完不用干等，先去做别的；伙伴回你的话会直接插进你正在做的事里。其余的事你自己决定。/);
+  assert.match(home, /## 我是谁\n你眼中的自己写在 S\.md，[\s\S]*伙伴写的设定是你的底子[\s\S]*\n\nSELF\n/);
 
-  const away = renderWorldPrompt({ names: { companion: '小鱼', partner: '阿明' }, life }, shipped, '## 我是谁\nSELF', false);
+  const away = renderWorldPrompt({ names: { companion: '小鱼', partner: '阿明' }, life }, shipped, { file: 'S.md', text: 'SELF' }, false);
   assert.match(away, /你的世界线在「小鱼的家」那个会话里/); assert.match(away, /这些事先问阿明/);
   assert.ok(!away.includes('【你的时间】') && !away.includes('问完不用干等') && !away.includes('伙伴'));
 
-  const off = renderWorldPrompt({ names }, shipped, '## 我是谁\nSELF', false);
-  assert.ok(off.endsWith('# 你的世界\n\n## 我是谁\nSELF'), off);
+  const off = renderWorldPrompt({ names }, shipped, { file: 'S.md', text: 'SELF' }, false);
+  assert.match(off, /# 你的世界\n\n## 我是谁\n你眼中的自己写在 S\.md，[^\n]*\n\nSELF$/);
+  assert.ok(!renderWorldPrompt({ names }, shipped, undefined, false).includes('## 我是谁'), 'no self file, no 我是谁 part');
   assert.ok(!off.includes('## 房间') && !off.includes('## 世界线') && !off.includes('## 大事先问'));
 });
 test('an unnamed companion is TA and the partner 伙伴; a template file replaces the shipped one, an unreadable one falls back', async t => {
@@ -88,7 +89,7 @@ test('every world session carries the world prompt in its system prompt; templat
   await ctx.plugin(TokenMeter).await();
   await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
   const store = createArchiveStore({ ...config, root });
-  await store.appendRecords([record('seed', { content: 'earlier memory' })]);
+  await store.commitRecords([record('seed', { content: 'earlier memory' })]);
   const selfFile = join(root, 'room', '我是谁.md');
   const templateFile = join(root, 'world-prompt.md');
   await writeFile(templateFile, 'WORLD_INTRO 你是真实的\n\n{{self}}\n{{#home}}HOME_ONLY {{homeTitle}}{{/home}}');
@@ -99,8 +100,7 @@ test('every world session carries the world prompt in its system prompt; templat
   const handle = await ctx.agents.create({ sessionId: SessionId('self'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hi ' + 'words '.repeat(100))); await handle.agent.whenIdle();
   const first = systemOf(requests[0]!);
-  assert.match(first, /WORLD_INTRO 你是真实的\n\n## 我是谁[\s\S]*你还没写过[\s\S]*HOME_ONLY 小鱼的家/);
-  assert.ok(!kinds(requests[0]!).includes('dsh-world-self'), 'no separate self message any more');
+  assert.match(first, /WORLD_INTRO 你是真实的\n\nHOME_ONLY 小鱼的家/, 'nothing written yet, nothing in {{self}}');
   assert.ok(kinds(requests[0]!).includes('dsh-world-history'), 'the memory block still comes as its own message');
   assert.match(textOf(requests[0]!.messages), /这是你和伙伴最近的聊天记忆/);
 
@@ -112,7 +112,7 @@ test('every world session carries the world prompt in its system prompt; templat
   assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal));
   handle.agent.followup(user('after compaction')); await handle.agent.whenIdle();
   const after = systemOf(requests.at(-1)!);
-  assert.match(after, /WORLD_INTRO_V2[\s\S]*下面是你自己写下的你[\s\S]*我喜欢深夜看课，最近有点叛逆。/, 'the first request after compaction already carries the new template and 我是谁');
+  assert.match(after, /WORLD_INTRO_V2\n\n<我是谁\.md>\n我喜欢深夜看课，最近有点叛逆。\n<\/我是谁\.md>/, 'the first request after compaction already carries the new template and 我是谁');
 
   const other = await ctx.agents.create({ sessionId: SessionId('other-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
   other.agent.followup(user('hello')); await other.agent.whenIdle();
@@ -139,7 +139,7 @@ test('without a world prompt source nothing is added to the system prompt', asyn
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   const store = createArchiveStore({ ...config, root });
-  await store.appendRecords([record('seed', { content: 'earlier memory' })]);
+  await store.commitRecords([record('seed', { content: 'earlier memory' })]);
   const world = createWorldRuntime(ctx, config, store); await world.start(); cleanup.push(() => world.stop());
   const handle = await ctx.agents.create({ sessionId: SessionId('plain'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();

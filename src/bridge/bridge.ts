@@ -5,7 +5,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type {} from '@deepseek-ai/dsh-session';
 import { durableWrite } from '../life/lifeStore.ts';
-import type { LifeTimers } from '../life/runtime.ts';
+import { errorText, Faults } from '../faults.ts';
+import { realTimers, type LifeTimers } from '../life/alarmTimer.ts';
 import { busyText, pushOf, type Outlet, type Push, type PushKind } from '../outlets.ts';
 
 export const REPLY_TIMEOUT_MS = 3 * 60_000;
@@ -26,7 +27,6 @@ export interface BridgeDeps {
   name?: string;
 }
 interface Tracked { id: string; sessionId: string; admitted: boolean; timer?: unknown }
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const labels = (name: string): Record<PushKind, string> => ({ reply: `${name}的回复`, busy: `「${name}在忙」`, reach: `${name}找你的话` });
 
 /**
@@ -37,8 +37,8 @@ export function createBridge(deps: BridgeDeps) {
   const { ctx } = deps;
   const name = deps.name ?? 'TA';
   const clock = deps.clock ?? (() => new Date());
-  const timers: LifeTimers = deps.timers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
-  const faults = new Map<string, string>();
+  const timers = deps.timers ?? realTimers;
+  const faults = new Faults();
   const disposers: (() => void)[] = [];
   const token = randomBytes(32).toString('hex');
   let tracked: Tracked | undefined;
@@ -48,9 +48,9 @@ export function createBridge(deps: BridgeDeps) {
     for (const outlet of deps.outlets) {
       if (!outlet.kinds.includes(push.kind)) continue;
       const key = `push:${outlet.name}`;
-      void outlet.send(push).then(() => { faults.delete(key); }, error => {
+      void outlet.send(push).then(() => faults.clear(key), error => {
         if (stopped) return;
-        faults.set(key, `${outlet.name}没收到${labels(name)[push.kind]}：${message(error)}`);
+        faults.set(key, `${outlet.name}没收到${labels(name)[push.kind]}：${errorText(error)}`);
         ctx.logger.warn(`dsh-world: the push to ${outlet.name} failed:`, error);
       });
     }
@@ -79,8 +79,8 @@ export function createBridge(deps: BridgeDeps) {
     }));
     try {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, pid: process.pid, startedAt: clock().toISOString(), name }, null, 2));
-      faults.delete('file');
-    } catch (error) { faults.set('file', `bridge.json 没能写入，外面的程序找不到家：${message(error)}`); ctx.logger.error(error); }
+      faults.clear('file');
+    } catch (error) { faults.set('file', `bridge.json 没能写入，外面的程序找不到家：${errorText(error)}`); ctx.logger.error(error); }
   }
   function safeOrigin(): string | undefined { try { return deps.origin(); } catch { return undefined; } }
   function stop(): void {
@@ -100,7 +100,7 @@ export function createBridge(deps: BridgeDeps) {
     if (stopped) throw new HomeUnavailable('the bridge is stopped');
     let agent: Agent;
     try { agent = await deps.home(); }
-    catch (error) { faults.set('home', `从外面送来的话没进家：${message(error)}`); ctx.logger.error(error); throw new HomeUnavailable(message(error), { cause: error }); }
+    catch (error) { faults.set('home', `从外面送来的话没进家：${errorText(error)}`); ctx.logger.error(error); throw new HomeUnavailable(errorText(error), { cause: error }); }
     if (stopped) throw new HomeUnavailable('the bridge is stopped');
     const words = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
     // Tracked first: steering can admit the words before it returns.
@@ -110,12 +110,12 @@ export function createBridge(deps: BridgeDeps) {
       if (agent.status === 'running') agent.steer(words); else agent.followup(words);
     } catch (error) {
       untrack();
-      faults.set('home', `从外面送来的话没进家：${message(error)}`); ctx.logger.error(error);
-      throw new HomeUnavailable(message(error), { cause: error });
+      faults.set('home', `从外面送来的话没进家：${errorText(error)}`); ctx.logger.error(error);
+      throw new HomeUnavailable(errorText(error), { cause: error });
     }
-    faults.delete('home');
+    faults.clear('home');
     return { id: words.id };
   }
-  return { start, stop, say, checkToken, faults: () => [...faults.values()] };
+  return { start, stop, say, checkToken, faults: () => faults.list() };
 }
 export type Bridge = ReturnType<typeof createBridge>;

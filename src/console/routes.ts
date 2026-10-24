@@ -4,13 +4,9 @@ export const CONSOLE_PREFIX = '/dsh-world';
 export interface ConsoleSources {
   snapshot(): Promise<unknown>;
   activity(day: string, outsideOnly: boolean): unknown;
-  diaryDates(): string[];
   diary(date: string): string | undefined;
-  wakes(limit: number): unknown;
-  compactions(limit: number): unknown;
 }
 export interface ConsoleResult { status: number; body: unknown; headers?: Record<string, string> }
-const limitOf = (url: URL) => { const raw = url.searchParams.get('limit') ?? ''; const n = /^\d+$/.test(raw) ? Number(raw) : 0; return n < 1 ? 20 : Math.min(200, n); };
 
 /** Every route only reads; nothing here changes her life or memory. */
 export async function handleConsole(sources: ConsoleSources, method: string, rawUrl: string): Promise<ConsoleResult> {
@@ -21,13 +17,10 @@ export async function handleConsole(sources: ConsoleSources, method: string, raw
     case '/console/snapshot': return { status: 200, body: await sources.snapshot() };
     case '/console/activity': return { status: 200, body: sources.activity(url.searchParams.get('day') ?? '', url.searchParams.get('outside') === '1') };
     case '/console/diary': {
-      const date = url.searchParams.get('date');
-      if (!date) return { status: 200, body: { dates: sources.diaryDates() } };
+      const date = url.searchParams.get('date') ?? '';
       const text = sources.diary(date);
       return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : { status: 200, body: { date, text } };
     }
-    case '/console/wakes': return { status: 200, body: sources.wakes(limitOf(url)) };
-    case '/console/compactions': return { status: 200, body: sources.compactions(limitOf(url)) };
     default: return { status: 404, body: { error: 'not found' } };
   }
 }

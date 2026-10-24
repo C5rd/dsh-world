@@ -34,7 +34,6 @@ export function toastScript(appId: string, title: string, body: string): string 
 }
 export function windowsToast(appId = 'electron.app.DeepSeek Harness', spawnImpl: typeof spawn = spawn, timeoutMs = 10_000) {
   return (title: string, body: string) => new Promise<void>((resolvePromise, reject) => {
-    if (process.platform !== 'win32') { reject(new Error('系统通知只支持 Windows')); return; }
     const encoded = Buffer.from(toastScript(appId, title, body), 'utf16le').toString('base64');
     const child = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';

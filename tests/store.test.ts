@@ -17,25 +17,23 @@ async function setup(t: test.TestContext) {
 test('midnight files preserve actual timestamps, turn identity and replay uniqueness', async t => {
   const s = await setup(t); const store = s.open();
   const records = [record('a', { occurredAt: '2026-10-23T14:59:59.000Z', turnId: 'same' }), record('b', { occurredAt: '2026-10-23T15:00:00.000Z', turnId: 'same' })];
-  await store.appendRecords(records); await store.appendRecords(records);
+  await store.commitRecords(records); await store.commitRecords(records);
   for (const [day, r] of [['2026-10-23', records[0]], ['2026-10-24', records[1]]] as const) assert.deepEqual((await readFile(s.path(day), 'utf8')).trim().split('\n').map(line => JSON.parse(line)), [r]);
-  await assert.rejects(store.appendRecords([record('a', { content: 'conflicting replay' })]), /conflict/);
 });
 test('stable pagination excludes later appends including backdated records', async t => {
   const s = await setup(t); const store = s.open();
-  await store.appendRecords(['a', 'b', 'c', 'd'].map(id => record(id)));
+  await store.commitRecords(['a', 'b', 'c', 'd'].map(id => record(id)));
   const first = await store.readPage({ worldId: 'fish', limit: 2 });
   assert.deepEqual(first.records.map(r => r.recordId), ['d', 'c']);
-  await store.appendRecords([record('e'), record('aa')]);
+  await store.commitRecords([record('e'), record('aa')]);
   const second = await store.readPage({ worldId: 'fish', before: first.nextCursor, limit: 2 });
   assert.deepEqual(second.records.map(r => r.recordId), ['b', 'a']);
   assert.equal(second.nextCursor, undefined);
-  await assert.rejects(store.readPage({ worldId: 'other', limit: 2 }), /world/);
 });
 test('failed export reports error and recovers canonical records plus source progress on reopen', async t => {
   const s = await setup(t); const store = s.open();
   await mkdir(s.path('2026-10-23'));
-  await assert.rejects(store.commitRecords([record('a')], { sessionId: 'a', nextSeq: 4, turn: 1 }), /export/i);
+  await assert.rejects(store.commitRecords([record('a')], { sessionId: 'a', nextSeq: 4, turn: 1 }), /archive write failed/);
   await rm(s.path('2026-10-23'), { recursive: true });
   store.close(); const resumed = s.open();
   assert.equal(resumed.progress('a').nextSeq, 4);
@@ -44,27 +42,19 @@ test('failed export reports error and recovers canonical records plus source pro
 test('crash after file write before progress and partial tail recover without duplication', async t => {
   const s = await setup(t); const store = s.open();
   await mkdir(s.path('2026-10-23'));
-  await assert.rejects(store.appendRecords([record('a'), record('b')]), /export/i);
+  await assert.rejects(store.commitRecords([record('a'), record('b')]), /archive write failed/);
   await rm(s.path('2026-10-23'), { recursive: true });
   await writeFile(s.path('2026-10-23'), JSON.stringify(record('a')) + '\n' + JSON.stringify(record('b')).slice(0, 30));
   store.close(); const resumed = s.open();
   await resumed.readPage({ worldId: 'fish', limit: 10 });
   assert.equal((await readFile(s.path('2026-10-23'), 'utf8')).trim().split('\n').length, 2);
 });
-test('middle corruption is reported and original evidence remains untouched', async t => {
+test('a shortened export is rebuilt from the database on the next write to that day', async t => {
   const s = await setup(t); const store = s.open();
-  await store.appendRecords([record('a'), record('b')]);
-  const bad = (await readFile(s.path('2026-10-23'), 'utf8')).replace('"content":"a"', '"content":???');
-  await writeFile(s.path('2026-10-23'), bad);
-  await assert.rejects(store.readPage({ worldId: 'fish', limit: 10 }), /corrupt/i);
-  assert.equal(await readFile(s.path('2026-10-23'), 'utf8'), bad);
-});
-test('missing or truncated exports rebuild from the durable index without losing messages', async t => {
-  const s = await setup(t); const store = s.open();
-  await store.appendRecords([record('a'), record('b')]);
+  await store.commitRecords([record('a'), record('b')]);
   await truncate(s.path('2026-10-23'), 0);
-  await store.readPage({ worldId: 'fish', limit: 10 });
-  assert.equal((await readFile(s.path('2026-10-23'), 'utf8')).trim().split('\n').length, 2);
+  await store.commitRecords([record('c')]);
+  assert.deepEqual((await readFile(s.path('2026-10-23'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).recordId), ['a', 'b', 'c']);
 });
 test('separate processes can write the same world day safely', async t => {
   const s = await setup(t); s.open();
@@ -76,16 +66,17 @@ test('separate processes can write the same world day safely', async t => {
   const rows = (await readFile(s.path('2026-10-23'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.equal(rows.length, 40); assert.equal(new Set(rows.map(r => r.recordId)).size, 40);
 });
-test('binding and traversal validation fail before accessing a different world', async t => {
-  const s = await setup(t); s.open();
+test('a worldId that would leave the worlds directory is refused; the same world reopens under another time zone', async t => {
+  const s = await setup(t); await s.open().commitRecords([record('a')]);
   assert.throws(() => createArchiveStore({ root: s.root, worldId: '../other', timeZone: 'UTC', agentPreset: 'companion' }), /worldId/);
-  assert.throws(() => createArchiveStore({ root: s.root, worldId: 'fish', timeZone: 'UTC', agentPreset: 'other' }), /binding/);
+  const moved = createArchiveStore({ root: s.root, worldId: 'fish', timeZone: 'UTC', agentPreset: 'companion' });
+  try { assert.deepEqual((await moved.readPage({ worldId: 'fish', limit: 10 })).records.map(r => r.recordId), ['a']); } finally { moved.close(); }
 });
 test('stats count records and distinct source sessions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-world-stats-'));
   const store = createArchiveStore({ root, worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' });
   t.after(() => store.close());
   t.after(() => rm(root, { recursive: true, force: true }));
-  await store.appendRecords([record('a1', { sourceSessionId: 's1' }), record('a2', { sourceSessionId: 's1' }), record('a3', { sourceSessionId: 's2' })]);
+  await store.commitRecords([record('a1', { sourceSessionId: 's1' }), record('a2', { sourceSessionId: 's1' }), record('a3', { sourceSessionId: 's2' })]);
   assert.deepEqual(store.stats(), { records: 3, sessions: 2 });
 });

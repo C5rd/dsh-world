@@ -1,5 +1,6 @@
 export type AlarmSource = 'first' | 'plan' | 'fallback';
-export interface Alarm { at: string; note: string; setAt: string; source: AlarmSource }
+/** `nudged`: she was already asked once, when a home turn stopped well before this alarm, whether she is done. */
+export interface Alarm { at: string; note: string; setAt: string; source: AlarmSource; nudged?: true }
 export interface LifeState { version: 1; homeSessionId?: string; alarm?: Alarm }
 export interface WakeRecord { scheduledAt: string; deliveredAt: string; source: AlarmSource; lateMs: number }
 export interface ActivityRecord { time: string; sessionId: string; callId: string; tool: string; summary: string; outside: boolean; gapBefore?: true; status?: 'ok' | 'error' }

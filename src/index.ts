@@ -21,7 +21,8 @@ export { createWorldRuntime } from './runtime.ts';
 export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor } from './types.ts';
 export const name = 'dsh-world';
 export const inject = ['agents', 'sessions', 'sessionPersistence', 'llm'];
-export type Config = WorldConfig;
+/** What `apply` receives: the schema below fills these defaults. */
+export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast'>>;
 // One companion per profile is the usual case, so it works as installed: the standard preset, a world named
 // default and the system time zone. The life line (a home with full access) stays opt-in.
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -42,7 +43,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const dshHome = resolveDshHome();
   const worldDir = join(dshHome, 'worlds', config.worldId);
   const store = createArchiveStore({ ...config, root: dshHome });
-  const options: LifeOptions = { roomDir: join(worldDir, 'room'), diaryDir: config.diaryDir || join(worldDir, 'diary'), fallbackWakeTime: config.fallbackWakeTime ?? '09:00', timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
+  const options: LifeOptions = { roomDir: join(worldDir, 'room'), diaryDir: config.diaryDir || join(worldDir, 'diary'), fallbackWakeTime: config.fallbackWakeTime, timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
   // Set once the life line runs; until then no session is her home.
   let isHome: (sessionId: string) => boolean = () => false;
   const names = worldNames(config);
@@ -60,8 +61,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       try {
         const host = hostLife(lifeCtx);
         const lifeStore = createLifeStore(worldDir, config.timeZone);
-        const outlets = (config.outlets ?? []).map(outlet => createOutlet(outlet, () => host.origin()));
-        const notifier: Notifier = { ...(config.toast !== false && toastSupported() ? { toast: windowsToast() } : {}), outlets };
+        const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
+        const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast() } : {}), outlets };
         const life = createLifeRuntime({ ctx: lifeCtx, config, options, store: lifeStore, host, notifier });
         const bridge = config.bridge ? createBridge({ ctx: lifeCtx, home: () => life.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names.companion }) : undefined;
         return { lifeStore, life, bridge };

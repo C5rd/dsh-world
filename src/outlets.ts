@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
  * config that receives the documented push below. Any local app (a desktop pet, a tray app) can be one.
  */
 export type PushKind = 'reply' | 'busy' | 'reach';
-export const PUSH_KINDS: readonly PushKind[] = ['reply', 'busy', 'reach'];
+const PUSH_KINDS: readonly PushKind[] = ['reply', 'busy', 'reach'];
 /** The body every outlet receives as JSON. `images` are picture URLs from her markdown; `image` is the expression name reach_out was given. */
 export interface Push { text: string; kind: PushKind; name: string; images?: string[]; image?: string }
 export interface OutletConfig {

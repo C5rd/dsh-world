@@ -49,10 +49,10 @@ export function renderTemplate(template: string, flags: Record<string, boolean>,
  * session start and after compaction only, so the prompt does not change between compactions. The world
  * line's tools live in the home alone; the template tells other sessions where to find them.
  */
-export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: string | undefined, home: boolean): string {
+export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: { file: string; text: string } | undefined, home: boolean): string {
   const { life, names } = prompt;
-  return renderTemplate(template, { life: Boolean(life), home }, {
-    name: names.companion, partner: names.partner, homeTitle: homeTitle(names), self: self ?? '',
+  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self) }, {
+    name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '',
     ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.fallbackWakeTime } : {}),
   });
 }

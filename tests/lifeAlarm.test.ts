@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
+import { earlyStopText, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
 
 const now = new Date('2026-10-23T12:00:00.000Z');
 test('alarm time accepts exactly one of an offset timestamp or minutes, at least one minute ahead', () => {
@@ -26,19 +26,19 @@ test('durations read naturally', () => {
   assert.equal(formatDuration(133 * 60_000), '2 小时 13 分');
   assert.equal(formatDuration(26 * 3_600_000), '1 天 2 小时');
 });
-const TAIL = '\n这段做完，记得用 plan_next 定下一次；不定的话就睡到明早 09:00。';
+const TAIL = '\n接下来想做什么，用 plan_next 说好做到几点；什么都不定，就休息到明早 09:00。';
 test('wake text names the plan, the note and lateness only when it matters', () => {
   const plan = { at: '2026-10-23T12:00:00.000Z', note: '打一小时游戏后去写日记', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
-  assert.equal(wakeText(plan, now, 'Asia/Seoul', '09:00'), '【你的时间】闹钟响了。你定在 2026-10-23T21:00:00+09:00，你留给自己的话：「打一小时游戏后去写日记」。' + TAIL);
+  assert.equal(wakeText(plan, now, 'Asia/Seoul', '09:00'), '【你的时间】2026-10-23T21:00:00+09:00 到了，这是你说好做到的时间：「打一小时游戏后去写日记」。还想接着做就再往后定，想换就换。' + TAIL);
   assert.match(wakeText(plan, new Date('2026-10-23T14:13:00.000Z'), 'Asia/Seoul', '09:00'), /晚了 2 小时 13 分/);
-  assert.equal(wakeText({ ...plan, source: 'fallback', note: '' }, now, 'UTC', '09:00'), '【你的时间】早上了，新的一天。你上次没定下一次闹钟，就按平常的时间叫你起来。' + TAIL);
+  assert.equal(wakeText({ ...plan, source: 'fallback', note: '' }, now, 'UTC', '09:00'), '【你的时间】早上了，新的一天。你上次没说接下来做什么，就按平常的时间叫你起来。' + TAIL);
   assert.match(wakeText({ ...plan, source: 'fallback', note: '' }, new Date('2026-10-23T14:13:00.000Z'), 'UTC', '09:00'), /晚了 2 小时 13 分/);
   assert.match(wakeText({ ...plan, source: 'first' }, now, 'UTC', '09:00'), /这是你的家/);
 });
 test('every wake text ends with the plan_next reminder and the fallback time', () => {
   const plan = { at: '2026-10-23T12:00:00.000Z', note: '', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
   for (const source of ['plan', 'fallback', 'first'] as const) assert.ok(wakeText({ ...plan, source }, now, 'UTC', '09:00').endsWith(TAIL));
-  assert.match(wakeText(plan, now, 'UTC', '07:30'), /睡到明早 07:30。$/);
+  assert.match(wakeText(plan, now, 'UTC', '07:30'), /休息到明早 07:30。$/);
 });
 test('wake text shows lateness from exactly two minutes', () => {
   const plan = { at: '2026-10-23T12:00:00.000Z', note: '', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
@@ -61,4 +61,9 @@ test('nextLocalTime handles DST gaps and repeated times', () => {
   assert.equal(next('2026-11-01T04:00:00.000Z', '01:30', 'America/New_York'), '2026-11-01T05:30:00.000Z');
   assert.equal(next('2026-11-01T05:30:00.000Z', '01:30', 'America/New_York'), '2026-11-01T06:30:00.000Z');
   assert.equal(next('2026-11-01T06:30:00.000Z', '01:30', 'America/New_York'), '2026-11-02T06:30:00.000Z');
+});
+test('the early-stop question names her plan, its time and now, and carries the mark but no tail', () => {
+  const plan = { at: '2026-10-23T12:30:00.000Z', note: '看视频', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
+  assert.equal(earlyStopText(plan, now, 'Asia/Seoul'), '【你的时间】你说好做到 2026-10-23T21:30:00+09:00（「看视频」），现在才 2026-10-23T21:00:00+09:00，这一轮就停了。做完了，就想想接下来做什么，用 plan_next 重新说好做到几点；要是在休息，就不用管，到点叫你。');
+  assert.match(earlyStopText({ ...plan, note: '' }, now, 'UTC'), /^【你的时间】你说好做到 2026-10-23T12:30:00\+00:00，现在才/);
 });

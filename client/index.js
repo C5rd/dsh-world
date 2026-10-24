@@ -146,8 +146,8 @@ window.__ModuleLoader__.load({
         h('section', null, h('h4', null, '生活线'), life ? h('table', null, h('tbody', null,
           Row('家', life.homeSessionId || '还没有家'),
           Row('状态', statusLabel[life.status] || life.status),
-          Row('下次醒来', alarm ? local(alarm.at, zone) + '（还有 ' + remaining(alarm.at) + '，' + (sourceLabel[alarm.source] || alarm.source) + '）' : '没有待定闹钟'),
-          Row('留给自己', alarm && alarm.note ? '「' + alarm.note + '」' : '—'),
+          Row('下个闹钟', alarm ? local(alarm.at, zone) + '（还有 ' + remaining(alarm.at) + '，' + (sourceLabel[alarm.source] || alarm.source) + '）' : '没有待定闹钟'),
+          Row('说好在做', alarm && alarm.note ? '「' + alarm.note + '」' : '—'),
           Row('最近唤醒', wakes.length ? wakes.map(function (w) { return local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : ' · 准时') }).join('　') : '—')))
           : h('div', { className: 'bad' }, '生活线没有运行，原因见下面的健康')),
         h('section', null, h('h4', null, '健康'), health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'bad' }, '● ' + f) }) : h('div', { className: 'ok' }, '● 正常')),

@@ -27,7 +27,7 @@ function eventAt(session: Session, seq: SessionSeq) {
   return event;
 }
 
-export class SurfaceChangedError extends Error {}
+class SurfaceChangedError extends Error {}
 
 /** Everything after the system head through the newest cut that splits no tool call from its result. */
 export function selectWholeRange(session: Session, measurement: TokenMeasurement): { start: SessionSeq; end: SessionSeq } | null {

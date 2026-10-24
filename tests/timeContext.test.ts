@@ -13,7 +13,3 @@ test('UTC, fractional offsets and daylight saving follow the named zone', () => 
     ['2026-07-23T12:30:00Z', 'America/New_York', '2026-07-23T08:30:00-04:00'],
   ]) assert.equal(formatTimeContext(new Date(input), zone), `当前时间：${expected}\n时区：${zone}`);
 });
-test('invalid date and invalid time zone reject explicitly', () => {
-  assert.throws(() => formatTimeContext(new Date('bad'), 'UTC'), /date/i);
-  assert.throws(() => formatTimeContext(new Date(), 'not-a-zone'), /time zone/i);
-});

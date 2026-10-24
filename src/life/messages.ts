@@ -5,7 +5,7 @@ import { renderTemplate } from '../worldPrompt.ts';
 
 /** The alarm wording shipped with the plugin; a world's own `alarm.md` replaces it section by section. */
 export const DEFAULT_ALARM_FILE = fileURLToPath(new URL('../../templates/alarm.md', import.meta.url));
-export const MESSAGE_KEYS = ['第一次到家', '早上兜底', '闹钟响了', '晚到说明', '结尾提醒', 'plan_next 说明', 'check_alarm 说明', 'cancel_alarm 说明'] as const;
+export const MESSAGE_KEYS = ['第一次到家', '早上兜底', '闹钟响了', '晚到说明', '提前停下', '结尾提醒', 'plan_next 说明', 'check_alarm 说明', 'cancel_alarm 说明'] as const;
 export type MessageKey = typeof MESSAGE_KEYS[number];
 /** Marks her own alarm messages; the compaction instruction relies on it, so a template cannot drop it. */
 export const ALARM_MARK = '【你的时间】';

@@ -46,10 +46,7 @@ export function consoleSources(ctx: Context, config: WorldConfig, archive: Archi
       };
     }),
     activity: (day, outsideOnly) => store.activity(day).filter(record => !outsideOnly || record.outside).reverse(),
-    diaryDates: () => diary.dates(),
     diary: date => diary.read(date),
-    wakes: limit => store.wakes().slice(-limit).reverse(),
-    compactions: limit => store.compactions().slice(-limit).reverse(),
   };
 }
 /** The life line failed to start: the console still shows why, with memory and the diary, and no life state. */
@@ -63,9 +60,6 @@ export function degradedSources(config: WorldConfig, archive: ArchiveStore, diar
       compactions: [], diaryDates: diary.dates(), activityDays: [],
     })),
     activity: () => [],
-    diaryDates: () => diary.dates(),
     diary: date => diary.read(date),
-    wakes: () => [],
-    compactions: () => [],
   };
 }

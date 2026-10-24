@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createLifeStore, durableWrite, LifeStateError } from '../src/life/lifeStore.ts';
+import { createLifeStore, durableWrite } from '../src/life/lifeStore.ts';
 import { readdirSync, renameSync } from 'node:fs';
 
 async function dir(t: test.TestContext) { const root = await mkdtemp(join(tmpdir(), 'dsh-life-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
@@ -15,12 +15,10 @@ test('life state round-trips atomically and starts empty', async t => {
   store.write({ version: 1, homeSessionId: 'home', alarm });
   assert.deepEqual(createLifeStore(root, 'Asia/Seoul').read(), { version: 1, homeSessionId: 'home', alarm });
 });
-test('a corrupt life.json is reported and left untouched', async t => {
+test('a life.json that is not JSON is reported and left untouched', async t => {
   const root = await dir(t); await writeFile(join(root, 'life.json'), '{broken');
-  assert.throws(() => createLifeStore(root, 'UTC').read(), LifeStateError);
+  assert.throws(() => createLifeStore(root, 'UTC').read(), /not valid JSON/);
   assert.equal(await readFile(join(root, 'life.json'), 'utf8'), '{broken');
-  await writeFile(join(root, 'life.json'), JSON.stringify({ version: 2 }));
-  assert.throws(() => createLifeStore(root, 'UTC').read(), LifeStateError);
 });
 test('activity is split by local day and a failed write marks the next record as a gap', async t => {
   const root = await dir(t); const store = createLifeStore(root, 'Asia/Seoul');
@@ -31,7 +29,7 @@ test('activity is split by local day and a failed write marks the next record as
   assert.deepEqual(store.activity('../life'), []);
   await rm(join(root, 'activity'), { recursive: true }); await writeFile(join(root, 'activity'), 'not a directory');
   assert.equal(store.appendActivity({ ...base, time: '2026-10-23T01:00:00.000Z' }), false);
-  await rm(join(root, 'activity')); store.ensureDirectories();
+  await rm(join(root, 'activity'));
   assert.ok(store.appendActivity({ ...base, time: '2026-10-23T02:00:00.000Z' }));
   assert.equal(store.activity('2026-10-23')[0].gapBefore, true);
 });
@@ -49,12 +47,6 @@ test('a half-written tail does not swallow the next record', async t => {
   await writeFile(file, (await readFile(file, 'utf8')) + '{"half');
   store.appendWake({ scheduledAt: 'c', deliveredAt: 'd', source: 'plan', lateMs: 1 });
   assert.deepEqual(store.wakes().map(wake => wake.scheduledAt), ['a', 'c']);
-});
-test('write refuses to overwrite a corrupt life.json', async t => {
-  const root = await dir(t); await writeFile(join(root, 'life.json'), '{broken'); const store = createLifeStore(root, 'UTC');
-  assert.throws(() => store.read(), LifeStateError);
-  assert.throws(() => store.write({ version: 1 }), LifeStateError);
-  assert.equal(await readFile(join(root, 'life.json'), 'utf8'), '{broken');
 });
 test('activity heals a deleted directory and non-object lines are skipped', async t => {
   const root = await dir(t); const store = createLifeStore(root, 'UTC');

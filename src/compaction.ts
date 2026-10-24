@@ -3,7 +3,7 @@ import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-agent-loop';
 import { CompactionEngine, ManualCompactionError, isCompactCheckpointSource, type CompactionAgentContext, type CompactionResult, type CompactionTrigger, type ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
-import { BlockAssembler, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, contentHasImage, createUserMessage, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm';
+import { BlockAssembler, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, createUserMessage, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm';
 import { appendPluginRecord, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-token-meter';
 import { visibleText } from './archive.ts';
@@ -22,8 +22,7 @@ const summaryInstruction = [
 const leadEcho = /^以下是此前交流的摘要[^：:]{0,40}[：:]\s*/;
 const checkpointLead ='以下是此前交流的摘要，工具调用过程已省略；请把它当作已知背景，直接接着当前对话继续：';
 // Re-injected after every successful compaction by the memory runtime; replayed only as cacheable prefix.
-const injectedSources = new Set(['time-context', 'dsh-world-history', 'dsh-world-self']);
-const policyKeys = ['thresholdRatio', 'headroomTokens', 'summarizationProvider', 'summarizationModel', 'maxTokens', 'maxOverflowRetries'] as const;
+const injectedSources = new Set(['time-context', 'dsh-world-history']);
 
 interface SummaryAudit { policyVersion: 2; provider: string; model: string; maxTokens: number; instruction: string; timeContext: string; replayedMessageIds: string[] }
 declare module '@deepseek-ai/dsh-session/types' {
@@ -62,22 +61,12 @@ function routedTarget(session: Session): Target | undefined {
   return config?.provider && config.model ? { provider: config.provider, model: config.model } : undefined;
 }
 
-function resolvePolicy(config: ToolFreeCompactionConfig, label = 'dsh-world/compaction'): Policy {
-  const policy = {
+function resolvePolicy(config: ToolFreeCompactionConfig): Policy {
+  return {
     thresholdRatio: config.thresholdRatio ?? 0.9, headroomTokens: config.headroomTokens ?? 65536,
     summarizationProvider: config.summarizationProvider ?? '', summarizationModel: config.summarizationModel ?? '',
     maxTokens: config.maxTokens ?? config.headroomTokens ?? 65536, maxOverflowRetries: config.maxOverflowRetries ?? 1,
   };
-  if (!(policy.thresholdRatio > 0 && policy.thresholdRatio <= 1)) throw new Error(`${label}: thresholdRatio must be in (0, 1]`);
-  for (const key of ['headroomTokens', 'maxOverflowRetries'] as const) if (!Number.isInteger(policy[key]) || policy[key] < 0) throw new Error(`${label}: ${key} must be a non-negative integer`);
-  if (!Number.isInteger(policy.maxTokens) || policy.maxTokens <= 0) throw new Error(`${label}: maxTokens must be a positive integer`);
-  if (!policy.summarizationProvider !== !policy.summarizationModel) throw new Error(`${label}: summarizationProvider and summarizationModel must be set together`);
-  return policy;
-}
-
-function rejectRetention(source: Record<string, unknown>, label: string, allowed: readonly string[]): void {
-  if (source.retainRatio !== undefined || (source.retainTokens !== undefined && source.retainTokens !== 0)) throw new Error(`${label}: tool-free paragraph compaction summarizes the whole conversation; remove retainRatio/retainTokens`);
-  for (const key of Object.keys(source)) if (!allowed.includes(key) && key !== 'retainTokens') throw new Error(`${label}: unknown key "${key}"`);
 }
 
 /** Pressure failures specific to one routed model; warned once per target. */
@@ -96,8 +85,8 @@ export default class ToolFreeCompaction extends CompactionEngine {
   static Config = z.object({
     timeZone: z.string(), auto: z.boolean(),
     thresholdRatio: z.number(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(),
-    maxTokens: z.natural(), maxOverflowRetries: z.natural(), retainTokens: z.natural(), retainRatio: z.number(),
-    modelPolicies: z.array(z.object({ provider: z.string().required(), model: z.string().required(), thresholdRatio: z.number(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(), maxTokens: z.natural(), maxOverflowRetries: z.natural(), retainTokens: z.natural(), retainRatio: z.number() })),
+    maxTokens: z.natural(), maxOverflowRetries: z.natural(),
+    modelPolicies: z.array(z.object({ provider: z.string().required(), model: z.string().required(), thresholdRatio: z.number(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(), maxTokens: z.natural(), maxOverflowRetries: z.natural() })),
   });
   private readonly policy: Policy;
   private readonly overrides: (Policy & Target)[];
@@ -108,23 +97,14 @@ export default class ToolFreeCompaction extends CompactionEngine {
 
   constructor(ctx: Context, config: ToolFreeCompactionConfig = {}) {
     super(ctx);
-    const source = Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined)) as ToolFreeCompactionConfig & Record<string, unknown>;
-    rejectRetention(source, 'dsh-world/compaction', [...policyKeys, 'timeZone', 'auto', 'modelPolicies']);
+    const source = Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined)) as ToolFreeCompactionConfig;
     this.timeZone = source.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    formatTimeContext(new Date(), this.timeZone);
     this.policy = resolvePolicy(source);
-    const seen = new Set<string>();
-    this.overrides = (source.modelPolicies ?? []).map((override, index) => {
-      const label = `dsh-world/compaction: modelPolicies[${index}]`;
-      const entry = Object.fromEntries(Object.entries(override).filter(([, value]) => value !== undefined)) as typeof override & Record<string, unknown>;
-      rejectRetention(entry, label, [...policyKeys, 'provider', 'model']);
-      if (!entry.provider || !entry.model) throw new Error(`${label}: provider and model are required`);
-      const key = `${entry.provider}\u0000${entry.model}`;
-      if (seen.has(key)) throw new Error(`${label}: duplicate policy for ${entry.provider}/${entry.model}`);
-      seen.add(key);
+    this.overrides = (source.modelPolicies ?? []).map(override => {
+      const entry = Object.fromEntries(Object.entries(override).filter(([, value]) => value !== undefined)) as typeof override;
       const merged: ToolFreeCompactionConfig = { ...this.policy, ...entry };
       if (entry.maxTokens === undefined && entry.headroomTokens !== undefined && source.maxTokens === undefined) merged.maxTokens = entry.headroomTokens;
-      return { ...resolvePolicy(merged, label), provider: entry.provider, model: entry.model };
+      return { ...resolvePolicy(merged), provider: entry.provider, model: entry.model };
     });
     if (source.auto ?? true) this.registerAutomaticCompaction();
   }
@@ -246,39 +226,35 @@ export default class ToolFreeCompaction extends CompactionEngine {
   }
 
   protected async summarize(messages: Message[], agent: RegionAgent, signal?: AbortSignal): Promise<SummaryResult> {
-    try {
-      signal?.throwIfAborted();
-      const routed = routedTarget(agent.session) ?? (agent.options.provider && agent.options.model ? { provider: agent.options.provider, model: agent.options.model } : undefined);
-      const policy = this.policyFor(routed);
-      const provider = policy.summarizationProvider || routed?.provider;
-      const model = policy.summarizationModel || routed?.model;
-      const { maxTokens } = policy;
-      if (!provider || !model) throw new Error('dsh-world: no provider/model configured for compaction');
-      const replayed = toolFreeMessages(messages);
-      if (!hasConversation(replayed)) throw new Error('dsh-world: no visible conversation remains to summarize');
-      const { session } = agent;
-      const head = session.surface.nodes[0] === undefined ? undefined : session.eventAt(session.surface.nodes[0]);
-      const system = head?.type === 'system/message' ? session.deriveEventMessage(head) : null;
-      const header = session.requestHeader();
-      const timeContext = formatTimeContext(new Date(), this.timeZone);
-      appendPluginRecord(session, 'plugin:dsh-world/compaction-request', { policyVersion: 2, provider, model, maxTokens, instruction: summaryInstruction, timeContext, replayedMessageIds: replayed.map(message => message.id) });
-      await this.ctx.sessions.flush(session);
-      const request = [
-        ...(system ? [system] : []), ...replayed,
-        createUserMessage({ source: { kind: 'dsh-world-summary-input' }, content: [{ type: 'text', text: `${summaryInstruction}\n\n${timeContext}` }] }),
-      ];
-      const assembler = new BlockAssembler();
-      for await (const chunk of this.ctx.llm.stream({ provider, model, maxTokens, messages: request, ...(header?.tools === undefined ? {} : { tools: [...header.tools] }), toolHistory: session.toolHistory(), sessionId: session.id, purpose: 'compaction', ...(signal === undefined ? {} : { signal }) })) assembler.push(chunk);
-      signal?.throwIfAborted();
-      const finish = assembler.finish;
-      if (finish.kind === 'error' || finish.kind === 'aborted') throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
-      if (finish.kind !== 'stop') throw new Error(`dsh-world: compaction summary truncated or invalid (${finish.kind})`);
-      const rawOutput: ContentBlock[] = assembler.blocks();
-      if (rawOutput.some(block => block.type === 'tool-call')) throw new Error('dsh-world: summarizer returned an unexpected tool call');
-      if (contentHasImage(rawOutput)) throw new Error('dsh-world: summarizer returned image output');
-      const text = rawOutput.flatMap(block => block.type === 'text' ? [block.text.trim()] : []).join(' ').replace(/\s*\r?\n\s*/g, ' ').trim().replace(leadEcho, '').trim();
-      if (!text) throw new Error('dsh-world: summarizer returned no paragraph');
-      return { summary: [{ type: 'text', text }], rawOutput, provider, model, maxTokens, ...(assembler.usage ? { usage: assembler.usage } : {}) };
-    } catch (error) { this.ctx.logger.error(error); throw error; }
+    signal?.throwIfAborted();
+    const routed = routedTarget(agent.session) ?? (agent.options.provider && agent.options.model ? { provider: agent.options.provider, model: agent.options.model } : undefined);
+    const policy = this.policyFor(routed);
+    const provider = policy.summarizationProvider || routed?.provider;
+    const model = policy.summarizationModel || routed?.model;
+    const { maxTokens } = policy;
+    if (!provider || !model) throw new Error('dsh-world: no provider/model configured for compaction');
+    const replayed = toolFreeMessages(messages);
+    if (!hasConversation(replayed)) throw new Error('dsh-world: no visible conversation remains to summarize');
+    const { session } = agent;
+    const head = session.surface.nodes[0] === undefined ? undefined : session.eventAt(session.surface.nodes[0]);
+    const system = head?.type === 'system/message' ? session.deriveEventMessage(head) : null;
+    const header = session.requestHeader();
+    const timeContext = formatTimeContext(new Date(), this.timeZone);
+    appendPluginRecord(session, 'plugin:dsh-world/compaction-request', { policyVersion: 2, provider, model, maxTokens, instruction: summaryInstruction, timeContext, replayedMessageIds: replayed.map(message => message.id) });
+    await this.ctx.sessions.flush(session);
+    const request = [
+      ...(system ? [system] : []), ...replayed,
+      createUserMessage({ source: { kind: 'dsh-world-summary-input' }, content: [{ type: 'text', text: `${summaryInstruction}\n\n${timeContext}` }] }),
+    ];
+    const assembler = new BlockAssembler();
+    for await (const chunk of this.ctx.llm.stream({ provider, model, maxTokens, messages: request, ...(header?.tools === undefined ? {} : { tools: [...header.tools] }), toolHistory: session.toolHistory(), sessionId: session.id, purpose: 'compaction', ...(signal === undefined ? {} : { signal }) })) assembler.push(chunk);
+    signal?.throwIfAborted();
+    const finish = assembler.finish;
+    if (finish.kind === 'error' || finish.kind === 'aborted') throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
+    if (finish.kind !== 'stop') throw new Error(`dsh-world: compaction summary truncated or invalid (${finish.kind})`);
+    const rawOutput: ContentBlock[] = assembler.blocks();
+    const text = rawOutput.flatMap(block => block.type === 'text' ? [block.text.trim()] : []).join(' ').replace(/\s*\r?\n\s*/g, ' ').trim().replace(leadEcho, '').trim();
+    if (!text) throw new Error('dsh-world: summarizer returned no paragraph');
+    return { summary: [{ type: 'text', text }], rawOutput, provider, model, maxTokens, ...(assembler.usage ? { usage: assembler.usage } : {}) };
   }
 }

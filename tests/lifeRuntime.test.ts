@@ -143,15 +143,55 @@ test('plan_next sets the alarm and the alarm wakes her with her own note', async
   await s.start();
   assert.equal(s.life.snapshot().alarm?.at, '2026-10-23T04:30:00.000Z');
   s.timers.advance(90 * 60_000); await s.idle();
-  assert.match(textOf(s.requests.at(-1)!), /闹钟响了。你定在 2026-10-23T13:30:00\+09:00，你留给自己的话：「去写日记」/);
+  assert.match(textOf(s.requests.at(-1)!), /2026-10-23T13:30:00\+09:00 到了，这是你说好做到的时间：「去写日记」/);
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first', 'plan']);
+});
+test('a home turn that stops well before her own alarm asks once whether she is done; the alarm still rings', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }) : textResponse('嗯'));
+  await s.start();
+  assert.equal(s.requests.length, 3, 'the first turn (two steps), then one question');
+  assert.match(textOf(s.requests[2]!), /【你的时间】你说好做到 2026-10-23T13:30:00\+09:00（「看视频」），现在才 2026-10-23T12:00:00\+09:00，这一轮就停了。/);
+  assert.equal(s.store.read().alarm?.nudged, true, 'asked is remembered across restarts');
+  s.timers.advance(90 * 60_000); await s.idle();
+  assert.equal(s.requests.length, 4);
+  assert.match(textOf(s.requests[3]!), /说好做到的时间：「看视频」/);
+});
+test('the turn the question started never asks again, even with a new alarm, so nothing loops', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }, 'a')
+    : index === 2 ? toolCall('plan_next', { after_minutes: 60, note: '写日记' }, 'b') : textResponse('嗯'));
+  await s.start();
+  assert.equal(s.requests.length, 4);
+  assert.deepEqual(s.alarm(), { at: '2026-10-23T04:00:00.000Z', source: 'plan' });
+});
+test('no question when her alarm is close, after her partner spoke, or when the turn was stopped', async t => {
+  const close = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 5, note: '收尾' }) : textResponse('嗯'));
+  await close.start();
+  assert.equal(close.requests.length, 2);
+
+  const chat = await setup(t, () => textResponse('嗯'));
+  await chat.start();
+  chat.life.planNext({ after_minutes: 60 }, '看书');
+  const home = chat.ctx.agents.get(SessionId(chat.life.snapshot().homeSessionId!))!;
+  home.followup(userMessage('在吗')); await chat.idle();
+  assert.equal(chat.requests.length, 2, 'a pause in talking with her partner is not stopping early');
+  assert.equal(chat.store.read().alarm?.nudged, undefined, 'so a later early stop is still asked about');
+
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const playing = new Promise<void>(resolve => { entered = resolve; });
+  const stopped = await setup(t, (_request, index) => index === 0 ? toolCall('play_game', {}) : textResponse('嗯'));
+  stopped.ctx.tools.register(testTool('play_game', async () => { entered(); await gate; return 'played'; }));
+  await stopped.life.start(); stopped.timers.advance(0); await playing; await stopped.life.settled();
+  stopped.life.planNext({ after_minutes: 60 }, '玩游戏');
+  const playingHome = stopped.ctx.agents.get(SessionId(stopped.life.snapshot().homeSessionId!))!;
+  playingHome.cancel({ kind: 'user' }); release(); await stopped.idle();
+  assert.equal(stopped.requests.length, 1);
 });
 test('a home turn that ends without an alarm gets the fallback alarm', async t => {
   const s = await setup(t, () => textResponse('发会儿呆'));
   await s.start();
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
   s.timers.advance(21 * 3_600_000); await s.idle();
-  assert.match(textOf(s.requests.at(-1)!), /没定下一次闹钟/);
+  assert.match(textOf(s.requests.at(-1)!), /没说接下来做什么/);
 });
 test('a partner turn in the home does not consume the pending alarm', async t => {
   const s = await setup(t, () => textResponse('嗯'));
@@ -161,7 +201,7 @@ test('a partner turn in the home does not consume the pending alarm', async t =>
   home.followup(userMessage('在吗')); await s.idle();
   assert.equal(s.requests.length, 2); assert.deepEqual(s.life.snapshot().alarm, pending);
   s.timers.advance(21 * 3_600_000); await s.idle();
-  assert.equal(s.requests.length, 3); assert.match(textOf(s.requests[2]), /没定下一次闹钟/);
+  assert.equal(s.requests.length, 3); assert.match(textOf(s.requests[2]), /没说接下来做什么/);
 });
 test('while she is busy, the alarm and her partner\'s message both enter the running turn', async t => {
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
@@ -176,7 +216,7 @@ test('while she is busy, the alarm and her partner\'s message both enter the run
   home.followup(userMessage('在玩什么'));
   release(); await s.idle();
   assert.equal(s.requests.length, 2, 'both arrived inside the same turn, at the next step');
-  assert.match(textOf(s.requests[1]), /你留给自己的话：「收工」/); assert.match(textOf(s.requests[1]), /在玩什么/);
+  assert.match(textOf(s.requests[1]), /说好做到的时间：「收工」/); assert.match(textOf(s.requests[1]), /在玩什么/);
 });
 test('an archived home is replaced, keeps the pending alarm, and the old home loses reach_out', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 30, note: '看书' }) : textResponse('嗯'));
@@ -206,7 +246,7 @@ test('a restart with an idle home and no pending alarm sets the fallback alarm, 
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
   assert.equal(s.store.read().alarm?.source, 'fallback');
   s.timers.advance(21 * 3_600_000); await s.idle();
-  assert.equal(s.requests.length, 1); assert.match(textOf(s.requests[0]), /没定下一次闹钟/);
+  assert.equal(s.requests.length, 1); assert.match(textOf(s.requests[0]), /没说接下来做什么/);
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['fallback']);
 });
 test('a rebuilt home with no pending alarm gets a first wake', async t => {
@@ -221,7 +261,7 @@ test('an alarm that came due while the app was closed is delivered late with the
     await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, alarm: { at: '2026-10-23T00:00:00.000Z', note: '早安', setAt: '2026-10-22T15:00:00.000Z', source: 'plan' } }));
   } });
   await s.start();
-  assert.match(textOf(s.requests[0]), /「早安」。（晚了 3 小时/);
+  assert.match(textOf(s.requests[0]), /「早安」。[^\n]*（晚了 3 小时/);
   assert.equal(s.store.wakes()[0].lateMs, 3 * 3_600_000);
 });
 test('timers run in short segments, so a wall-clock jump still delivers the alarm', async t => {
@@ -274,7 +314,7 @@ test('plan_next without a pending alarm keeps the plain text', async t => {
   s.ctx.tools.register(testTool('play_game', async () => { entered(); await gate; return 'played'; }));
   await s.life.start(); s.timers.advance(0); await playing; await s.life.settled();
   assert.equal(s.alarm(), undefined);
-  assert.equal(s.life.planNext({ after_minutes: 30 }, '看书'), '好，闹钟定在 2026-10-23T12:30:00+09:00。');
+  assert.equal(s.life.planNext({ after_minutes: 30 }, '看书'), '好，到 2026-10-23T12:30:00+09:00 提醒你。');
   release(); await s.idle();
 });
 test('plan_next says what it replaced, and the old note with it', async t => {
@@ -282,19 +322,20 @@ test('plan_next says what it replaced, and the old note with it', async t => {
   await s.start();
   assert.equal(s.alarm()?.source, 'fallback');
   // The plugin's own fallback is not her plan, so replacing it is not worth mentioning.
-  assert.equal(s.life.planNext({ after_minutes: 30 }, ''), '好，闹钟定在 2026-10-23T12:30:00+09:00。');
-  assert.equal(s.life.planNext({ after_minutes: 20 }, '看下一课'), '好，闹钟定在 2026-10-23T12:20:00+09:00。（替换了原来 2026-10-23T12:30:00+09:00 的闹钟。）');
-  assert.equal(s.life.planNext({ after_minutes: 10 }, '只列检查'), '好，闹钟定在 2026-10-23T12:10:00+09:00。（替换了原来 2026-10-23T12:20:00+09:00 的闹钟，那条留言是：「看下一课」。要保留里面的安排，就写进新留言。）');
+  assert.equal(s.life.planNext({ after_minutes: 30 }, ''), '好，到 2026-10-23T12:30:00+09:00 提醒你。');
+  assert.equal(s.life.planNext({ after_minutes: 20 }, '看下一课'), '好，到 2026-10-23T12:20:00+09:00 提醒你。（替换了原来做到 2026-10-23T12:30:00+09:00 的安排。）');
+  assert.equal(s.life.planNext({ after_minutes: 10 }, '只列检查'), '好，到 2026-10-23T12:10:00+09:00 提醒你。（替换了原来做到 2026-10-23T12:20:00+09:00 的安排：「看下一课」。还想留着里面的事，就写进新的 note。）');
 });
 test('a new alarm clears the retry fault; one that cannot be saved is a fault but still rings', async t => {
   const { held, patch } = holdResolve(2);
-  const s = await setup(t, () => textResponse('嗯'), { host: patch });
+  let failWrites = false;
+  const s = await setup(t, () => textResponse('嗯'), { host: patch, store: store => ({ ...store, write: state => { if (failWrites) throw new Error('disk full'); store.write(state); } }) });
   await s.life.start(); s.timers.advance(0); held.fail!(new Error('home is busy')); await s.life.settled();
   assert.ok(s.faults().some(fault => fault.includes('分钟后重试')));
   s.life.planNext({ after_minutes: 10 }, '再来');
   assert.ok(!s.faults().some(fault => fault.includes('分钟后重试')));
-  await writeFile(join(s.worldDir, 'life.json'), '{ torn'); assert.throws(() => s.store.read());
-  assert.throws(() => s.life.planNext({ after_minutes: 20 }, '存不下'), /corrupt/);
+  failWrites = true;
+  assert.throws(() => s.life.planNext({ after_minutes: 20 }, '存不下'), /disk full/);
   assert.ok(s.faults().some(fault => fault.startsWith('闹钟没能保存：')));
   s.timers.advance(20 * 60_000); await s.idle();
   assert.match(textOf(s.requests.at(-1)!), /「存不下」/);
@@ -315,18 +356,22 @@ test('an alarm that was steered counts as delivered even when recording it fails
   assert.equal(s.requests.length, 2, 'not retried');
 });
 test('a fallback alarm that cannot be saved becomes a fault instead of breaking the turn', async t => {
-  const s = await setup(t, () => textResponse('嗯'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0' })); } });
+  let failWrites = false;
+  const s = await setup(t, () => textResponse('嗯'), {
+    before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0' })); },
+    store: store => ({ ...store, write: state => { if (failWrites) throw new Error('disk full'); store.write(state); } }),
+  });
   await createAgent(s.ctx, 'home-0');
   await s.start();
   assert.equal(s.life.snapshot().alarm?.source, 'fallback');
-  await writeFile(join(s.worldDir, 'life.json'), '{ torn'); assert.throws(() => s.store.read());
+  failWrites = true;
   s.timers.advance(21 * 3_600_000); await s.idle();
   assert.deepEqual(s.errors, []); assert.equal(s.requests.length, 1);
   assert.ok(s.faults().some(fault => fault.startsWith('断线保护闹钟没能保存：')));
   assert.equal(s.life.snapshot().alarm?.source, 'fallback');
   s.timers.advance(24 * 3_600_000); await s.idle();
   assert.equal(s.requests.length, 2);
-  assert.match(textOf(s.requests.at(-1)!), /没定下一次闹钟/, 'the unsaved fallback still rings in this run');
+  assert.match(textOf(s.requests.at(-1)!), /没说接下来做什么/, 'the unsaved fallback still rings in this run');
 });
 test('a failing rename is a fault, and a failing full-access grant retries on the same session', async t => {
   // The rename on creation and the one after the first turn both fail; the next resolve tries again.
@@ -359,11 +404,10 @@ test('a reloaded runtime replaces the old registrations instead of stacking them
   assert.equal(count(toolNames(s.requests.at(-1)!), 'plan_next'), 1); assert.equal(count(toolNames(s.requests.at(-1)!), 'reach_out'), 0); assert.equal(count(toolNames(s.requests.at(-1)!), 'read_diary'), 0);
   assert.deepEqual(s.errors, []);
 });
-test('stop ends the life line: no delivery after it, plan_next refuses, and start runs once', async t => {
+test('stop ends the life line: no delivery after it, and plan_next refuses', async t => {
   const { held, patch } = holdResolve(2);
   const s = await setup(t, () => textResponse('嗯'), { host: patch });
   await s.life.start();
-  await assert.rejects(s.life.start(), /already started/);
   s.timers.advance(0);
   s.life.stop(); held.release!(); await s.idle();
   assert.equal(s.requests.length, 0); assert.equal(s.store.wakes().length, 0);
@@ -429,8 +473,8 @@ test('check_alarm tells her what is next; cancel_alarm puts her own alarm back t
   assert.ok(['check_alarm', 'cancel_alarm'].every(name => toolNames(s.requests[0]!).includes(name)));
   assert.equal(s.life.checkAlarm(), '你现在没有自己定的闹钟。下一次会在 2026-10-24T09:00:00+09:00（还有 21 小时）按平常的时间叫你。');
   s.life.planNext({ after_minutes: 90 }, '看 B 站');
-  assert.equal(s.life.checkAlarm(), '下一次闹钟在 2026-10-23T13:30:00+09:00（还有 1 小时 30 分），是你自己定的，留言是：「看 B 站」。');
-  assert.equal(s.life.cancelAlarm(), '好，取消了 2026-10-23T13:30:00+09:00 的闹钟，那条留言是：「看 B 站」。不另定的话，会在 2026-10-24T09:00:00+09:00 按平常的时间叫你。');
+  assert.equal(s.life.checkAlarm(), '你说好做「看 B 站」做到 2026-10-23T13:30:00+09:00（还有 1 小时 30 分）。');
+  assert.equal(s.life.cancelAlarm(), '好，取消了做到 2026-10-23T13:30:00+09:00 的安排：「看 B 站」。不另定的话，就休息到 2026-10-24T09:00:00+09:00。');
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
   assert.equal(s.life.cancelAlarm(), '现在没有你自己定的闹钟，不用取消。下一次会在 2026-10-24T09:00:00+09:00 按平常的时间叫你。');
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
@@ -438,7 +482,7 @@ test('check_alarm tells her what is next; cancel_alarm puts her own alarm back t
 test('a world alarm.md shapes the wake messages and the tool descriptions; an unreadable one is a fault and the shipped wording is used', async t => {
   const s = await setup(t, () => textResponse('嗯'), { before: dir => writeFile(join(dir, 'alarm.md'), '## 第一次到家\n你好呀{{name}}，{{partner}}给你搭了个家。\n## plan_next 说明\n自己定的说明，例如 {{example}}\n') });
   await s.start();
-  assert.match(textOf(s.requests[0]!), /【你的时间】你好呀鲸鲸，伙伴给你搭了个家。\n这段做完，记得用 plan_next 定下一次/);
+  assert.match(textOf(s.requests[0]!), /【你的时间】你好呀鲸鲸，伙伴给你搭了个家。\n接下来想做什么，用 plan_next 说好做到几点/);
   assert.equal(s.requests[0]!.tools?.find(tool => tool.name === 'plan_next')?.description, '自己定的说明，例如 2026-10-23T21:00:00+09:00');
   assert.ok(!s.faults().some(fault => fault.includes('闹钟模板')));
 
@@ -463,6 +507,6 @@ test('an alarm set from a chat session rings at home, not in the chat', async t 
   const home = s.life.snapshot().homeSessionId!;
   const rung = s.requests.slice(before).filter(request => sessionOf(request) === home);
   assert.equal(rung.length, 1);
-  assert.match(textOf(rung[0]!), /【你的时间】闹钟响了。你定在 [^，]+，你留给自己的话：「提醒伙伴喝水」/);
+  assert.match(textOf(rung[0]!), /【你的时间】[^ ]+ 到了，这是你说好做到的时间：「提醒伙伴喝水」/);
   assert.ok(!s.requests.slice(before).some(request => sessionOf(request) === 'chat'));
 });

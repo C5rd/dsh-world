@@ -6,18 +6,15 @@ import { consoleRoute, handleConsole, type ConsoleSources } from '../src/console
 const sources: ConsoleSources = {
   snapshot: async () => ({ worldId: 'jingjing' }),
   activity: (day, outsideOnly) => [{ day, outsideOnly }],
-  diaryDates: () => ['2026-10-23'],
   diary: date => date === '2026-10-23' ? '他去上班了。' : undefined,
-  wakes: limit => [{ limit }],
-  compactions: limit => [{ limit }],
 };
 test('console routes are read-only JSON views', async () => {
   assert.deepEqual(await handleConsole(sources, 'GET', '/dsh-world/console/snapshot'), { status: 200, body: { worldId: 'jingjing' } });
   assert.deepEqual(await handleConsole(sources, 'GET', '/dsh-world/console/activity?day=2026-10-23&outside=1'), { status: 200, body: [{ day: '2026-10-23', outsideOnly: true }] });
-  assert.deepEqual(await handleConsole(sources, 'GET', '/dsh-world/console/diary'), { status: 200, body: { dates: ['2026-10-23'] } });
+  assert.equal((await handleConsole(sources, 'GET', '/dsh-world/console/diary')).status, 404);
   assert.deepEqual(await handleConsole(sources, 'GET', '/dsh-world/console/diary?date=2026-10-23'), { status: 200, body: { date: '2026-10-23', text: '他去上班了。' } });
   assert.equal((await handleConsole(sources, 'GET', '/dsh-world/console/diary?date=2026-01-01')).status, 404);
-  assert.deepEqual(await handleConsole(sources, 'GET', '/dsh-world/console/wakes?limit=999'), { status: 200, body: [{ limit: 200 }] });
+  assert.equal((await handleConsole(sources, 'GET', '/dsh-world/console/wakes')).status, 404);
   assert.equal((await handleConsole(sources, 'POST', '/dsh-world/console/snapshot')).status, 405);
   assert.equal((await handleConsole(sources, 'GET', '/dsh-world/console/nope')).status, 404);
 });
@@ -31,8 +28,6 @@ test('token estimate counts CJK punctuation and fullwidth forms as CJK', () => {
 test('handleConsole edge cases', async () => {
   assert.equal((await handleConsole(sources, 'GET', '/dsh-worldX/console/snapshot')).status, 404);
   assert.equal((await handleConsole(sources, 'GET', '/other')).status, 404);
-  for (const limit of ['0', '-5', 'abc', '']) assert.deepEqual((await handleConsole(sources, 'GET', '/dsh-world/console/wakes?limit=' + limit)).body, [{ limit: 20 }]);
-  assert.deepEqual((await handleConsole(sources, 'GET', '/dsh-world/console/wakes?limit=7')).body, [{ limit: 7 }]);
   assert.equal((await handleConsole(sources, 'GET', '/dsh-world/console/diary?date=../x')).status, 404);
   assert.deepEqual((await handleConsole(sources, 'POST', '/dsh-world/console/snapshot')).headers, { allow: 'GET' });
 });
@@ -63,7 +58,7 @@ test('consoleRoute hides errors behind a generic 500', async () => {
   const out = await run({ ...sources, snapshot: async () => { throw new Error('secret C:\path'); } }, { url: '/dsh-world/console/snapshot' });
   assert.equal(out.status, 500);
   assert.deepEqual(JSON.parse(out.body!), { error: 'internal error' });
-  const sync = await run({ ...sources, wakes: () => { throw new Error('boom'); } }, { url: '/dsh-world/console/wakes' });
+  const sync = await run({ ...sources, diary: () => { throw new Error('boom'); } }, { url: '/dsh-world/console/diary?date=2026-10-23' });
   assert.equal(sync.body, '{"error":"internal error"}');
 });
 test('consoleRoute 405 carries Allow: GET', async () => {

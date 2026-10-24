@@ -8,7 +8,6 @@ function newestFirst(a: ConversationTurn, b: ConversationTurn): number {
 }
 export function createHistory(store: ArchiveReader) {
   async function loadRecentTurns(worldId: string, count: number): Promise<ConversationTurn[]> {
-    if (!Number.isSafeInteger(count) || count < 1) throw new RangeError('dsh-world: invalid turn count');
     const candidates = new Map<string, ConversationTurn>();
     const visited = new Set<string>();
     let before: ArchiveCursor | undefined;
@@ -54,9 +53,9 @@ export function shortenLocalImages(content: string): string {
 /**
  * Model-facing memory: one JSON line per turn with only the conversation marker and, per message, role,
  * local time and text. Archive identifiers stay in the archive; times are stored in UTC and rendered in
- * the configured zone.
+ * the configured zone. Her own messages are labelled with her name, so the memory reads as hers rather than a
+ * generic assistant's.
  */
-/** Her own messages are labelled with her name, so the memory reads as hers rather than a generic assistant's. */
 export function renderHistory(turns: readonly ConversationTurn[], timeZone: string, names: WorldNames): string {
   const selfName = names.companion;
   if (!turns.length) return '';
