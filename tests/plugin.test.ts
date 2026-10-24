@@ -306,12 +306,15 @@ async function firstWakeDone(ctx: Context, root: string): Promise<{ homeSessionI
   for (const agent of ctx.agents.list()) await agent.whenIdle();
   return JSON.parse(await readFile(join(root, 'worlds/fish/life.json'), 'utf8'));
 }
-test('life stays off by default and starts once its host services exist', async t => {
+test('life is on by default, waits for its host services, and stays off when turned off', async t => {
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
   isolateHome(t, root);
-  const off = ctx.plugin(worldPlugin, config); await off.await(); await off.dispose();
-  assert.equal((await readdir(join(root, 'worlds/fish'))).includes('life.json'), false);
+  const waiting = ctx.plugin(worldPlugin, config); await waiting.await(); await waiting.dispose();
+  assert.equal((await readdir(join(root, 'worlds/fish'))).includes('life.json'), false, 'no desktop host services, no life line');
   const { routes, unregistered } = provideLifeHost(ctx);
+  const off = ctx.plugin(worldPlugin, { ...config, life: false }); await off.await(); await off.dispose();
+  assert.equal((await readdir(join(root, 'worlds/fish'))).includes('life.json'), false, 'turned off, even with the host services');
+  assert.equal(routes.length, 0);
   const logged = captureErrors(ctx);
   const on = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => on.dispose()); await on.await();
   await until(async () => (await readdir(join(root, 'worlds/fish'))).includes('life.json'), 'life.json');

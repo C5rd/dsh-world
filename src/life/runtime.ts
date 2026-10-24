@@ -8,7 +8,7 @@ import { errorText, Faults } from '../faults.ts';
 import { belongsToWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
 import { homeTitle, worldNames } from '../worldPrompt.ts';
-import { cancelReply, checkReply, earlyStopText, nextLocalTime, planReply, resolveAlarmTime, wakeText } from './alarm.ts';
+import { arrivalText, cancelReply, checkReply, earlyStopText, nextLocalTime, planReply, resolveAlarmTime, wakeText } from './alarm.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
 import { createHome } from './home.ts';
@@ -56,7 +56,8 @@ export function createLifeRuntime(deps: LifeDeps) {
   };
 
   // Her alarm.
-  const timer = createAlarmTimer({ clock, timers: deps.timers ?? realTimers, dueAlarm: () => state.alarm?.at, fire: () => void deliver() });
+  // A new home's greeting goes first; then her alarm.
+  const timer = createAlarmTimer({ clock, timers: deps.timers ?? realTimers, dueAlarm: () => state.arrival ?? state.alarm?.at, fire: () => void deliver() });
   const morning = (now: Date): Alarm => ({ at: nextLocalTime(now, options.fallbackWakeTime, timeZone).toISOString(), note: '', setAt: now.toISOString(), source: 'fallback' });
   /** A new alarm replaces a failing one, so its backoff and fault go with it. Saved or not, it is armed. */
   function setAlarm(alarm: Alarm): void {
@@ -68,7 +69,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   }
   /** Nothing pending means resting until the next morning. Unsaved, it still rings while the app keeps running. */
   function fallbackAlarm(): void {
-    if (state.alarm || stopped) return;
+    if (state.alarm || state.arrival || stopped) return;
     try { setAlarm(morning(clock())); }
     catch (error) { faults.set('alarm', `断线保护闹钟没能保存：${errorText(error)}`); ctx.logger.error(error); }
   }
@@ -91,8 +92,34 @@ export function createLifeRuntime(deps: LifeDeps) {
 
   // Delivery: one at a time; a failure backs off, and a newer alarm keeps its own time.
   function deliver(): Promise<void> {
-    if (stopped || !state.alarm) return delivery ?? Promise.resolve();
-    return delivery ??= send(state.alarm).finally(() => { delivery = undefined; });
+    if (stopped || (!state.arrival && !state.alarm)) return delivery ?? Promise.resolve();
+    return delivery ??= (state.arrival ? greet(state.arrival) : send(state.alarm!)).finally(() => { delivery = undefined; });
+  }
+  /** A new home's first words, so it has a turn (the host lists no session without one) and she knows she moved. */
+  async function greet(since: string): Promise<void> {
+    let now = clock();
+    try {
+      const agent = await home.open();
+      if (stopped) return;
+      delete state.arrival;
+      now = clock();
+      earlyStop.startsOwnTurn();
+      await say(agent, arrivalText(timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+    } catch (error) {
+      ctx.logger.error(error);
+      if (stopped) return;
+      earlyStop.ownTurnFailed();
+      state.arrival ??= since;
+      faults.set('delivery', `新家的第一句话没送到，${timer.failed()} 分钟后重试：${errorText(error)}`);
+      return;
+    }
+    if (stopped) return;
+    faults.clear('delivery', 'home');
+    record(() => {
+      store.write(state);
+      store.appendWake({ scheduledAt: since, deliveredAt: now.toISOString(), source: 'first', lateMs: Math.max(0, now.getTime() - Date.parse(since)) });
+    });
+    timer.reset();
   }
   async function send(alarm: Alarm): Promise<void> {
     let now = clock();
@@ -130,9 +157,9 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (!earlyStop.turnEnded(completed, alarm, now) || stopped) return;
     alarm.nudged = true;
     record(() => store.write(state));
-    earlyStop.asking();
+    earlyStop.startsOwnTurn();
     const text = earlyStopText(alarm, now, timeZone, alarmMessages(), templateValues());
-    void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.notAsked(); ctx.logger.error(error); });
+    void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
   }
 
   // Her tools and her home.
@@ -149,10 +176,10 @@ export function createLifeRuntime(deps: LifeDeps) {
   const home = createHome({
     host, roomDir: options.roomDir, agentPreset: config.agentPreset, title: homeTitle(names), faults, logger: ctx.logger,
     current: () => state.homeSessionId,
+    // A new home greets her at once (the pending alarm moves in too and rings at its own time).
     moveIn(sessionId) {
       state.homeSessionId = sessionId;
-      // A new home with nothing pending starts with a first wake.
-      state.alarm ??= { at: clock().toISOString(), note: '', setAt: clock().toISOString(), source: 'first' };
+      state.arrival = clock().toISOString();
       tools.releaseOldHomes();
       store.write(state);
     },

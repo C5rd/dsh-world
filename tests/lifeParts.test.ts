@@ -40,6 +40,6 @@ test('the early-stop watch asks about a quiet, completed turn well before her ow
   assert.equal(watch.turnEnded(true, { ...plan, source: 'fallback' }, now), false, 'not her own alarm');
   watch.partnerSpoke(); assert.equal(watch.turnEnded(true, plan, now), false, 'a conversation pausing');
   assert.equal(watch.turnEnded(true, plan, now), true, 'the mark lasts one turn');
-  watch.asking(); assert.equal(watch.turnEnded(true, plan, now), false, 'the turn the question started');
-  watch.asking(); watch.notAsked(); assert.equal(watch.turnEnded(true, plan, now), true, 'a question that never arrived starts no turn');
+  watch.startsOwnTurn(); assert.equal(watch.turnEnded(true, plan, now), false, 'a turn the plugin started itself');
+  watch.startsOwnTurn(); watch.ownTurnFailed(); assert.equal(watch.turnEnded(true, plan, now), true, 'a message that never arrived starts no turn');
 });

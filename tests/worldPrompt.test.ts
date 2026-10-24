@@ -123,6 +123,24 @@ test('every world session carries the world prompt in its system prompt; templat
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
+test('archiveScope home: only her home is archived, and every world session still gets the memory block', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
+  const store = createArchiveStore({ ...config, root });
+  await store.commitRecords([record('seed', { content: 'earlier memory' })]);
+  const world = createWorldRuntime(ctx, { ...config, archiveScope: 'home' }, store, { prompt: { file: join(root, 'none.md'), names, life }, isHome: id => id === 'home' });
+  await world.start(); cleanup.push(() => world.stop());
+  const home = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  home.agent.followup(user('said at home')); await home.agent.whenIdle();
+  const chat = await ctx.agents.create({ sessionId: SessionId('chat'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  chat.agent.followup(user('said in a chat window')); await chat.agent.whenIdle();
+  assert.match(textOf(requests.at(-1)!.messages), /said at home[\s\S]*earlier memory/, 'a chat window remembers what happened at home, newest first');
+  await world.flush();
+  const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(r => r.content);
+  assert.ok(archived.includes('said at home') && !archived.includes('said in a chat window'), archived.join('|'));
+  assert.deepEqual(store.sourcePage(), ['home'], 'a chat window leaves no trace in the archive');
+  assert.equal(errors.length, 0);
+});
 test('without her own template the shipped one is used, and a session that is not the home is told where its world line lives', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });

@@ -24,12 +24,13 @@ export const inject = ['agents', 'sessions', 'sessionPersistence', 'llm'];
 /** What `apply` receives: the schema below fills these defaults. */
 export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast'>>;
 // One companion per profile is the usual case, so it works as installed: the standard preset, a world named
-// default and the system time zone. The life line (a home with full access) stays opt-in.
+// default and the system time zone, with the life line on (it needs the desktop host's services and stays off without them).
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 export const Config = z.object({
   worldId: z.string().default('default'), agentPreset: z.string().default('standard'), timeZone: z.string().default(systemTimeZone),
   companionName: z.string(), partnerName: z.string(),
-  life: z.boolean().default(false), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00'),
+  archiveScope: z.union([z.const('world'), z.const('home')]).default('world'),
+  life: z.boolean().default(true), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00'),
   selfFile: z.string(), worldPromptFile: z.string(), alarmTemplateFile: z.string(),
   // Where her words go outside DSH; no app is known by name (see README for the push body).
   outlets: z.array(z.object({ name: z.string().required(), url: z.string(), urlFile: z.string(), path: z.string(), kinds: z.array(z.union([z.const('reply'), z.const('busy'), z.const('reach')])) })).default([]),

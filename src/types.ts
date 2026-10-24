@@ -5,7 +5,9 @@ export interface WorldConfig {
   worldId: string;
   agentPreset: string;
   timeZone: string;
-  /** Turns on the life line (home session, alarm, tools, console). */
+  /** Which conversations are archived (and so remembered): every world session (default), or her home only. The memory block goes to every world session either way. */
+  archiveScope?: 'world' | 'home';
+  /** The life line (home session, alarm, tools, console); on by default. */
   life?: boolean;
   /** Her diary directory; defaults to `<world>/diary`. */
   diaryDir?: string;

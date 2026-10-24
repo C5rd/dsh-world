@@ -13,9 +13,10 @@ export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldCo
 
 /**
  * Copies her conversations from the host's session logs into the archive. Each session is replayed from where
- * the archive left off; replays run one at a time, and a session already queued is not queued twice.
+ * the archive left off; replays run one at a time, and a session already queued is not queued twice. Sessions
+ * outside `archived` are left alone.
  */
-export function createSourceArchive(ctx: Context, config: WorldConfig, store: ArchiveStore) {
+export function createSourceArchive(ctx: Context, config: WorldConfig, store: ArchiveStore, archived: (sessionId: string) => boolean = () => true) {
   const dirty = new Set<string>();
   const jobs = new Map<string, Promise<void>>();
   const failures = new Map<string, unknown>();
@@ -41,6 +42,8 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
     } finally { await handle.close(); }
   }
   function schedule(sessionId: string): Promise<void> {
+    // Not archived itself, it still waits for the replays already queued, so its memory block is current.
+    if (!archived(sessionId)) return tail;
     dirty.add(sessionId);
     const pending = jobs.get(sessionId);
     if (pending) return pending;

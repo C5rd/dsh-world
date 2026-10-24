@@ -60,10 +60,17 @@ export function wakeText(alarm: Alarm, now: Date, timeZone: string, fallbackWake
   const late = now.getTime() - Date.parse(alarm.at);
   const base = { ...extra, timeZone, fallbackWakeTime };
   const lateText = late >= LATE_NOTICE_MS ? fillMessage(messages, '晚到说明', { ...base, lateBy: formatDuration(late) }) : '';
-  const body = alarm.source === 'first' ? fillMessage(messages, '第一次到家', base)
-    : alarm.source === 'fallback' ? fillMessage(messages, '早上兜底', { ...base, late: lateText })
+  const body = alarm.source === 'fallback' ? fillMessage(messages, '早上兜底', { ...base, late: lateText })
     : fillMessage(messages, '闹钟响了', { ...base, time: formatLocalTime(new Date(alarm.at), timeZone), note: alarm.note, late: lateText }, { note: Boolean(alarm.note) });
-  const tail = fillMessage(messages, '结尾提醒', base);
+  return withTail(body, messages, base);
+}
+/** What a new home says the moment it is built. */
+export function arrivalText(timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+  const base = { ...extra, timeZone, fallbackWakeTime };
+  return withTail(fillMessage(messages, '第一次到家', base), messages, base);
+}
+function withTail(body: string, messages: AlarmMessages, values: Record<string, string>): string {
+  const tail = fillMessage(messages, '结尾提醒', values);
   return `${ALARM_MARK}${body}${tail ? `\n${tail}` : ''}`;
 }
 /** What she hears when a home turn stops well before the time she said she would keep at it. */
@@ -82,8 +89,7 @@ export function checkReply(alarm: Alarm | undefined, now: Date, timeZone: string
   const left = Date.parse(alarm.at) - now.getTime();
   const when = `${local(alarm.at, timeZone)}（${left > 0 ? `还有 ${formatDuration(left)}` : '已经到点，正在叫你'}）`;
   if (alarm.source === 'plan') return `你说好${alarm.note ? `做「${alarm.note}」` : ''}做到 ${when}。`;
-  if (alarm.source === 'fallback') return `你现在没有自己定的闹钟。下一次会在 ${when}按平常的时间叫你。`;
-  return `下一次是家里的第一次唤醒，在 ${when}。`;
+  return `你现在没有自己定的闹钟。下一次会在 ${when}按平常的时间叫你。`;
 }
 export function cancelReply(cancelled: Alarm | undefined, next: Alarm | undefined, timeZone: string): string {
   if (cancelled?.source !== 'plan') return `现在没有你自己定的闹钟，不用取消。${next ? `下一次会在 ${local(next.at, timeZone)} 按平常的时间叫你。` : ''}`;

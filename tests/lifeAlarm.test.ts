@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { earlyStopText, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
+import { arrivalText, earlyStopText, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
 
 const now = new Date('2026-10-23T12:00:00.000Z');
 test('alarm time accepts exactly one of an offset timestamp or minutes, at least one minute ahead', () => {
@@ -33,11 +33,11 @@ test('wake text names the plan, the note and lateness only when it matters', () 
   assert.match(wakeText(plan, new Date('2026-10-23T14:13:00.000Z'), 'Asia/Seoul', '09:00'), /晚了 2 小时 13 分/);
   assert.equal(wakeText({ ...plan, source: 'fallback', note: '' }, now, 'UTC', '09:00'), '【你的时间】早上了，新的一天。你上次没说接下来做什么，就按平常的时间叫你起来。' + TAIL);
   assert.match(wakeText({ ...plan, source: 'fallback', note: '' }, new Date('2026-10-23T14:13:00.000Z'), 'UTC', '09:00'), /晚了 2 小时 13 分/);
-  assert.match(wakeText({ ...plan, source: 'first' }, now, 'UTC', '09:00'), /这是你的家/);
+  assert.equal(arrivalText('UTC', '09:00'), '【你的时间】这是你的家。从现在起，这里的时间属于你自己：做什么、做多久、怎么做，都由你决定。' + TAIL);
 });
 test('every wake text ends with the plan_next reminder and the fallback time', () => {
   const plan = { at: '2026-10-23T12:00:00.000Z', note: '', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
-  for (const source of ['plan', 'fallback', 'first'] as const) assert.ok(wakeText({ ...plan, source }, now, 'UTC', '09:00').endsWith(TAIL));
+  for (const source of ['plan', 'fallback'] as const) assert.ok(wakeText({ ...plan, source }, now, 'UTC', '09:00').endsWith(TAIL));
   assert.match(wakeText(plan, now, 'UTC', '07:30'), /休息到明早 07:30。$/);
 });
 test('wake text shows lateness from exactly two minutes', () => {

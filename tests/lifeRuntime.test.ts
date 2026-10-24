@@ -77,6 +77,10 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const faults = () => life.snapshot().faults;
   return { ctx, get life() { return life; }, store, requests, errors, clock, timers, archived, renamed, fullAccess, worldDir, idle, start, restart, alarm, faults, created: () => created };
 }
+/** life.json for an existing home `home-0` (create it before start), optionally with an alarm of her own due at start. */
+const existingHome = (note?: string) => (worldDir: string) => writeFile(join(worldDir, 'life.json'), JSON.stringify({
+  version: 1, homeSessionId: 'home-0', ...(note === undefined ? {} : { alarm: { at: '2026-10-23T03:00:00.000Z', note, setAt: '2026-10-23T02:00:00.000Z', source: 'plan' } }),
+}));
 /** A host whose nth resolveAgent call is held until released (or rejected). */
 function holdResolve(nth: number) {
   let calls = 0;
@@ -147,7 +151,8 @@ test('plan_next sets the alarm and the alarm wakes her with her own note', async
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first', 'plan']);
 });
 test('a home turn that stops well before her own alarm asks once whether she is done; the alarm still rings', async t => {
-  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }) : textResponse('嗯'));
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }) : textResponse('嗯'), { before: existingHome('起来') });
+  await createAgent(s.ctx, 'home-0');
   await s.start();
   assert.equal(s.requests.length, 3, 'the first turn (two steps), then one question');
   assert.match(textOf(s.requests[2]!), /【你的时间】你说好做到 2026-10-23T13:30:00\+09:00（「看视频」），现在才 2026-10-23T12:00:00\+09:00，这一轮就停了。/);
@@ -158,13 +163,15 @@ test('a home turn that stops well before her own alarm asks once whether she is 
 });
 test('the turn the question started never asks again, even with a new alarm, so nothing loops', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }, 'a')
-    : index === 2 ? toolCall('plan_next', { after_minutes: 60, note: '写日记' }, 'b') : textResponse('嗯'));
+    : index === 2 ? toolCall('plan_next', { after_minutes: 60, note: '写日记' }, 'b') : textResponse('嗯'), { before: existingHome('起来') });
+  await createAgent(s.ctx, 'home-0');
   await s.start();
   assert.equal(s.requests.length, 4);
   assert.deepEqual(s.alarm(), { at: '2026-10-23T04:00:00.000Z', source: 'plan' });
 });
 test('no question when her alarm is close, after her partner spoke, or when the turn was stopped', async t => {
-  const close = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 5, note: '收尾' }) : textResponse('嗯'));
+  const close = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 5, note: '收尾' }) : textResponse('嗯'), { before: existingHome('起来') });
+  await createAgent(close.ctx, 'home-0');
   await close.start();
   assert.equal(close.requests.length, 2);
 
@@ -256,10 +263,25 @@ test('a rebuilt home with no pending alarm gets a first wake', async t => {
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first']);
   assert.match(textOf(s.requests[0]), /这是你的家/);
 });
+test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
+  const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
+    version: 1, homeSessionId: 'archived-home', alarm: { at: '2026-10-23T04:00:00.000Z', note: '歇着', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' },
+  })); } });
+  s.archived.add('archived-home');
+  await s.start();
+  assert.equal(s.requests.length, 1, 'only the greeting, no early-stop question after it');
+  assert.match(textOf(s.requests[0]), /这是你的家/);
+  assert.deepEqual(s.alarm(), { at: '2026-10-23T04:00:00.000Z', source: 'plan' });
+  assert.equal(s.store.read().arrival, undefined);
+  s.timers.advance(60 * 60_000); await s.idle();
+  assert.match(textOf(s.requests.at(-1)!), /说好做到的时间：「歇着」/);
+  assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first', 'plan']);
+});
 test('an alarm that came due while the app was closed is delivered late with the delay', async t => {
   const s = await setup(t, () => textResponse('醒啦'), { before: async worldDir => {
-    await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, alarm: { at: '2026-10-23T00:00:00.000Z', note: '早安', setAt: '2026-10-22T15:00:00.000Z', source: 'plan' } }));
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', alarm: { at: '2026-10-23T00:00:00.000Z', note: '早安', setAt: '2026-10-22T15:00:00.000Z', source: 'plan' } }));
   } });
+  await createAgent(s.ctx, 'home-0');
   await s.start();
   assert.match(textOf(s.requests[0]), /「早安」。[^\n]*（晚了 3 小时/);
   assert.equal(s.store.wakes()[0].lateMs, 3 * 3_600_000);
@@ -285,7 +307,8 @@ test('retries back off on schedule even though timers run in short segments', as
 });
 test('a failed delivery never fires a newer alarm before it is due', async t => {
   const { held, patch } = holdResolve(2);
-  const s = await setup(t, () => textResponse('看书去'), { host: patch });
+  const s = await setup(t, () => textResponse('看书去'), { host: patch, before: existingHome('旧的') });
+  await createAgent(s.ctx, 'home-0');
   await s.life.start(); s.timers.advance(0);
   s.life.planNext({ after_minutes: 30 }, '看书');
   held.fail!(new Error('home is busy')); await s.life.settled();
@@ -298,7 +321,8 @@ test('a failed delivery never fires a newer alarm before it is due', async t => 
 });
 test('plan_next while a delivery is resolving the home keeps the new alarm', async t => {
   const { held, patch } = holdResolve(2);
-  const s = await setup(t, () => textResponse('好'), { host: patch });
+  const s = await setup(t, () => textResponse('好'), { host: patch, before: existingHome('旧的') });
+  await createAgent(s.ctx, 'home-0');
   await s.life.start(); s.timers.advance(0);
   s.life.planNext({ after_minutes: 30 }, '新的');
   held.release!(); await s.idle();
@@ -329,7 +353,8 @@ test('plan_next says what it replaced, and the old note with it', async t => {
 test('a new alarm clears the retry fault; one that cannot be saved is a fault but still rings', async t => {
   const { held, patch } = holdResolve(2);
   let failWrites = false;
-  const s = await setup(t, () => textResponse('嗯'), { host: patch, store: store => ({ ...store, write: state => { if (failWrites) throw new Error('disk full'); store.write(state); } }) });
+  const s = await setup(t, () => textResponse('嗯'), { host: patch, before: existingHome('旧的'), store: store => ({ ...store, write: state => { if (failWrites) throw new Error('disk full'); store.write(state); } }) });
+  await createAgent(s.ctx, 'home-0');
   await s.life.start(); s.timers.advance(0); held.fail!(new Error('home is busy')); await s.life.settled();
   assert.ok(s.faults().some(fault => fault.includes('分钟后重试')));
   s.life.planNext({ after_minutes: 10 }, '再来');
@@ -411,7 +436,7 @@ test('stop ends the life line: no delivery after it, and plan_next refuses', asy
   s.timers.advance(0);
   s.life.stop(); held.release!(); await s.idle();
   assert.equal(s.requests.length, 0); assert.equal(s.store.wakes().length, 0);
-  assert.equal(s.store.read().alarm?.source, 'first', 'the undelivered alarm stays saved');
+  assert.ok(s.store.read().arrival, 'the undelivered greeting stays saved');
   assert.throws(() => s.life.planNext({ after_minutes: 5 }, '还想'), /生活线已停止/);
 });
 test('a registration failure is a fault and never breaks agent creation', async t => {

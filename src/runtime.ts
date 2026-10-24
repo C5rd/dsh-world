@@ -25,10 +25,12 @@ interface MemoryState { reload: boolean; injected: Map<string, SessionSeq>; pend
 /**
  * The memory line: her conversations are archived as they happen, and every world session gets a memory
  * block of the newest turns at its start and after each successful compaction, never in between, so it stays
- * inside the provider-cached prefix. With a world prompt source, the world prompt joins every world session.
+ * inside the provider-cached prefix. `archiveScope: 'home'` archives her home alone; the memory block still
+ * goes to every world session. With a world prompt source, the world prompt joins every world session.
  */
 export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource) {
-  const archive = createSourceArchive(ctx, config, store);
+  const archived = (sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId);
+  const archive = createSourceArchive(ctx, config, store, archived);
   const history = createHistory(store);
   const names = world?.prompt.names ?? worldNames(config);
   const prompts = world && createPromptSections(config, world, ctx.logger);
@@ -64,7 +66,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     const pending = attaching.get(session);
     if (pending) return pending;
     const job = (async () => {
-      await store.commitRecords([], store.progress(session.id));
+      if (archived(session.id)) await store.commitRecords([], store.progress(session.id));
       await archive.schedule(session.id);
       memory.set(session, await readMemoryState(session));
     })();
