@@ -1,0 +1,6 @@
+# Inserts the dsh-world row enabled: with no config it serves the standard preset as a world named
+# "default" in the system time zone. Override the row by id in a profile to name the companion, pick
+# another preset or turn on the life line (see README).
+- insert:
+    - id: dsh-world
+      name: dsh-world

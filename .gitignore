@@ -1,0 +1,8 @@
+node_modules/
+lib/
+.host/
+.superpowers/
+*.tgz
+
+# Design notes and working logs stay local (personal paths and names).
+docs/
