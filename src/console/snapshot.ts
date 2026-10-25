@@ -27,6 +27,8 @@ export interface SnapshotDeps {
   running(): boolean;
   /** CNY a day for her home; undefined is no limit. */
   dailyBudget(): number | undefined;
+  /** Turns her memory block carries. */
+  memoryTurns(): number;
   /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
   faults(): string[];
 }
@@ -39,13 +41,14 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
   async function compute(): Promise<unknown> {
     const life = deps.life()?.snapshot();
     const home = life?.homeSessionId ? deps.ctx.agents.get(SessionId(life.homeSessionId)) : undefined;
-    const turns = await history.loadRecentTurns(config.worldId, 200);
+    const window = deps.memoryTurns();
+    const turns = await history.loadRecentTurns(config.worldId, window);
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       health: [...(life?.faults ?? []), ...deps.faults()],
-      memory: { turns: turns.length, windowTurns: 200, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), config.archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      memory: { turns: turns.length, windowTurns: window, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), config.archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
     };

@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
+import { validTurns } from '../worldSwitch.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
@@ -21,6 +22,8 @@ export interface ConsoleActions {
   saveWorldPrompt(text: string): void;
   /** CNY a day for her home; undefined removes the limit. */
   setDailyBudget(yuan: number | undefined): void;
+  /** Turns in her memory block; undefined goes back to the default. */
+  setMemoryTurns(turns: number | undefined): void;
 }
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
@@ -41,6 +44,11 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       const daily = body?.daily;
       if (daily !== null && (typeof daily !== 'number' || !Number.isFinite(daily) || daily < 0)) return bad('daily must be a non-negative number or null');
       actions.setDailyBudget(daily === null ? undefined : daily); return ok();
+    }
+    case '/console/memory': {
+      const turns = body?.turns;
+      if (turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
+      actions.setMemoryTurns(turns === null ? undefined : turns); return ok();
     }
     case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };

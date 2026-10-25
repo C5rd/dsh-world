@@ -12,7 +12,7 @@
 {{#conversationsDir}}
 
 ## 聊天记录
-记忆里只放得下最近 200 轮。更早的聊天都还在 {{conversationsDir}}，一天一个文件 YYYY-MM-DD.jsonl，每行一句：occurredAt 是什么时候（UTC 时间），role 为 user 的是{{partner}}说的，assistant 是我说的，content 是原话。想不起以前的事，就自己去翻、去搜，别凭印象编。
+记忆里只放得下最近数轮。更早的聊天都还在 {{conversationsDir}}，一天一个文件 YYYY-MM-DD.jsonl，每行一句：occurredAt 是什么时候（UTC 时间），role 为 user 的是{{partner}}说的，assistant 是我说的，content 是原话。想不起以前的事，就自己去翻、去搜，别凭印象编。
 {{/conversationsDir}}
 {{#selfFile}}
 

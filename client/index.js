@@ -1,7 +1,7 @@
 /**
  * dsh-world — 浏览器半侧：设置里的「世界控制台」。
  * 模块 id 必须等于 bundle 行名 dsh-world；数据来自宿主半侧的 /dsh-world/console/* 路由。
- * 读取是 GET；会改变东西的（开始、停止、人设、世界提示词）是带 x-dsh-world 头的 JSON POST。
+ * 读取是 GET；会改变东西的（开始、停止、人设、世界提示词、额度、记忆轮数）是带 x-dsh-world 头的 JSON POST。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-world',
@@ -90,7 +90,7 @@ window.__ModuleLoader__.load({
       '.dw-tab.on{color:var(--ink)}.dw-tab.on:after{left:12px;right:12px}',
       '.dw-pane{display:flex;flex-direction:column;gap:14px}',
       '.dw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}',
-      '.dw-card{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--paper);animation:dw-rise .45s both}',
+      '.dw-card{min-width:0;border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--paper);animation:dw-rise .45s both}',
       '@keyframes dw-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
       '.dw-card h4{margin:0 0 10px;font:600 13px var(--serif);letter-spacing:.14em;display:flex;align-items:center;gap:8px}',
       '.dw-card h4:before{content:"";width:14px;height:1px;background:var(--gold)}',
@@ -110,11 +110,14 @@ window.__ModuleLoader__.load({
       '.dw input.dw-name{font:600 18px var(--serif);letter-spacing:.06em}',
       '.dw-code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;line-height:1.6;min-height:340px}',
       '.dw-bar{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;padding:10px 0 2px;background:linear-gradient(transparent,var(--dsw-alias-background-primary,transparent) 40%)}',
-      '.dw-btn{font:inherit;cursor:pointer;border:1px solid var(--line);background:transparent;color:inherit;border-radius:8px;padding:6px 14px;transition:border-color .2s,background .2s}',
+      '.dw-btn{flex-shrink:0;white-space:nowrap;font:inherit;cursor:pointer;border:1px solid var(--line);background:transparent;color:inherit;border-radius:8px;padding:6px 14px;transition:border-color .2s,background .2s}',
       '.dw-btn:hover{border-color:var(--gold)}.dw-btn.primary{background:var(--gold);border-color:var(--gold);color:#fffaf0}.dw-btn:disabled{opacity:.45;cursor:default}',
       '.dw-preview{white-space:pre-wrap;font-family:var(--serif);font-size:12.5px;margin:0;max-height:260px;overflow:auto}',
       '.dw-chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--soft)}',
       '.dw table{width:100%;border-collapse:collapse}.dw td{padding:3px 6px;vertical-align:top;border-bottom:1px solid color-mix(in srgb,currentColor 6%,transparent)}',
+      '.dw-activity{table-layout:fixed}.dw-activity td{overflow:hidden;overflow-wrap:anywhere}.dw-activity td:first-child{white-space:nowrap}',
+      '.dw-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px}',
+      '.dw-setting{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}.dw-setting input[type=text]{flex:1 1 120px;max-width:200px;min-width:0}',
       '.dw pre.dw-diary{white-space:pre-wrap;margin:10px 0 0;font-family:var(--serif)}',
       '.dw select{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:2px 6px}',
       '@media (prefers-reduced-motion:reduce){.dw *{animation:none!important;transition:none!important}}',
@@ -150,8 +153,10 @@ window.__ModuleLoader__.load({
           h('select', { value: day, onChange: function (e) { setDay(e.target.value) } }, days.map(function (d) { return h('option', { key: d, value: d }, d) })),
           ' ', h('label', { className: 'dw-muted' }, h('input', { type: 'checkbox', checked: outside, onChange: function (e) { setOutside(e.target.checked) } }), ' 只看房间外'),
           err ? h('div', { className: 'dw-bad' }, '读取失败：' + err) : null,
-          h('table', null, h('tbody', null, rows.map(function (r) {
-            return h('tr', { key: r.callId + r.time }, h('td', { className: 'dw-muted' }, clock(r.time, zone)), h('td', null, r.tool), h('td', null, r.summary), h('td', { className: 'dw-bad' }, r.status === 'error' ? '失败' : ''), h('td', { className: r.outside ? 'dw-bad' : 'dw-muted' }, (r.gapBefore ? '（此前有缺口）' : '') + (r.outside ? '房间外' : '')))
+          h('table', { className: 'dw-activity' },
+            h('colgroup', null, h('col', { style: { width: 48 } }), h('col', { style: { width: '22%' } }), h('col'), h('col', { style: { width: 40 } }), h('col', { style: { width: 64 } })),
+            h('tbody', null, rows.map(function (r) {
+            return h('tr', { key: r.callId + r.time }, h('td', { className: 'dw-muted' }, clock(r.time, zone)), h('td', null, r.tool), h('td', { title: r.summary }, h('div', { className: 'dw-clamp' }, r.summary)), h('td', { className: 'dw-bad' }, r.status === 'error' ? '失败' : ''), h('td', { className: r.outside ? 'dw-bad' : 'dw-muted' }, (r.gapBefore ? '（此前有缺口）' : '') + (r.outside ? '房间外' : '')))
           })))))
     }
     function Diary(props) {
@@ -241,10 +246,30 @@ window.__ModuleLoader__.load({
         h('div', null, h('span', { className: 'dw-big' + (over ? ' dw-bad' : '') }, '¥' + spent.toFixed(2)), h('span', { className: 'dw-muted' }, daily == null ? ' · 不限额' : ' / ¥' + Number(daily).toFixed(2) + ' 每天')),
         daily != null ? h('div', { className: 'dw-meter' }, h('i', { style: { width: Math.min(100, daily > 0 ? Math.round(spent / daily * 100) : 100) + '%' } })) : null,
         h('div', { className: 'dw-muted', style: { marginTop: 4 } }, '只算家里；按 DeepSeek 官方价与峰谷时段估算。超过后提醒她一次。'),
-        h('div', { style: { display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' } },
-          h('input', { type: 'text', inputMode: 'decimal', placeholder: '每天额度（元），留空不限', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') }, style: { maxWidth: 200 } }),
-          h('button', { className: 'dw-btn', onClick: save }, '保存'),
-          h('span', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg)))
+        h('div', { className: 'dw-setting' },
+          h('input', { type: 'text', inputMode: 'decimal', placeholder: '每天额度（元），留空不限', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
+          h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
+    }
+    /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效。 */
+    function Memory(props) {
+      var mem = props.mem, window_ = mem && mem.windowTurns || 200
+      var draftState = useState(String(window_)), draft = draftState[0], setDraft = draftState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      function save() {
+        var text = String(draft).trim(), value = text === '' ? null : Number(text)
+        if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 200'); return }
+        post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+      }
+      return h(Card, { title: '记忆', delay: 180 }, mem ? [
+        h('div', { key: 'm' }, h('span', { className: 'dw-big' }, mem.turns), h('span', { className: 'dw-muted' }, ' / ' + window_ + ' 轮')),
+        h('div', { key: 'b', className: 'dw-meter' }, h('i', { style: { width: Math.min(100, Math.round((mem.turns || 0) / window_ * 100)) + '%' } })),
+        h('div', { key: 'd', className: 'dw-muted' }, '约 ' + mem.approxTokens + ' token · 归档 ' + mem.records + ' 条 · 来自 ' + mem.sessions + ' 个会话'),
+        h('div', { key: 's', className: 'dw-setting' },
+          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
+          h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
+      ] : h('div', { className: 'dw-muted' }, '—'))
     }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
@@ -270,11 +295,7 @@ window.__ModuleLoader__.load({
           ]))) : null,
         h('div', { className: 'dw-grid' },
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
-          h(Card, { title: '记忆', delay: 180 }, mem ? [
-            h('div', { key: 'm' }, h('span', { className: 'dw-big' }, mem.turns), h('span', { className: 'dw-muted' }, ' / ' + (mem.windowTurns || 200) + ' 轮')),
-            h('div', { key: 'b', className: 'dw-meter' }, h('i', { style: { width: Math.min(100, Math.round((mem.turns || 0) / (mem.windowTurns || 200) * 100)) + '%' } })),
-            h('div', { key: 'd', className: 'dw-muted' }, '约 ' + mem.approxTokens + ' token · 归档 ' + mem.records + ' 条 · 来自 ' + mem.sessions + ' 个会话'),
-          ] : h('div', { className: 'dw-muted' }, '—')),
+          h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh })))
     }
     function Records(props) {

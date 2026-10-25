@@ -71,7 +71,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt, isHome: id => isHome(id) });
+    memory = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt, isHome: id => isHome(id) }, power.memoryTurns);
     await memory.start({ fresh });
   }
   async function stopMemory(): Promise<void> {
@@ -117,7 +117,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
-    const sources = consoleSources({ ctx: lifeCtx, config, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -136,6 +136,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       }),
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
+      setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };
     lifeCtx.effect(() => webServer.register(consoleRoute(sources, actions, config.allowedHosts)), 'dsh-world console routes');

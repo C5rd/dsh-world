@@ -11,11 +11,10 @@ import { belongsToWorld, createSourceArchive } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
+import { DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
-/** The newest turns the memory block carries. */
-const MEMORY_TURNS = 200;
 
 /**
  * Per session: whether the memory block must be (re)built at the next step, and where the injected blocks
@@ -28,8 +27,9 @@ interface MemoryState { reload: boolean; injected: Map<string, SessionSeq>; pend
  * block of the newest turns at its start and after each successful compaction, never in between, so it stays
  * inside the provider-cached prefix. `archiveScope: 'home'` archives her home alone; the memory block still
  * goes to every world session. With a world prompt source, the world prompt joins every world session.
+ * `memoryTurns` is read each time a block is built (default 200).
  */
-export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource) {
+export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS) {
   const archived = (sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId);
   const archive = createSourceArchive(ctx, config, store, archived);
   const history = createHistory(store);
@@ -78,7 +78,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   /** Retires the blocks still on the surface (they must be found, or the session would carry two) and builds a fresh one without the messages already present. */
   async function freshBlock(session: Session, state: MemoryState, turn: number, step: number): Promise<UserMessage | undefined> {
     const messages = session.deriveMessages();
-    const turns = await history.loadRecentTurns(config.worldId, MEMORY_TURNS);
+    const turns = await history.loadRecentTurns(config.worldId, memoryTurns());
     const present = new Set(messages.filter(message => message.role === 'assistant' || message.source.kind === 'user').map(message => message.id));
     for (const message of messages.filter(message => message.source.kind === memorySource)) {
       const seq = state.injected.get(message.id);

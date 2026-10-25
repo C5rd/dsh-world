@@ -4,6 +4,10 @@ import { Readable } from 'node:stream';
 import { consoleSources, estimateTokens } from '../src/console/snapshot.ts';
 import { consoleRoute, handleConsole, type ConsoleActions, type ConsoleSources } from '../src/console/routes.ts';
 import { PERSONA_LAYERS, type Persona } from '../src/persona.ts';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createWorldSwitch, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
 
 const sources: ConsoleSources = {
   snapshot: async () => ({ worldId: 'jingjing' }),
@@ -19,6 +23,7 @@ function fakeActions() {
     savePersona: layers => { calls.push(`persona:${JSON.stringify(layers)}`); },
     saveWorldPrompt: text => { calls.push(`world:${text}`); },
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
+    setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
   };
   return { actions, calls };
 }
@@ -48,8 +53,11 @@ test('console writes need the write mark, and change only what they name', async
   assert.equal((await post('/dsh-world/console/budget', { daily: 5 })).status, 200);
   assert.equal((await post('/dsh-world/console/budget', { daily: null })).status, 200);
   for (const daily of [-1, '5', undefined]) assert.equal((await post('/dsh-world/console/budget', { daily })).status, 400, String(daily));
+  assert.equal((await post('/dsh-world/console/memory', { turns: 60 })).status, 200);
+  assert.equal((await post('/dsh-world/console/memory', { turns: null })).status, 200);
+  for (const turns of [0, 1.5, '60', undefined]) assert.equal((await post('/dsh-world/console/memory', { turns })).status, 400, String(turns));
   assert.equal((await post('/dsh-world/console/nope', {})).status, 404);
-  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined']);
+  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined']);
   const del = await handleConsole(sources, actions, { method: 'DELETE', url: '/dsh-world/console/snapshot', write: false });
   assert.equal(del.status, 405); assert.equal(del.headers?.allow, 'GET, POST');
 });
@@ -107,7 +115,7 @@ test('the snapshot is cached and shared between concurrent polls until invalidat
   const archive = { readPage: async () => ({ records: [], nextCursor: undefined }), readTurn: async () => [], stats: () => ({ records: 0, sessions: 0 }) };
   const src = consoleSources({
     ctx: { agents: { get: () => undefined } } as never, config: { worldId: 'w', timeZone: 'UTC' } as never, archive: archive as never,
-    names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => running ? life as never : undefined, diaryDir: 'Z:/no/such/dir', running: () => running, dailyBudget: () => 3, faults: () => ['桥坏了'],
+    names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => running ? life as never : undefined, diaryDir: 'Z:/no/such/dir', running: () => running, dailyBudget: () => 3, memoryTurns: () => 50, faults: () => ['桥坏了'],
   });
   const [a, b] = await Promise.all([src.snapshot(), src.snapshot()]);
   await src.snapshot();
@@ -115,6 +123,17 @@ test('the snapshot is cached and shared between concurrent polls until invalidat
   assert.deepEqual((a as { running: boolean; name: string; health: string[] }), { ...(a as object), running: true, name: '小鱼', health: ['桥坏了'] });
   running = false; src.invalidate();
   const stopped = await src.snapshot() as { running: boolean; life: unknown; memory: { windowTurns: number } };
-  assert.equal(stopped.running, false); assert.equal(stopped.life, null); assert.equal(stopped.memory.windowTurns, 200);
+  assert.equal(stopped.running, false); assert.equal(stopped.life, null); assert.equal(stopped.memory.windowTurns, 50);
   assert.deepEqual((stopped as unknown as { budget: unknown }).budget, { daily: 3, today: null });
+});
+
+test('the memory window is kept in world.json, defaults to 200 and survives a restart', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-switch-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.equal(power.memoryTurns(), DEFAULT_MEMORY_TURNS);
+  power.setMemoryTurns(60);
+  assert.equal(createWorldSwitch(dir).memoryTurns(), 60);
+  power.setMemoryTurns(undefined);
+  assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
+  assert.equal('memoryTurns' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
 });

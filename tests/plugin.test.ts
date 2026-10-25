@@ -60,6 +60,21 @@ test('real host sends A memory in B once, keeps it across a same-step retry, and
   assert.equal(rows.length, 4);
   assert.ok(rows.every(r => !r.content.includes('Time sampled') && !r.content.includes('最近的聊天记录')));
 });
+test('the memory block carries as many recent turns as the console window says, read when the block is built', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('ok'); });
+  const store = createArchiveStore({ ...config, root });
+  await store.commitRecords([record('old1', { content: 'older turn', occurredAt: '2026-10-22T12:00:00.000Z' }), record('new2', { content: 'newest turn', occurredAt: '2026-10-23T12:00:00.000Z' })]);
+  let window = 1;
+  const world = createWorldRuntime(ctx, config, store, undefined, () => window); await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const first = await ctx.agents.create({ sessionId: SessionId('w1'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  first.agent.followup(user('hi')); await first.agent.whenIdle();
+  assert.ok(textOf(requests[0]).includes('newest turn')); assert.ok(!textOf(requests[0]).includes('older turn'));
+  window = 3; // the first session's own turn is now the newest
+  const second = await ctx.agents.create({ sessionId: SessionId('w2'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  second.agent.followup(user('hi')); await second.agent.whenIdle();
+  assert.ok(textOf(requests.at(-1)!).includes('older turn'), 'a new session reads the new window');
+});
 test('tool continuation keeps call/result pairing and does not re-admit the frozen memory block', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) {
