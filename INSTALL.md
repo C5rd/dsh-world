@@ -24,7 +24,11 @@
 ## 第一步：把 dsh-world 装进 profile
 
 ```bash
-git clone https://github.com/chenkezhen480/dsh-world.git
+# ⚠ QQ 卡目前还在 PR #7 里，没合进上游 main。合入之前请用这一条：
+git clone -b feat/console-doors-and-supervisor https://github.com/Wz0xx/dsh-world.git
+# 合入之后换成官方地址（两者内容一致，只是分支不同）：
+# git clone https://github.com/chenkezhen480/dsh-world.git
+
 cd dsh-world
 npm ci        # 仓库带 package-lock.json，能装全 devDependencies
 npm pack      # 会先 typecheck + build，产出 dsh-world-0.5.2.tgz
@@ -63,6 +67,7 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 ```
 
 > `qqBridgeDir` 留空 = 不接 QQ，控制台里那张 QQ 卡整个不出现。这是刻意的。
+> `qqBridgeAutoStart` 写 `false` 时，插件只在启动时把 DSH 的地址写回桥的 config，不主动拉起桥；想让它跟着 DSH 一起起来就写 `true`。
 > 路径写 Windows 绝对路径，用正斜杠或单反斜杠都行。
 
 ---
@@ -70,13 +75,17 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 ## 第二步：装 qq-bridge
 
 ```bash
-git clone https://github.com/Derpyu520/qq-bridge.git
+# ⚠ 真停（POST /api/stop）也在 PR #95 里，没合进上游 main。合入之前用这一条：
+git clone -b feat/wake-and-history https://github.com/Wz0xx/qq-bridge.git
+# 合入之后换成官方地址：
+# git clone https://github.com/Derpyu520/qq-bridge.git
+
 cd qq-bridge
 npm install                  # postinstall 会自动修补 @snowluma/sdk 的 ESM 打包 bug
 copy config.example.json config.json      # macOS/Linux 用 cp
 ```
 
-`config.json` 先放这儿，`snowluma` 段和 `allow` 白名单等第五步人做完再填——现在填不了。
+`config.json` 先放这儿。`snowluma` 段和 `allow` 白名单现在填不了——等第五步人把参数给你，第六步再填。
 
 **这一步之后一定要跑 DSH 端安装**，否则 QQ 上不会有任何反应：
 
@@ -95,7 +104,7 @@ node scripts/setup-dsh.mjs
 所以现在**重启 DSH**。重启后验证两件事：
 
 1. 打开 DSH 设置里的「世界控制台」，能看到世界卡——说明 dsh-world 起来了
-2. 控制台里**看不到** QQ 卡是正常的：桥还没跑起来，`qqBridgeDir` 指过去了但端口是空的
+2. 控制台里能找到 **QQ 卡**，状态是「● 没在跑」——说明 `qqBridgeDir` 指对了，只是桥还没启动（第六步才起）
 
 ---
 
@@ -105,15 +114,17 @@ node scripts/setup-dsh.mjs
 
 | 检查 | 怎么验 | 期望 |
 |---|---|---|
-| dsh-world 已加载 | 访问 `/dsh-world/console/snapshot` | 返回 JSON，有 `worldId`、`life`、`qq` |
-| 插件认识桥 | `GET /dsh-world/qq/console` | `qq` 字段有 `url`（带 token），不是 `error` |
-| 桥的目录对 | 上一条的 `url` 里 token 和 `state/console-token` 一致 | 一致 |
+| dsh-world 已加载 | 浏览器打开 `http://127.0.0.1:<DSH 端口>/dsh-world/console/snapshot` | 返回 JSON，有 `worldId`、`life`、`qq` |
+| 插件认识桥 | `http://127.0.0.1:<DSH 端口>/dsh-world/qq/console` | `qq` 字段有 `url`（带 token），不是 `error` |
+| 桥的目录对 | 上一条的 `url` 里 token 和 `<桥目录>/state/console-token` 一致 | 一致 |
+
+> 用浏览器而不是 curl：DSH 的 webServer 会校验 Host 头，curl 直接打会被挡。同源请求不受影响。
 
 到这里，**你这一侧全部就绪**。剩下的是人必须插手的部分。
 
 ---
 
-## 第五步：只有人能做的一件事（两个动作）
+## 第五步：只有人能做的那部分
 
 这两个动作**不能**由脚本或你代做，原因写在下面对应位置。做完之后你接手继续。
 
@@ -173,7 +184,7 @@ node scripts/setup-dsh.mjs
 
 按顺序过一遍，哪条不过就查下表：
 
-1. `curl "http://127.0.0.1:3100/api/status?token=$(cat state/console-token)"` → `connected: true`、`accountOnline: true`
+1. 进 `<桥目录>`，`curl "http://127.0.0.1:3100/api/status?token=$(cat state/console-token)"` → `connected: true`、`accountOnline: true`
 2. DSH 里「世界控制台」→ QQ 卡：桥在跑、DSH 已连上、QQ 在线
 3. QQ 上给机器人号发一条消息 → 她回
 4. 群里 @ 她 → 她回
@@ -183,12 +194,12 @@ node scripts/setup-dsh.mjs
 
 | 现象 | 真正的原因 |
 |---|---|
-| 控制台里根本没有 QQ 卡 | `qqBridgeDir` 没填、或者填的路径里没有 `src/bridge.js` |
+| 世界卡在，但完全没有 QQ 卡 | ① 装的是上游 `main`（0.5.2 移除了 QQ）→ 用第 1 步里 PR 分支那条命令重装；② `qqBridgeDir` 没填或路径里没有 `src/bridge.js` |
 | 桥起来了，QQ 上毫无反应 | 没跑 `node scripts/setup-dsh.mjs`，或者跑了但没重启 DSH |
 | 桥报 `HTTP 426` | `wsUrl` / `httpUrl` 填成了同一个端口 |
 | 桥连上了，但 DSH 收不到 | `config.json` 的 `dsh.baseUrl` 端口不对。正常情况下插件每次启动会自己写回正确地址；如果手动改过就重启一次 DSH |
 | 白名单填了群号，群里还是不回 | 群号要是数字，别加引号以外的字符；还要确认那个群在 `allow.groups` 里 |
-| 按「停桥」报「桥没有 /api/stop」 | 桥是旧版本（v0.2.1-r1 之前）。更新桥，或者用 `npm start` 那个窗口 Ctrl+C |
+| 按「停桥」报「桥没有 /api/stop」 | 桥是旧版本，或者装的是上游 `main`。用第 2 步里 PR 分支那条命令重装 |
 
 ---
 
