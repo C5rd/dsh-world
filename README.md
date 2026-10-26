@@ -61,7 +61,7 @@ DSH 设置里的「世界控制台」：
 
 dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你说的话送进她的家，也可以接收她的回复和主动找你的话。协议见文末。
 
-微信作为独立模块接入同一个家，使用她的独立账号收发指定私聊或群聊。她可用 `wechat_chats` 查询已配置目标，通过 `wechat_send` 自主联系对方或回复消息，文字、图片和表情共用同一发送队列；`wechat_delivery` 查询确认结果。普通最终回答不会自动转发到微信。Windows 适配器和配置步骤见 [微信模块](src/ecosystem/wechat/windows/README.md)。QQ 和 B 站尚未接入。
+微信作为独立模块接入同一个家，使用她的独立账号收发指定私聊或群聊。她可用 `wechat_chats` 查询已配置目标，通过 `wechat_send` 自主联系对方或回复消息，文字、图片和表情共用同一发送队列；`wechat_delivery` 查询确认结果。普通最终回答不会自动转发到微信。Windows 适配器和配置步骤见 [微信模块](src/ecosystem/wechat/windows/README.md)。B 站尚未接入。
 
 > **微信风控与账号风险**：当前桥不是微信官方 API，接收端解密读取本地消息数据库，发送端向微信进程加载 DLL 并调用内部函数，存在账号功能受限或封禁风险。微信安全中心 [2026 年 1 月 29 日公告（媒体转载）](https://www.thepaper.cn/newsDetail_forward_32493057) 将违规获取聊天记录、联系人数据，以及通过模拟按键、自动化脚本操控微信等列为治理内容。仅用于家庭群、低频聊天，或改用 Computer Use，都不能保证账号安全；公开资料没有可靠的封号概率或安全发送阈值。
 
@@ -74,6 +74,17 @@ dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你�
 外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
 
 微信原生发送引擎单独适用非商业许可，详见该模块的许可说明。
+
+### QQ
+
+装了 [qq-bridge](https://github.com/Derpyu520/qq-bridge) 并配上 `qqBridgeDir` 之后，控制台里会多一张 QQ 卡片：桥在不在跑、DSH 有没有连上、QQ 号在不在线、哪几个入口（群或私聊）绑到了哪个会话，一眼看到；拉起桥、停桥也在那儿按。没配 `qqBridgeDir` 的时候这一块整个不出现，行为跟以前一样。
+
+插件每次启动都会把 DSH 当前的地址写回桥的 `config.json`（`dsh.baseUrl`）。原因是 DSH 每次重启都换端口，而桥没有别的地方知道新端口——地址旧了不会报错，只会静静连不上，看起来和桥本身挂掉一模一样。
+
+桥还是那个独立进程，代码不在这里：插件只负责探活、拉起、停掉、绑定和报告，不复制它的逻辑。
+
+<img src="assets/qq-card.png" width="700" alt="世界控制台里的 QQ 卡：桥在跑、DSH 已连上、QQ 在线，下面是绑定的入口和拉起／停桥">
+
 
 ## 安装
 
@@ -120,6 +131,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-tool-free-c
     wechat: false                # 打开独立微信接口，需另行启动 Windows 适配器
     outlets: []                  # 接收她的话的本地程序，见文末
     allowedHosts: []             # 通过反向代理从局域网访问控制台时，放行的域名或 IP
+    qqBridgeDir: ''             # qq-bridge 所在的目录；留空就是不接 QQ
+    qqBridgePort: 3100          # 桥的控制台端口
+    qqBridgeNode: ''            # 用哪个 node 拉起桥，默认用当前进程那个
+    qqBridgeAutoStart: false    # 世界开始时顺手拉起桥；默认关，只在控制台里手动拉
 ```
 
 **改她的措辞**：世界提示词可以直接在控制台里改。闹钟响时、提前停下时、每日回顾时她收到的话，在世界目录里放一份 `alarm.md` 就能按段覆盖，段落名和可用的占位符见 `templates/alarm.md`。插件写给她的话一律用第一人称「我」，读起来是她自己的念头。

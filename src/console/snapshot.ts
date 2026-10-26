@@ -32,8 +32,10 @@ export interface SnapshotDeps {
   memoryTurns(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
   includesSession?(id: string): boolean;
-  /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
+  /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
   faults(): string[];
+  /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
+  qq?: () => Promise<unknown>;
 }
 /** Read-only views for the console; repeated polling within a few seconds reuses one snapshot until `invalidate`. */
 export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidate(): void } {
@@ -48,6 +50,8 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const turns = await history.loadRecentTurns(config.worldId, window, deps.includesSession);
     const archiveScope = config.archiveScope ?? 'workspace';
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
+    // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
+    const qq = deps.qq ? await deps.qq().catch(() => null) : null;
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
@@ -56,6 +60,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
+      qq: deps.qq ? qq : null,
     };
   }
   return {
