@@ -19,6 +19,8 @@ import type { ConsoleDoors } from './panel.ts';
  *        POST /dsh-world/qq/unbind    { key }
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
+ *        POST /dsh-world/qq/proactive  { enabled?, dryRun? } flips the two switches; the bridge writes them into
+ *                                     its own config.json and applies them on the spot, so nothing restarts
  *
  * Writes require the `x-dsh-world` header: a cross-site page cannot add it (that would trigger a preflight,
  * and no preflight is answered here).
@@ -52,6 +54,13 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
       const password = typeof body?.password === 'string' ? body.password : '';
       if (password === '') return bad('密码不能为空');
       return ok({ snowluma: await doors.remember(username, password) });
+    }
+    case '/proactive': {
+      const patch: { enabled?: boolean; dryRun?: boolean } = {};
+      if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+      if (typeof body?.dryRun === 'boolean') patch.dryRun = body.dryRun;
+      if (patch.enabled === undefined && patch.dryRun === undefined) return bad('enabled 和 dryRun 至少要给一个布尔');
+      return ok(await qq.setProactive(patch));
     }
     case '/bind': {
       const key = typeof body?.key === 'string' ? body.key.trim() : '';

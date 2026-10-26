@@ -28,6 +28,7 @@ function stub(overrides: Partial<QqBridge> = {}): QqBridge {
     ensureRunning: async () => ({ started: true }),
     syncEndpoint: async () => ({ changed: false }),
     proactive: async () => ({ enabled: false, dryRun: true, running: false }),
+    setProactive: async patch => ({ ok: true, config: patch }),
     faults: () => [],
   };
   return { ...base, ...overrides };
@@ -73,6 +74,18 @@ test('绑定只接受 group:数字 和 private:数字，缺会话 id 直接拒',
   const ok = await call(route(bridge), request('POST', '/bind', { headers, body: { key: 'group:681528723', sessionId: 'session-1' } }));
   assert.equal(ok.status, 200);
   assert.deepEqual(seen, ['group:681528723=session-1']);
+});
+test('主动联系的两个开关走 POST，只认布尔，多余字段不给桥', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const bridge = stub({ setProactive: async patch => { seen.push(patch); return { ok: true, config: patch }; } });
+  const headers = { [WRITE_HEADER]: '1' };
+  // 一个布尔都没给，就没得改
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: {} }))).status, 400);
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { enabled: 'yes' } }))).status, 400);
+  // 只带一个就只改那一个；policy 这种不是开关的东西不转发
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { enabled: true } }))).status, 200);
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { dryRun: false, policy: { maxPerDay: 99 } } }))).status, 200);
+  assert.deepEqual(seen, [{ enabled: true }, { dryRun: false }]);
 });
 test('两个控制台的地址是读接口：一个来自桥的令牌文件，一个要用面板密码现换', async () => {
   const doors = {

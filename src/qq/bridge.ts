@@ -91,6 +91,7 @@ export interface QqBridge {
   syncEndpoint(): Promise<SyncEndpointResult>;
   /** 主动聊天的统计：今天花了多少次、平均多少 token、成了几条、被规则拦下几条。读不到返回 undefined。 */
   proactive(): Promise<any>;
+  setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any>;
   faults(): string[];
 }
 
@@ -254,6 +255,23 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * 改主动聊天的两个开关。
+   *
+   * 桥收到后会写进它自己的 config.json 并当场生效（引擎的 configure 是就地改），
+   * 所以不用重启桥。桥没起来就抛错，让上面那层回 503，而不是假装改成功。
+   */
+  async function setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any> {
+    const token = readConsoleToken(dir);
+    const { status, body } = await call(base, `/api/socialV2/proactive${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (status !== 200) throw new Error(String(body?.error ?? `桥没接受这次改动（HTTP ${status}）`));
+    return body;
   }
 
   async function sessions(): Promise<any[]> {
@@ -434,5 +452,5 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     }
   }
 
-  return { status, start, stop, halt, intent: () => readIntent(dir), bind, unbind, ensureRunning, syncEndpoint, proactive, faults: () => [...faults.values()] };
+  return { status, start, stop, halt, intent: () => readIntent(dir), bind, unbind, ensureRunning, syncEndpoint, proactive, setProactive, faults: () => [...faults.values()] };
 }

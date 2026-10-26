@@ -467,6 +467,26 @@ window.__ModuleLoader__.load({
       var series = Array.isArray(data.usageSeries) ? data.usageSeries : []
       var reports = Array.isArray(data.reports) ? data.reports : []
       var cap = policy.maxCallsPerDay
+      var s2 = useState(false), saving = s2[0], setSaving = s2[1]
+      var s3 = useState(null), saveError = s3[0], setSaveError = s3[1]
+      // 改开关：写进去以后立刻按新值画，不等 15 秒那一轮轮询。
+      function flip(patch) {
+        setSaving(true); setSaveError(null)
+        qqPost('proactive', patch).then(function () {
+          setData(Object.assign({}, data, patch)); setSaving(false)
+        }, function (err) {
+          setSaveError(String((err && err.message) || err)); setSaving(false)
+        })
+      }
+      function toggleRow(label, hint, on, key) {
+        return h('label', { style: { display: 'flex', alignItems: 'center', gap: 6, marginRight: 18, cursor: saving ? 'default' : 'pointer' } },
+          h('input', {
+            type: 'checkbox', checked: on === true, disabled: saving,
+            onChange: function (e) { var patch = {}; patch[key] = e.target.checked; flip(patch) }
+          }),
+          h('span', null, label),
+          h('span', { className: 'dw-muted', style: { fontSize: 12 } }, hint))
+      }
       var flags = []
       if (data.enabled !== true) flags.push('未启用')
       if (data.dryRun !== false) flags.push('演练模式（不真的发）')
@@ -479,7 +499,12 @@ window.__ModuleLoader__.load({
             data.enabled === true ? '开着' : '关着',
             flags.length ? h('span', { className: 'dw-bad' }, ' · ' + flags.join(' · ')) : null)),
         h('div', null,
-          h('div', { style: { marginBottom: 6 } }, '今天（' + (today.dayKey || '—') + '）'),
+          h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 } },
+          toggleRow('主动联系', '关掉就不再自己开口', data.enabled, 'enabled'),
+          toggleRow('演练模式', '只判断、不真的发出去', data.dryRun, 'dryRun'),
+          saving ? h('span', { className: 'dw-muted' }, '保存中…') : null,
+          saveError ? h('span', { className: 'dw-bad' }, '没存上：' + saveError) : null),
+        h('div', { style: { marginBottom: 6 } }, '今天（' + (today.dayKey || '—') + '）'),
           h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
             h('tbody', null,
               h('tr', null,
