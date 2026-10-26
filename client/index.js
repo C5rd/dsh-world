@@ -516,6 +516,8 @@ window.__ModuleLoader__.load({
     function Proactive() {
       var s = useState(null), data = s[0], setData = s[1]
       var e = useState(null), error = e[0], setError = e[1]
+      var s2 = useState(false), saving = s2[0], setSaving = s2[1]
+      var s3 = useState(null), saveError = s3[0], setSaveError = s3[1]
       useEffect(function () {
         var alive = true
         function load() {
@@ -537,8 +539,6 @@ window.__ModuleLoader__.load({
       var series = Array.isArray(data.usageSeries) ? data.usageSeries : []
       var reports = Array.isArray(data.reports) ? data.reports : []
       var cap = policy.maxCallsPerDay
-      var s2 = useState(false), saving = s2[0], setSaving = s2[1]
-      var s3 = useState(null), saveError = s3[0], setSaveError = s3[1]
       // 改开关：写进去以后立刻按新值画，不等 15 秒那一轮轮询。
       function flip(patch) {
         setSaving(true); setSaveError(null)
