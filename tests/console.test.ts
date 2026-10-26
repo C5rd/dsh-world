@@ -25,6 +25,8 @@ function fakeActions() {
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
+    restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
+    setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
   };
   return { actions, calls };
 }
@@ -47,6 +49,34 @@ test('archive scope exposes only home and workspace and returns restart status',
   assert.deepEqual(await post('home'), { status: 200, body: { ok: true, restartRequired: false } });
   for (const scope of ['all', 'world', '', null, undefined]) assert.equal((await post(scope)).status, 400);
   assert.deepEqual(calls, ['scope:workspace', 'scope:home']);
+});
+test('the console can restart the plugin-managed adapter, and says so when there is none', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (a: ConsoleActions) => handleConsole(sources, a, { method: 'POST', url: '/dsh-world/console/wechat-adapter', write: true, body: {} });
+  assert.equal((await post(actions)).status, 200);
+  assert.deepEqual(calls, ['adapter-restart']);
+  assert.equal((await post({ ...actions, restartWechatAdapter: async () => false })).status, 400);
+  assert.equal((await handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat-adapter', write: false, body: {} })).status, 403);
+});
+test('wechat settings validate their range and keep omitted fields', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (body: Record<string, unknown>) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat', write: true, body });
+  assert.equal((await post({ contextMessages: 12, bufferSeconds: 1.5 })).status, 200);
+  assert.equal((await post({ contextMessages: null })).status, 200);
+  for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
+  assert.deepEqual(calls, ['wechat:{"context":12,"bufferSeconds":1.5}', 'wechat:{"context":null}']);
+});
+test('wechat settings default to 8 and 3, persist, and return to default', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-world-wechat-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.deepEqual([power.wechatContext(), power.wechatBufferSeconds()], [8, 3]);
+  power.setWechat({ context: 12, bufferSeconds: 0 });
+  const again = createWorldSwitch(dir);
+  assert.deepEqual([again.wechatContext(), again.wechatBufferSeconds()], [12, 0]);
+  again.setWechat({ context: null });
+  assert.deepEqual([createWorldSwitch(dir).wechatContext(), createWorldSwitch(dir).wechatBufferSeconds()], [8, 0]);
+  again.setWechat({ bufferSeconds: 3 });
+  assert.equal('wechatBufferSeconds' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false);
 });
 test('console writes need the write mark, and change only what they name', async () => {
   const { actions, calls } = fakeActions();

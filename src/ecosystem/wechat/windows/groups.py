@@ -20,7 +20,7 @@ def mentionedIds(source):
     return [value.strip() for value in (root.findtext('atuserlist') or '').split(',') if value.strip()]
 
 
-def recentContext(database, chatId, current, normalize, pageSize=50):
+def recentContext(database, chatId, current, normalize, pageSize=50, limit=MAX_CONTEXT_MESSAGES):
     def order(row):
         return int(row['sort_seq']), row['shard'], int(row['local_id'])
     boundary = order(current)
@@ -32,8 +32,8 @@ def recentContext(database, chatId, current, normalize, pageSize=50):
                 message = normalize(row)
                 if message:
                     found[order(row)] = message
-        keys = sorted(found)[-MAX_CONTEXT_MESSAGES:]
-        if len(page) < pageSize or (len(keys) == MAX_CONTEXT_MESSAGES and int(page[-1]['sort_seq']) < keys[0][0]):
+        keys = sorted(found)[-limit:]
+        if len(page) < pageSize or (len(keys) == limit and int(page[-1]['sort_seq']) < keys[0][0]):
             break
         offset += len(page)
     result = [found[key] for key in keys]

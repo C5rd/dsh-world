@@ -1,4 +1,4 @@
-param(
+﻿param(
   [ValidateSet('Install', 'Build', 'Probe', 'Status', 'Chats', 'Start', 'Stop', 'Send', 'Acknowledge')]
   [string]$Action = 'Status',
   [string]$ConfigFile,

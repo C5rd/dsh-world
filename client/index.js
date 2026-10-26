@@ -287,6 +287,52 @@ window.__ModuleLoader__.load({
         msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
       ] : h('div', { className: 'dw-muted' }, '—'))
     }
+    /** 微信：适配器每约 2 秒来问一次，最近一次来问的时间就是连接状态；两个读取参数在它下次来问时同步。 */
+    function Wechat(props) {
+      var w = props.wechat, zone = props.zone
+      var contextState = useState(String(w.contextMessages)), context = contextState[0], setContext = contextState[1]
+      var bufferState = useState(String(w.bufferSeconds)), buffer = bufferState[0], setBuffer = bufferState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var age = w.lastContactAt ? Date.now() - new Date(w.lastContactAt).getTime() : null
+      var contacted = age != null && age < 30000, offline = contacted && w.account === 'offline'
+      var ad = w.adapter
+      var blocked = ad && ad.needsHuman
+      var stateText = blocked ? '● 有消息待核对，适配器已停' : !contacted ? (ad && ad.running ? '● 适配器启动中' : ad && ad.error ? '● 等待适配器文件' : w.lastContactAt ? '● 适配器已断开' : '● 等待适配器') : offline ? '● 微信离线，等待重新登录' : '● 已连接'
+      var adMsgState = useState(''), adMsg = adMsgState[0], setAdMsg = adMsgState[1]
+      function restartAdapter() {
+        setAdMsg('正在重启…')
+        post('wechat-adapter', {}).then(function () { setAdMsg('已重启'); if (props.onSaved) props.onSaved() }, function (e) { setAdMsg('重启失败：' + (e.message || e)) })
+      }
+      function save() {
+        var c = String(context).trim() === '' ? null : Number(context), b = String(buffer).trim() === '' ? null : Number(buffer)
+        if (c !== null && !(Number.isInteger(c) && c >= 1 && c <= 20)) { setMsg('请填 1–20 的整数，留空恢复默认 8'); return }
+        if (b !== null && !(b >= 0 && b <= 30)) { setMsg('请填 0–30 秒，留空恢复默认 3'); return }
+        post('wechat', { contextMessages: c, bufferSeconds: b }).then(function () {
+          setMsg('已保存。适配器下次轮询时同步，当前这一批沿用原值。')
+          if (c === null) setContext('8'); if (b === null) setBuffer('3')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+      }
+      return h(Card, { title: '微信', delay: 300 },
+        h('div', null, h('span', { className: 'dw-big ' + (contacted && !offline ? 'dw-ok' : 'dw-bad') }, stateText)),
+        KV([
+          ['最近联系', w.lastContactAt ? local(w.lastContactAt, zone) : '—'],
+          ['绑定账号', w.accountId || '—'],
+          ad ? ['适配器', ad.running ? '由插件管理 · 运行中' + (ad.restarts ? '（已重启 ' + ad.restarts + ' 次）' : '') : '由插件管理 · 已退出' + (ad.error ? '：' + ad.error : ad.lastExit ? '（' + ad.lastExit + '），等待重启' : '')] : null,
+          ['聊天', w.accountId ? w.chats + ' 个' : '—'],
+          ['待发送', String(w.pending)],
+          ['待核对', h('span', { className: w.uncertain ? 'dw-bad' : '' }, String(w.uncertain))],
+        ]),
+        w.uncertain ? h('div', { className: 'dw-muted' }, '发送结果不明的消息不会自动重发，请在微信里核对后用适配器 acknowledge 确认。') : null,
+        blocked ? h('div', { className: 'dw-bad' }, '上次有消息处理到一半、结果不明。先在微信里核对是否真的发出，再用适配器的 acknowledge 确认（见适配器 README），然后点下面的重启。') : null,
+        ad ? h('div', { className: 'dw-bar' }, h('button', { className: 'dw-btn', onClick: restartAdapter }, '重启适配器'), adMsg ? h('span', { className: adMsg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, adMsg) : null) : null,
+        h('div', { className: 'dw-setting' },
+          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '群聊读取上文条数', placeholder: '上文条数，默认 8', value: context, onChange: function (e) { setContext(e.target.value); setMsg('') } }),
+          h('input', { type: 'text', inputMode: 'decimal', 'aria-label': '图片缓冲秒数', placeholder: '缓冲秒数，默认 3', value: buffer, onChange: function (e) { setBuffer(e.target.value); setMsg('') } }),
+          h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是私聊图片等待后续图片或文字的秒数。与共享记忆的 200 轮无关。'),
+        msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
+    }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
       var health = list(snap.health), wakes = life ? list(life.recentWakes) : []
@@ -312,7 +358,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dw-grid' },
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
           h(Memory, { mem: mem, onSaved: props.refresh }),
-          h(Budget, { budget: snap.budget, onSaved: props.refresh })))
+          h(Budget, { budget: snap.budget, onSaved: props.refresh }),
+          snap.wechat ? h(Wechat, { wechat: snap.wechat, zone: zone, onSaved: props.refresh }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)

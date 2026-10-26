@@ -22,6 +22,7 @@ import { DEFAULT_TEMPLATE_FILE, roomTitle, worldNames } from './worldPrompt.ts';
 import { createWorldSwitch } from './worldSwitch.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
 import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
+import { createAdapterSupervisor, type AdapterSupervisor } from './ecosystem/wechat/supervisor.ts';
 import { createChannelSessions } from './ecosystem/shared/sessions.ts';
 import { createArchiveSelection } from './archiveSelection.ts';
 import { belongsToWorld } from './sourceArchive.ts';
@@ -46,6 +47,7 @@ export const Config = z.object({
   // A local app may hand her partner's words to her home through POST /dsh-world/bridge/say.
   bridge: z.boolean().default(false),
   wechat: z.boolean().default(false),
+  wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
@@ -107,6 +109,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
+    let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
     let unregisterWechat: (() => void) | undefined;
     let lifeStop: Promise<void> | undefined;
@@ -122,9 +125,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         if (config.wechat) {
           const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
           channels = groupSessions;
-          wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts,
+          wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
             ...createWechatRecorder(store, config.worldId, includesSession) });
           wechat.start(); unregisterWechat = webServer.register(wechat.route);
+          if (config.wechatAdapter?.python && config.wechatAdapter.config) { adapter = createAdapterSupervisor({ python: config.wechatAdapter.python, config: config.wechatAdapter.config, logFile: join(worldDir, 'wechat-adapter.log'), log: message => lifeCtx.logger.warn(message) }); adapter.start(); }
         }
         faults.clear('life');
         await current.start({ resumed });
@@ -138,7 +142,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       isHome = id => id === storedHome();
       bridge?.stop(); life?.stop();
       unregisterWechat?.();
-      const closingWechat = wechat?.stop(); unregisterWechat = undefined; wechat = undefined;
+      // The adapter is told to stop first: it exits when the module's connection file disappears.
+      const closingAdapter = adapter?.stop(); adapter = undefined;
+      const closingWechat = Promise.all([closingAdapter, wechat?.stop()]); unregisterWechat = undefined; wechat = undefined;
       channels?.stop(); channels = undefined;
       bridge = undefined; life = undefined;
       return lifeStop = Promise.all([lifeStop, closingWechat]).then(() => {});
@@ -148,7 +154,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, includesSession, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -168,6 +174,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
+      restartWechatAdapter: async () => { if (!adapter) return false; try { await adapter.restart(); } finally { sources.invalidate(); } return true; },
+      setWechatSettings: next => { power.setWechat(next); sources.invalidate(); },
       setArchiveScope: scope => { power.setArchiveScope(scope); sources.invalidate(); return power.restartRequired(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };

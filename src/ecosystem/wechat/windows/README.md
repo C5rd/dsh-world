@@ -88,6 +88,16 @@ DSH 端代码在 `src/ecosystem/wechat/`，此目录只负责 Windows 微信收�
 ./src/ecosystem/wechat/windows/wechat.ps1 Stop
 ```
 
+**让插件管理适配器（可选）**：在 dsh-world 配置里与 `wechat: true` 并列写入
+
+```yaml
+wechatAdapter:
+  python: C:/path/to/.host/wechat/.venv/Scripts/python.exe
+  config: C:/path/to/.host/wechat/config.json
+```
+
+两项都填才生效。微信模块启动时插件用等同于 `Start -AllowSend` 的参数拉起适配器，微信模块停止（控制台停止、重启 DSH、退出）时结束整个进程树，适配器意外退出则按 1 秒起翻倍、最长 30 秒的间隔自动重启；日志写在 `<world>/wechat-adapter.log`（超过 1MB 时清空）。**写下这两项即视为长期允许适配器发送消息**，默认关闭。启用前先用 `wechat.ps1 Stop` 停掉手动启动的实例，否则两个实例会争用单实例锁。适配器遇到需要人工核对的消息（结果不明，须在微信里确认后用 `acknowledge` 处理）时以退出码 2 退出，插件不会重复拉起；处理后在控制台「微信」卡片点「重启适配器」即可恢复。启动时若 Python、配置或脚本暂时缺失，插件会按同样的间隔重试，文件回来后自动启动。微信自身重启不需要插件处理：适配器会等待同一账号重新登录并沿用游标，控制台「微信」卡片会显示“微信离线，等待重新登录”。
+
 `Start -AllowSend` 会把所选聊天的新文字交给家的 Agent，并实际发送回复。家仍有原来的工具权限，第一版不会把群成员自动变成独立权限主体；接入群聊前应决定允许哪些人向家下指令。
 
 若提示待核对消息，先到家和对应微信聊天检查是否已处理、已发送。确认不需要自动再处理这一条后：

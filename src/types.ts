@@ -33,6 +33,8 @@ export interface WorldConfig {
   bridge?: boolean;
   /** The independent local WeChat module; the Windows adapter uses `<world>/wechat.json`. */
   wechat?: boolean;
+  /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
+  wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */
   toast?: boolean;
   /** Names besides this machine the console and the bridge answer to (a LAN address or domain behind a reverse proxy). */

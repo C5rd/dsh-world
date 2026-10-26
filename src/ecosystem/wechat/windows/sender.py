@@ -57,7 +57,9 @@ class NativeSender:
             raise RuntimeError('不能唯一核对微信核心 DLL')
         core = Path(next(iter(coreFiles)))
         verifyFile(core, self.profile['size'], self.profile['sha256'])
-        buildFile = Path(__file__).resolve().parents[4] / '.host/wechat/engine/current.json'
+        # The build sits beside the adapter's config.json, which is where the adapter runs from or is managed by the plugin.
+        engineDir = Path(config['engineDir']) if config.get('engineDir') else Path(__file__).resolve().parents[4] / '.host/wechat/engine'
+        buildFile = engineDir / 'current.json'
         build = json.loads(buildFile.read_text(encoding='utf-8-sig'))
         self.dll = Path(build['file']).resolve()
         verifyFile(self.dll, self.dll.stat().st_size, build['sha256'])

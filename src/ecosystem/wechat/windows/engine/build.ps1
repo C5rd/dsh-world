@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $workspaceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../../..'))
 $runtimeDir = Join-Path $workspaceRoot '.host\wechat\engine'
 $source = Join-Path $PSScriptRoot 'bridge.cpp'

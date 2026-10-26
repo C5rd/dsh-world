@@ -3,10 +3,10 @@ import { conversationKey, speakerIdentity, type SpeakerIdentity } from './identi
 export interface ChannelImage { file: string; quality: 'original' | 'cached' | 'thumbnail' }
 export interface ChannelContextMessage { id: string; occurredAt: string; text: string; identity: SpeakerIdentity; image?: ChannelImage }
 
-export function channelContext(value: unknown, current: SpeakerIdentity): ChannelContextMessage[] {
+export function channelContext(value: unknown, current: SpeakerIdentity, limit = 8): ChannelContextMessage[] {
   if (value === undefined || (Array.isArray(value) && value.length === 0)) return [];
   if (current.conversationType !== 'group') throw new Error('Invalid group context');
-  return contextMessages(value, current, 8);
+  return contextMessages(value, current, limit);
 }
 
 export function channelMedia(value: unknown, current: SpeakerIdentity): ChannelContextMessage[] {

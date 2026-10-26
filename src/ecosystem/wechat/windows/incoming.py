@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from wechatauto.media import MediaDownloader, V2_MAGIC, aligned_aes_block_size
 from snapshot import fileStamp, SnapshotBusy
+from stickers import StickerUnavailable, fetchSticker
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 32_000_000
@@ -134,3 +135,23 @@ class IncomingImages:
         if stamp != fileStamp(path): raise SnapshotBusy('读取期间图片缓存变化，稍后重读')
         if not result: raise ImageUnavailable('图片缓存尚不可用')
         return saveImage(result, target, self.config['selfId'], chatId, {'original': 'original', 'mid': 'cached', 'thumb': 'thumbnail'}[tier])
+
+    def readSticker(self, chatId, row):
+        if not any(chat['id'] == chatId for chat in self.config['chats']):
+            raise ValueError('表情包必须来自已配置的聊天')
+        if not self.config.get('fetchStickers', True): raise ImageUnavailable('未开启表情包下载')
+        self.checkProcess()
+        raw = self.database.get_message_row(chatId, row['local_id'], shard=row['shard'])
+        if not raw or raw.get('sender_username') != row.get('sender_username'):
+            raise ImageUnavailable('表情包的消息来源无法核对')
+        try: data = fetchSticker(raw['content'])
+        except StickerUnavailable as error: raise ImageUnavailable(str(error)) from error
+        self.checkProcess()
+        target = Path(self.config['moduleFile']).parent / 'wechat-incoming'
+        scratch = target / '.decoded'
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=scratch, suffix='.sticker', delete=False) as stream:
+            path = Path(stream.name)
+            stream.write(data)
+        try: return saveImage(path, target, self.config['selfId'], chatId, 'original')
+        finally: path.unlink(missing_ok=True)
