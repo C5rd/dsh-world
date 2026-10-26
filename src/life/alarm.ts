@@ -56,13 +56,14 @@ export function formatDuration(ms: number): string {
 }
 /**
  * What she hears when an alarm rings. The wording comes from the alarm template (`extra` carries her
- * names for templates that use them); the 【我的时间】 mark is always the plugin's own.
+ * names for templates that use them, plus `did` — one line about what she actually did since she set the
+ * alarm, so the promise and the record arrive together); the 【我的时间】 mark is always the plugin's own.
  */
 export function wakeText(alarm: Alarm, now: Date, timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
   const base = { ...extra, timeZone, fallbackWakeTime };
   const lateText = lateNotice(now.getTime() - Date.parse(alarm.at), messages, base);
   const body = alarm.source === 'fallback' ? fillMessage(messages, '早上兜底', { ...base, late: lateText })
-    : fillMessage(messages, '闹钟响了', { ...base, time: formatLocalTime(new Date(alarm.at), timeZone), note: alarm.note, late: lateText }, { note: Boolean(alarm.note) });
+    : fillMessage(messages, '闹钟响了', { ...base, time: formatLocalTime(new Date(alarm.at), timeZone), note: alarm.note, late: lateText }, { note: Boolean(alarm.note), did: Boolean(extra.did) });
   return withTail(body, messages, base);
 }
 /** What a new home says the moment it is built, or her home when her world starts again. */

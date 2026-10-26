@@ -13,6 +13,7 @@ import { belongsToWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
 import { homeTitle, roomTitle, worldNames } from '../worldPrompt.ts';
 import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewText, wakeText } from './alarm.ts';
+import { summarizeSince } from './activity.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
 import { createHome } from './home.ts';
@@ -61,6 +62,19 @@ export function createLifeRuntime(deps: LifeDeps) {
     return messages;
   }
   const templateValues = () => ({ name: names.companion, partner: names.partner, homeTitle: homeTitle(names), timeZone, fallbackWakeTime: options.fallbackWakeTime, example: exampleTime(timeZone) });
+  /**
+   * What she actually did between setting this alarm and hearing it, in one line.
+   *
+   * Read from the activity log rather than from her own account of the time, so the alarm can contradict
+   * her note: "歇着" plus forty tool calls is a different sentence from "歇着" plus none. Both days the
+   * alarm could straddle are read, because a plan set at 23:50 and heard at 00:30 has its work split.
+   */
+  const didSince = (alarm: Alarm, now: Date): string => {
+    const dayOf = (at: string | Date) => formatLocalTime(new Date(at), timeZone).slice(0, 10);
+    const days = [...new Set([dayOf(alarm.setAt), dayOf(now)])];
+    const records = days.flatMap(each => store.activity(each)).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    return summarizeSince(records, alarm.setAt, now);
+  };
   const say = (agent: Agent, text: string) => {
     agent.steer(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text }] }));
     return ctx.sessions.flush(agent.session);
@@ -172,7 +186,7 @@ export function createLifeRuntime(deps: LifeDeps) {
       // Cleared before steering, so a turn that ends quickly already sees "no alarm" and gets the fallback.
       delete state.alarm;
       now = clock();
-      await say(agent, wakeText(alarm, now, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+      await say(agent, wakeText(alarm, now, timeZone, options.fallbackWakeTime, alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) }));
     } catch (error) {
       ctx.logger.error(error);
       if (stopped) return;
