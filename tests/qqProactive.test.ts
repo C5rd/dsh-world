@@ -119,6 +119,20 @@ test('decide：从来没收到过消息时，那句「闲了多久」不报天�
   assert.equal(decision.note, '一直没人说过话');
 });
 
+test('decide：账本里残留的脏时间戳也当没说过话，别报「闲了几千万分钟」', () => {
+  // 清账/演练留下的零头（比如 23212 毫秒）会让 now - lastActivityAt 变成天文数字；
+  // 那句话是要显示在面板上的，看到的人只会以为算错了。
+  const dirty = decide({ policy: POLICY, now: at(12), state: stateAt({ lastActivityAt: 23212 }), target: '1', roll: () => 0 });
+  assert.equal(dirty.kind, 'go');
+  assert.equal(dirty.note, '一直没人说过话');
+
+  const hours = decide({ policy: POLICY, now: at(12), state: stateAt({ lastActivityAt: at(12) - 5 * HOUR }), target: '1', roll: () => 0 });
+  assert.equal(hours.kind === 'go' && hours.note, '闲了 5 小时');
+
+  const days = decide({ policy: POLICY, now: at(12), state: stateAt({ lastActivityAt: at(12) - 3 * 24 * HOUR }), target: '1', roll: () => 0 });
+  assert.equal(days.kind === 'go' && days.note, '闲了 3 天');
+});
+
 test('decide：换天了就按新的一天算，昨天的配额不算数', () => {
   const state = stateAt({ dayKey: dayKeyOf(at(12, 0, 1)), sentToday: 99, callsToday: 99, lastActivityAt: at(12, 0, 1) - 2 * HOUR });
   const decision = decide({ policy: POLICY, now: at(12, 0, 2), state, target: '1', roll: () => 0 });
@@ -154,7 +168,7 @@ test('tick：她要说话 → 发出去、算一条、记下时间', async () =>
       policy: { ...POLICY, idleThresholdMs: 30 * MINUTE },
       file,
       log: () => {},
-      generate: async (hint) => { assert.equal(hint, '闲了 60 分钟'); return '  在忙吗  '; },
+      generate: async (hint) => { assert.equal(hint, '闲了 1 小时'); return '  在忙吗  '; },
       deliver: async (text) => { sent.push(text); },
       target: () => '3475994805',
       selfId: () => '2039693365',

@@ -136,8 +136,16 @@ export function decide(input: {
   }
   const rollValue = roll();
   if (!(rollValue < policy.sendProbability)) return { kind: 'dice', roll: rollValue };
-  // 「闲了多久」是写给她看的一句话：从来没收到过消息时，别报一个天文数字。
-  const idleNote = lastActivity ? `闲了 ${Math.round((now - lastActivity) / 60_000)} 分钟` : '一直没人说过话';
+  // 「闲了多久」是写给她看的一句话。从来没收到过消息时别报天文数字；
+  // 账本里要是留着个明显不可能是「最近」的时间戳（清账留下的零头之类），也当没说过话。
+  const idleMs = lastActivity > 0 && now - lastActivity < 365 * 24 * 3600_000 ? now - lastActivity : 0;
+  const idleNote = idleMs === 0
+    ? '一直没人说过话'
+    : idleMs < 3600_000
+      ? `闲了 ${Math.round(idleMs / 60_000)} 分钟`
+      : idleMs < 24 * 3600_000
+        ? `闲了 ${Math.round(idleMs / 3600_000)} 小时`
+        : `闲了 ${Math.round(idleMs / (24 * 3600_000))} 天`;
   return { kind: 'go', note: idleNote };
 }
 
