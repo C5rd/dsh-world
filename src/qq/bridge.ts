@@ -89,6 +89,8 @@ export interface QqBridge {
   unbind(key: string): Promise<BindResult>;
   ensureRunning(): Promise<StartResult>;
   syncEndpoint(): Promise<SyncEndpointResult>;
+  /** 主动聊天的统计：今天花了多少次、平均多少 token、成了几条、被规则拦下几条。读不到返回 undefined。 */
+  proactive(): Promise<any>;
   faults(): string[];
 }
 
@@ -232,6 +234,22 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     try {
       const token = readConsoleToken(dir);
       const { status, body } = await call(base, `/api/status${token ? `?token=${encodeURIComponent(token)}` : ''}`);
+      return status === 200 ? body ?? {} : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 主动聊天的统计。
+   *
+   * 只读：这个方法的唯一用途是给设置页画一张表，它不该能改开关（那要走 POST）。
+   * 桥没起来时返回 undefined —— 面板显示「未运行」，而不是报一个错。
+   */
+  async function proactive(): Promise<any> {
+    try {
+      const token = readConsoleToken(dir);
+      const { status, body } = await call(base, `/api/socialV2/proactive${token ? `?token=${encodeURIComponent(token)}` : ''}`);
       return status === 200 ? body ?? {} : undefined;
     } catch {
       return undefined;
@@ -416,5 +434,5 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     }
   }
 
-  return { status, start, stop, halt, intent: () => readIntent(dir), bind, unbind, ensureRunning, syncEndpoint, faults: () => [...faults.values()] };
+  return { status, start, stop, halt, intent: () => readIntent(dir), bind, unbind, ensureRunning, syncEndpoint, proactive, faults: () => [...faults.values()] };
 }

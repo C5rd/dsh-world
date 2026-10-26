@@ -433,7 +433,94 @@ window.__ModuleLoader__.load({
         }))) : h('div', { className: 'dw-muted' }, '还没有压缩记录')))
     }
 
-    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录']]
+    var cell = { padding: '4px 10px 4px 0', whiteSpace: 'nowrap' }
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? String(Math.round(v)) : '—' }
+    var pct = function (a, b) { return b > 0 ? Math.round((a / b) * 100) + '%' : '—' }
+
+    /**
+     * 主动联系：她自己想说话的时候，花了多少钱、说成了几条、被规则拦下几条。
+     *
+     * 数据全部来自桥的 /api/socialV2/proactive（经 /dsh-world/qq/proactive 透出来），
+     * 这一页只读：开关在桥那边（config.json 的 socialV2.proactiveEngine）。
+     */
+    function Proactive() {
+      var s = useState(null), data = s[0], setData = s[1]
+      var e = useState(null), error = e[0], setError = e[1]
+      useEffect(function () {
+        var alive = true
+        function load() {
+          qqGet('proactive').then(function (d) {
+            if (!alive) return
+            setData(d); setError(null)
+          }, function (err) {
+            if (!alive) return
+            setData(null); setError(String((err && err.message) || err))
+          })
+        }
+        load()
+        var timer = setInterval(function () { if (document.visibilityState === 'visible') load() }, 15000)
+        return function () { alive = false; clearInterval(timer) }
+      }, [])
+      if (error) return h('div', { className: 'dw' }, h('div', { className: 'dw-muted' }, '读不到主动联系的统计：' + error))
+      if (!data) return h('div', { className: 'dw' }, h('div', { className: 'dw-muted' }, '读取中…'))
+      var today = data.today || {}, usage = data.usage || {}, policy = data.policy || {}
+      var series = Array.isArray(data.usageSeries) ? data.usageSeries : []
+      var reports = Array.isArray(data.reports) ? data.reports : []
+      var cap = policy.maxCallsPerDay
+      var flags = []
+      if (data.enabled !== true) flags.push('未启用')
+      if (data.dryRun !== false) flags.push('演练模式（不真的发）')
+      if (data.running !== true) flags.push('调度器没在跑')
+      return h('div', { className: 'dw' },
+        h('div', { className: 'dw-title' },
+          h('h2', null, '主动联系'),
+          h('div', { className: 'dw-state' },
+            h('i', { className: 'dw-dot' }),
+            data.enabled === true ? '开着' : '关着',
+            flags.length ? h('span', { className: 'dw-bad' }, ' · ' + flags.join(' · ')) : null)),
+        h('div', null,
+          h('div', { style: { marginBottom: 6 } }, '今天（' + (today.dayKey || '—') + '）'),
+          h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
+            h('tbody', null,
+              h('tr', null,
+                h('td', { style: cell }, '调用 AI'),
+                h('td', { style: cell }, num(today.calls) + (typeof cap === 'number' && cap > 0 ? ' / ' + cap : '')),
+                h('td', { style: cell }, typeof cap === 'number' && cap > 0 ? '用了 ' + pct(today.calls, cap) : '不限')),
+              h('tr', null,
+                h('td', { style: cell }, '主动消息'),
+                h('td', { style: cell }, num(today.messages)),
+                h('td', { style: cell }, '送出 ' + num(today.sent) + ' 条')),
+              h('tr', null,
+                h('td', { style: cell }, '被规则拦下'),
+                h('td', { style: cell }, num(today.suppressed)),
+                h('td', { style: cell }, '待处理 ' + num(today.pending))),
+              h('tr', null,
+                h('td', { style: cell }, '平均 token'),
+                h('td', { style: cell }, usage.sampled > 0 ? '入 ' + num(usage.avgInputTokens) + ' / 出 ' + num(usage.avgOutputTokens) : '未上报'),
+                h('td', { style: cell }, usage.sampled > 0 ? '样本 ' + usage.sampled + ' / ' + num(usage.calls) + ' 次' : 'provider 没给用量')))),
+        h('div', { style: { marginBottom: 6 } }, '近 7 天'),
+        h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
+          h('thead', null, h('tr', null,
+            ['日期', '调用', '平均入', '平均出', '主动消息'].map(function (t) { return h('th', { key: t, style: Object.assign({}, cell, { textAlign: 'left', color: 'inherit', opacity: 0.6 }) }, t) }))),
+          h('tbody', null, series.map(function (d) {
+            return h('tr', { key: d.dayKey },
+              h('td', { style: cell }, d.dayKey),
+              h('td', { style: cell }, num(d.calls)),
+              h('td', { style: cell }, d.sampled > 0 ? num(d.avgInputTokens) : '—'),
+              h('td', { style: cell }, d.sampled > 0 ? num(d.avgOutputTokens) : '—'),
+              h('td', { style: cell }, num(d.messages)))
+          }))),
+        h('div', { style: { marginBottom: 6 } }, '最近几次判断'),
+        reports.length === 0
+          ? h('div', { className: 'dw-muted' }, '还没有记录')
+          : h('div', null, reports.slice(0, 8).map(function (r, i) {
+            var blocked = Array.isArray(r.blocked) ? r.blocked.join(' / ') : ''
+            return h('div', { key: i, style: { padding: '3px 0', opacity: 0.85 } },
+              (r.decision || '—') + (blocked ? '（' + blocked + '）' : '') + (r.text ? '：' + r.text : ''))
+          }))))
+    }
+
+    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['proactive', '主动联系']]
     /** 一份快照的画面；life 为 null（停着，或生活线没能启动）或缺了哪一块都不会崩。 */
     function View(props) {
       var snap = props.snap, error = props.error
@@ -462,6 +549,7 @@ window.__ModuleLoader__.load({
         tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : null,
         tab === 'prompt' ? h(PromptEditor) : null,
         tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
+        tab === 'proactive' ? h(Proactive, null) : null,
         panel ? h(Panel, { kind: panel, onClose: function () { setPanel(null) } }) : null)
     }
 
@@ -506,7 +594,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
     return exports
   },
 })

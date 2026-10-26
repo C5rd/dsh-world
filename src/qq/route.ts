@@ -8,6 +8,7 @@ import type { ConsoleDoors } from './panel.ts';
  * by the console's `/dsh-world` prefix (the host matches the longer one first).
  *
  * Read:  GET  /dsh-world/qq           is the bridge up, is it talking to DSH, which entries are bound
+ *        GET  /dsh-world/qq/proactive  the proactive-chat numbers (calls, tokens, sent, suppressed)
  *        GET  /dsh-world/qq/console   the two consoles' addresses, tokens in hand: qq-bridge (its token is a
  *                                     file) and SnowLuma (a fresh session token traded for the panel password)
  * Write: POST /dsh-world/qq/start     bring it up if it is down
@@ -81,6 +82,15 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
       try {
         if (req.method === 'GET' && (path === '/' || path === '')) {
           sendJson(res, ok(await qq.status()));
+          return;
+        }
+        if (req.method === 'GET' && path === '/proactive') {
+          const data = await qq.proactive();
+          if (!data) {
+            sendJson(res, { status: 503, body: { error: '桥没在跑，统计读不到' } });
+            return;
+          }
+          sendJson(res, ok(data));
           return;
         }
         if (req.method === 'GET' && path === '/console') {

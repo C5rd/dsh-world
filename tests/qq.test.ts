@@ -27,6 +27,7 @@ function stub(overrides: Partial<QqBridge> = {}): QqBridge {
     unbind: async key => ({ started: true, key }),
     ensureRunning: async () => ({ started: true }),
     syncEndpoint: async () => ({ changed: false }),
+    proactive: async () => ({ enabled: false, dryRun: true, running: false }),
     faults: () => [],
   };
   return { ...base, ...overrides };
