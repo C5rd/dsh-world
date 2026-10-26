@@ -83,6 +83,16 @@ const filled = {
   dates: ['2026-10-26'],
   modules: { wechat: { available: true, enabled: true, running: true }, qq: { available: true, enabled: true, running: true } },
   wechat: { accountId: 'wxid_bot', chats: 2, pending: 0, uncertain: 0, lastContactAt: '2026-10-26T10:00:00.000Z', account: 'online', contextMessages: 8, bufferSeconds: 3, adapter: { running: true, pid: 1, restarts: 0, lastExit: null, error: null, needsHuman: false } },
+  // 原生通道那张卡：不带上它，QQ 卡片里新加的「主动开口」两个勾选框永远走不到渲染那一步。
+  native: {
+    enabled: true, connected: true, url: 'ws://127.0.0.1:3003', allowPrivate: 1, allowGroups: 1, autoReply: true,
+    bindHomeSession: 'none', conversations: 2, answering: 0, sent: 3, failed: 0, lastEventAt: '2026-10-26T10:00:00.000Z', lastError: null,
+    proactive: {
+      enabled: true, dryRun: true, policy: { idleThresholdMs: 1800000 },
+      today: { dayKey: '2026-10-26', sent: 0, calls: 1 }, lastActivityAt: 0, lastProactiveAt: 0,
+      lastDecision: { kind: 'go', note: '闲了 31 分钟' }, events: [],
+    },
+  },
 };
 
 const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Proactive', 'Modules', 'Wechat'] as const;

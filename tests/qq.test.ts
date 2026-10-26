@@ -134,3 +134,32 @@ test('面板密码只走 POST，还得带 x-dsh-world 头；密码要是空的�
   assert.deepEqual(ok.body.snowluma, { url: 'http://127.0.0.1:5099/?token=abc' });
   assert.deepEqual(seen, ['admin:hunter2']);
 });
+
+test('原生通道的两个主动开口开关：认布尔、别的一律拒、只转认识的字段', async () => {
+  const headers = { [WRITE_HEADER]: '1' };
+  const seen: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }[] = [];
+  const withNative = qqRoute(stub(), [], undefined, () => ({ autoReply: false, proactive: null }), patch => { seen.push(patch); return { ok: true }; });
+
+  // 什么都没给：拒（不然就是一个静默的空写）
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: {} }))).status, 400);
+  // proactive 的形状不对：全拒
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: {} } }))).status, 400);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: 'yes' } }))).status, 400);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: [] } }))).status, 400);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: { enabled: 'yes' } } }))).status, 400);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: { dryRun: 1 } } }))).status, 400);
+  // 宿主半侧没接上：也说清楚
+  const welp = await call(route(stub()), request('POST', '/native', { headers, body: { autoReply: true } }));
+  assert.equal(welp.status, 400);
+  assert.match(String(welp.body.error), /没有接上/);
+
+  // 好好给：转过去
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { autoReply: true } }))).status, 200);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { proactive: { enabled: true, dryRun: true } } }))).status, 200);
+  assert.equal((await call(withNative, request('POST', '/native', { headers, body: { autoReply: false, proactive: { enabled: false }, 多余的: 1 } }))).status, 200);
+  assert.deepEqual(seen, [
+    { autoReply: true },
+    { proactive: { enabled: true, dryRun: true } },
+    { autoReply: false, proactive: { enabled: false } },
+  ]);
+});

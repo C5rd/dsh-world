@@ -17,6 +17,8 @@ import type { ConsoleDoors } from './panel.ts';
  *                                     process is spawned, so the supervisor will not bring it back
  *        POST /dsh-world/qq/bind      { key, sessionId } points a QQ entry at a session
  *        POST /dsh-world/qq/unbind    { key }
+ *        POST /dsh-world/qq/native    { autoReply?, proactive?: { enabled?, dryRun? } } her own OneBot channel's
+ *                                     switches; the proactive pair starts or stops the asking engine on the spot
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
  *        POST /dsh-world/qq/proactive  { enabled?, dryRun?, probability? } flips the switches and the send chance;
@@ -37,12 +39,30 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
   return knownHost(req.headers.host, allowedHosts);
 }
 
-async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: (patch: { autoReply?: boolean }) => unknown): Promise<JsonResult | undefined> {
+async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: (patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }) => unknown): Promise<JsonResult | undefined> {
   switch (path) {
     case '/native': {
       if (!setNative) return bad('原生通道没有接上');
-      if (typeof body?.autoReply !== 'boolean') return bad('autoReply 要是布尔');
-      return ok(setNative({ autoReply: body.autoReply }));
+      const patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } } = {};
+      if (typeof body?.autoReply === 'boolean') patch.autoReply = body.autoReply;
+      const raw = body?.proactive;
+      if (raw !== undefined) {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return bad('proactive 要是一个对象');
+        const source = raw as Record<string, unknown>;
+        const next: { enabled?: boolean; dryRun?: boolean } = {};
+        if (source.enabled !== undefined) {
+          if (typeof source.enabled !== 'boolean') return bad('proactive.enabled 要是布尔');
+          next.enabled = source.enabled;
+        }
+        if (source.dryRun !== undefined) {
+          if (typeof source.dryRun !== 'boolean') return bad('proactive.dryRun 要是布尔');
+          next.dryRun = source.dryRun;
+        }
+        if (next.enabled === undefined && next.dryRun === undefined) return bad('proactive 里至少要给 enabled 或 dryRun');
+        patch.proactive = next;
+      }
+      if (patch.autoReply === undefined && patch.proactive === undefined) return bad('autoReply 或 proactive 至少要给一个');
+      return ok(setNative(patch));
     }
     case '/start': return ok(await qq.start());
     case '/stop': return ok(await qq.stop());
@@ -92,7 +112,7 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
   }
 }
 
-export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: (patch: { autoReply?: boolean }) => unknown) {
+export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: (patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }) => unknown) {
   return {
     kind: 'prefix' as const, path: QQ_PREFIX,
     handler: async (req: IncomingMessage, res: ServerResponse) => {

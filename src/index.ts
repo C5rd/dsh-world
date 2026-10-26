@@ -161,7 +161,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
       // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
       const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
-      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors, () => qqNative?.status(), patch => qqNative?.setAutoReply(patch.autoReply === true) ?? null));
+      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors, () => qqNative?.status(), patch => {
+        if (!qqNative) return null;
+        if (patch.proactive) return qqNative.setProactive(patch.proactive);
+        return qqNative.setAutoReply(patch.autoReply === true);
+      }));
       void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
       // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
       // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。

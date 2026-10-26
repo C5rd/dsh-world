@@ -127,14 +127,14 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  let overrides: { autoReply?: boolean } = {};
+  let overrides: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } } = {};
   let overridesRead = false;
   function readOverrides(): void {
     if (overridesRead) return;
     overridesRead = true;
     const file = deps.stateFile;
     if (!file) return;
-    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean }; } catch { overrides = {}; }
+    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }; } catch { overrides = {}; }
   }
   function writeOverrides(): void {
     const file = deps.stateFile;
@@ -144,7 +144,15 @@ export function createQqNativeModule(deps: {
   const settings = (): QqNativeConfig => {
     readOverrides();
     const base = deps.config();
-    return overrides.autoReply === undefined ? base : { ...base, autoReply: overrides.autoReply };
+    // 面板上拨过的主动开口开关优先于配置里的出厂值；两个字段各管各的。
+    const proactive = overrides.proactive
+      ? { ...base.proactive, ...(overrides.proactive.enabled === undefined ? {} : { enabled: overrides.proactive.enabled }), ...(overrides.proactive.dryRun === undefined ? {} : { dryRun: overrides.proactive.dryRun }) }
+      : base.proactive;
+    return {
+      ...base,
+      ...(overrides.autoReply === undefined ? {} : { autoReply: overrides.autoReply }),
+      proactive,
+    };
   };
 
   function remember(messageId: string): boolean {
@@ -289,6 +297,27 @@ export function createQqNativeModule(deps: {
         failed: stats.failed,
         proactive: proactive ? proactive.status() : null,
       };
+    },
+    /**
+     * 面板上那两个开关：会不会自己先开口、以及只演不做。
+     *
+     * 当场生效 —— 打开就地起引擎，关掉就地停，不指望谁去重载插件。
+     */
+    setProactive(patch: { enabled?: boolean; dryRun?: boolean }): QqNativeStatus {
+      readOverrides();
+      const next = { ...(overrides.proactive ?? {}) };
+      if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled;
+      if (typeof patch.dryRun === 'boolean') next.dryRun = patch.dryRun;
+      overrides.proactive = next;
+      writeOverrides();
+      const config = settings();
+      if (config.proactive.enabled === true) {
+        if (!proactive) startProactive(config);
+      } else if (proactive) {
+        proactive.stop();
+        proactive = undefined;
+      }
+      return this.status();
     },
     /** 面板上那个「会不会自己回」的开关。 */
     setAutoReply(value: boolean) {
