@@ -17,6 +17,7 @@ import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
 import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './ecosystem/qq/bridge.ts';
 import { createQqSupervisor } from './ecosystem/qq/supervisor.ts';
+import { createQqNativeModule, type QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
 import { createConsoleDoors } from './ecosystem/qq/panel.ts';
 import { createWorldRuntime } from './runtime.ts';
@@ -50,6 +51,18 @@ export const Config = z.object({
   outlets: z.array(z.object({ name: z.string().required(), url: z.string(), urlFile: z.string(), path: z.string(), kinds: z.array(z.union([z.const('reply'), z.const('busy'), z.const('reach')])) })).default([]),
   // A local app may hand her partner's words to her home through POST /dsh-world/bridge/say.
   bridge: z.boolean().default(false),
+  qqNative: z.object({
+    enabled: z.boolean().default(false),
+    wsUrl: z.string().default('ws://127.0.0.1:3003'),
+    accessToken: z.string().default(''),
+    allowPrivate: z.array(z.string()).default([]),
+    allowGroups: z.array(z.string()).default([]),
+    autoReply: z.boolean().default(true),
+    contextMessages: z.number().default(6),
+    // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
+    // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
+    bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
+  }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
@@ -132,7 +145,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
       // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
       const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
-      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors));
+      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors, () => qqNative?.status(), patch => qqNative?.setAutoReply(patch.autoReply === true) ?? null));
       void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
       // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
       // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
@@ -150,6 +163,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
+    let qqNative: QqNativeModule | undefined;
     let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
     let unregisterWechat: (() => void) | undefined;
@@ -174,6 +188,39 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       channels?.stop(); channels = undefined;
       return wechatClosing = closing;
     }
+    /** QQ talks to her through the same home the WeChat channel uses; only the transport differs. */
+    async function startQqNative(current: LifeRuntime): Promise<void> {
+      if (qqNative || !config.qqNative?.enabled) return;
+      const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
+      qqNative = createQqNativeModule({
+        ctx: lifeCtx,
+        // 一个 QQ 对话落在哪。群总是各建一个频道会话；私聊默认落进她的家，除非
+        // `bindHomeSession: none` 把它挡在外面 —— 开发测试这条通道时就靠它，
+        // 免得测试回合走进步话真正生活着的那条线。
+        home: identity => {
+          const bind = config.qqNative?.bindHomeSession ?? 'owner';
+          if (identity.conversationType === 'group') return bind === 'all' ? current.home() : groupSessions.open(identity);
+          return bind === 'none' ? groupSessions.open(identity) : current.home();
+        },
+        logger: lifeCtx.logger,
+        stateFile: join(options.roomDir, '..', 'qq-native.json'),
+        config: () => {
+                  const q = config.qqNative ?? {};
+                  return {
+                    enabled: q.enabled ?? false,
+                    wsUrl: q.wsUrl ?? 'ws://127.0.0.1:3003',
+                    accessToken: q.accessToken ?? '',
+                    allowPrivate: q.allowPrivate ?? [],
+                    allowGroups: q.allowGroups ?? [],
+                    autoReply: q.autoReply ?? true,
+                    contextMessages: q.contextMessages ?? 6,
+                    bindHomeSession: q.bindHomeSession ?? 'owner',
+                  };
+                },
+      });
+      qqNative.start();
+    }
+    function stopQqNative(): void { qqNative?.stop(); qqNative = undefined; }
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
       try {
@@ -184,6 +231,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         life = current; isHome = current.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(current);
+        if (config.qqNative?.enabled) await startQqNative(current);
         faults.clear('life');
         await current.start({ resumed });
       } catch (error) {
@@ -196,6 +244,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       isHome = id => id === storedHome();
       bridge?.stop(); life?.stop();
       const closingWechat = stopWechat();
+      stopQqNative();
       bridge = undefined; life = undefined;
       return lifeStop = Promise.all([lifeStop, closingWechat]).then(() => {});
     }
@@ -205,7 +254,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, native: () => qqNative?.status() ?? null, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
       modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqBridgeDir), enabled: power.qqEnabled(), running: qq !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {

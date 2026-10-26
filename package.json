@@ -62,6 +62,9 @@
       }
     }
   },
+  "dependencies": {
+    "@snowluma/sdk": "1.14.22"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0",

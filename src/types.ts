@@ -33,6 +33,8 @@ export interface WorldConfig {
   bridge?: boolean;
   /** The independent local WeChat module; the Windows adapter uses `<world>/wechat.json`. */
   wechat?: boolean;
+  /** QQ straight to OneBot: no qq-bridge process, the plugin owns the sockets, the sessions and the state. */
+  qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; allowGroups?: string[]; autoReply?: boolean; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '' };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
   wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */

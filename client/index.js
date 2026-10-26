@@ -381,6 +381,13 @@ window.__ModuleLoader__.load({
           return null
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
+      function flipNative(on) {
+        setBusy(true); setMsg('')
+        qqPost('native', { autoReply: on }).then(function () {
+          setMsg('')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
       var faults = list(qq.faults)
       var sup = qq.supervisor || null
       return h(Card, { title: 'QQ', delay: 240 }, [
@@ -393,6 +400,22 @@ window.__ModuleLoader__.load({
           ' · 连续失败 ' + (sup.consecutiveFailures || 0) + ' 次 · 10 分钟内已拉起 ' + (sup.restartsInWindow || 0) + ' 次',
           sup.backoffMs ? ' · 退避 ' + Math.round(sup.backoffMs / 1000) + ' 秒' : '',
           sup.dshReady === false ? ' · DSH 那边没就绪' : '') : null,
+        props.native || (props.qq && props.qq.native) ? (function (n) {
+          if (!n) return h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开')
+          return h('div', { key: 'n' }, [
+            h('span', { key: 'a', className: n.connected ? 'dw-ok' : 'dw-muted' }, n.connected ? '● 她自己连着 ' + n.url : '● 她自己的通道没连上'),
+            h('span', { key: 'b', className: 'dw-muted' }, ' · 收 ' + (n.conversations || 0) + ' 个会话 · 发 ' + (n.sent || 0) + ' 条' + (n.failed ? ' · 失败 ' + n.failed : '') + (n.autoReply ? ' · 会自己回' : ' · 只看不回')),
+            n.lastError ? h('span', { key: 'c', className: 'dw-bad' }, ' · ' + n.lastError) : null,
+          ])
+        })(props.native || (props.qq && props.qq.native)) : null,
+        (function (n) {
+          if (!n) return null
+          return h('label', { key: 'nt', className: 'dw-setting', style: { cursor: 'pointer' } }, [
+            h('input', { key: 'c', type: 'checkbox', checked: n.autoReply === true, disabled: busy,
+              onChange: function (e) { flipNative(e.target.checked) } }),
+            h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
+          ])
+        })(props.native || (props.qq && props.qq.native)),
         sup && sup.lastError ? h('div', { key: 'pe', className: 'dw-bad' }, '● ' + sup.lastError) : null,
         h('div', { key: 'e', className: 'dw-trail' }, rows.length ? rows.map(function (r, i) {
           return h('span', { key: i }, r.key + ' → ' + String(r.sessionId || '').replace(/^session-/, '').slice(0, 8))

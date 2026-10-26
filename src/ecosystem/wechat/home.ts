@@ -53,11 +53,11 @@ export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIde
             if (event.data.id === words.id) { admitted = true; ownTurn = turn; }
             // First sessions also receive a skill catalog, alongside runtime snapshots and recall.
             else if (admitted) {
-              const source = event.data.source;
-              // Her own alarm can ring in the middle of a reply; that is not another person speaking.
-              const frameworkContext = ('form' in source && (source.form === 'snapshot' || (source.form === 'catalog' && ['skill-catalog'].includes(source.kind))))
-                || ['compact-checkpoint', 'dsh-world-history', 'dsh-world-channel-context', 'dsh-world-wechat-outgoing', 'dsh-world-life'].includes(source.kind);
-              if (!frameworkContext) { failed = true; finish(); }
+              // Anything the harness injects around a turn — runtime snapshot, skill catalog, recall from a
+              // plugin (hindsight), her own alarm, history, channel context — is not another person speaking.
+              // Only a real user message can cut this answer short. The old form/kind allowlist kept missing
+              // new injectors and killed the reply.
+              if ((event.data.source ?? {}).kind === 'user') { failed = true; finish(); }
             }
           }
           if (!admitted) return;

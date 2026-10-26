@@ -37,8 +37,13 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
   return knownHost(req.headers.host, allowedHosts);
 }
 
-async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined): Promise<JsonResult | undefined> {
+async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: (patch: { autoReply?: boolean }) => unknown): Promise<JsonResult | undefined> {
   switch (path) {
+    case '/native': {
+      if (!setNative) return bad('原生通道没有接上');
+      if (typeof body?.autoReply !== 'boolean') return bad('autoReply 要是布尔');
+      return ok(setNative({ autoReply: body.autoReply }));
+    }
     case '/start': return ok(await qq.start());
     case '/stop': return ok(await qq.stop());
     case '/halt': return ok(await qq.halt());
@@ -87,7 +92,7 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
   }
 }
 
-export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], doors?: ConsoleDoors) {
+export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: (patch: { autoReply?: boolean }) => unknown) {
   return {
     kind: 'prefix' as const, path: QQ_PREFIX,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -111,6 +116,11 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
           sendJson(res, ok(data));
           return;
         }
+        if (req.method === 'GET' && path === '/native') {
+          // 她自己接的那条 OneBot 通道。没开就老实回 null，界面据此显示「没开」。
+          sendJson(res, ok(native?.() ?? null));
+          return;
+        }
         if (req.method === 'GET' && path === '/console') {
           if (!doors) {
             sendJson(res, { status: 404, body: { error: '控制台地址没有接上' } });
@@ -129,7 +139,7 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
           return;
         }
         const body = jsonObject(await readBody(req, MAX_BODY_BYTES));
-        const result = await write(qq, doors, path, body);
+        const result = await write(qq, doors, path, body, setNative);
         sendJson(res, result ?? { status: 404, body: { error: 'not found' } });
       } catch (error) {
         sendJson(res, { status: 500, body: { error: String(error instanceof Error ? error.message : error) } });
