@@ -86,7 +86,8 @@ const filled = {
   // 原生通道那张卡：不带上它，QQ 卡片里新加的「主动开口」两个勾选框永远走不到渲染那一步。
   native: {
     enabled: true, connected: true, url: 'ws://127.0.0.1:3003', allowPrivate: 1, allowGroups: 1, autoReply: true,
-    bindHomeSession: 'none', conversations: 2, answering: 0, sent: 3, failed: 0, lastEventAt: '2026-10-26T10:00:00.000Z', lastError: null,
+    bindHomeSession: 'none', groupTrigger: 'mention', conversations: 2, answering: 0, sent: 3, failed: 0,
+    blocked: 2, lastBlockedAt: '2026-10-26T10:05:00.000Z', lastEventAt: '2026-10-26T10:00:00.000Z', lastError: null,
     proactive: {
       enabled: true, dryRun: true, policy: { idleThresholdMs: 1800000 },
       today: { dayKey: '2026-10-26', sent: 0, calls: 1 }, lastActivityAt: 0, lastProactiveAt: 0,
