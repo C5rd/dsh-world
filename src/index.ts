@@ -15,6 +15,10 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
+import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './ecosystem/qq/bridge.ts';
+import { createQqSupervisor } from './ecosystem/qq/supervisor.ts';
+import { qqRoute } from './ecosystem/qq/route.ts';
+import { createConsoleDoors } from './ecosystem/qq/panel.ts';
 import { createWorldRuntime } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -32,7 +36,7 @@ export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor }
 export const name = 'dsh-world';
 export const inject = ['agents', 'sessions', 'sessionPersistence', 'llm'];
 /** What `apply` receives: the schema below fills these defaults. */
-export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts'>>;
+export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts' | 'qqBridgeDir' | 'qqBridgePort' | 'qqBridgeAutoStart' | 'qqBridgeBindHomeSession'>>;
 // One companion per profile is the usual case, so it works as installed: the standard preset, a world named
 // default and the system time zone, with the life line on (it needs the desktop host's services and stays off without them).
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -51,8 +55,15 @@ export const Config = z.object({
   toast: z.boolean().default(true),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
+  // QQ: her home is reachable from outside DSH through a separate `qq-bridge` process. Empty qqBridgeDir leaves
+  // this whole module off; the bridge is started by hand from the console unless qqBridgeAutoStart says otherwise.
+  qqBridgeDir: z.string().default(''), qqBridgePort: z.number().default(3100), qqBridgeNode: z.string(),
+  qqBridgeAutoStart: z.boolean().default(false),
+  // 谁和谁共用一个会话。空着就不碰桥的 config.json（尊重人自己填的）；'owner' 让每个群各自一份会话、
+  // 只有主人私聊用她的家会话——这是装上之后最想要的那个，人在插件配置里说一次就够了。
+  qqBridgeBindHomeSession: z.union([z.const('owner').description('群各自独立，主人私聊用她的家会话'), z.const('all').description('所有入口都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default(''),
 });
-interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute>): () => void }
+interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof qqRoute>): () => void }
 
 /**
  * Her world runs only after her partner presses start in the world console, and stops when they press stop:
@@ -106,6 +117,31 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
+    // QQ: one more door into her home, managed here rather than by a launcher script. The endpoint is aligned
+    // on every start whether or not the bridge runs — DSH picks a new port each restart, and a stale baseUrl
+    // looks exactly like a dead bridge (a dead event stream, no error, for hours).
+    const qq = config.qqBridgeDir
+      ? createQqBridge({ dir: config.qqBridgeDir, port: config.qqBridgePort, nodePath: config.qqBridgeNode || process.execPath, origin: () => host.origin(), logger: lifeCtx.logger })
+      : undefined;
+    if (qq) {
+      const service = qq;
+      // 会话绑定先写：桥是启动时才读 config.json 的，这条必须在 ensureRunning/syncEndpoint 之前。
+      syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
+      // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
+      const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
+      lifeCtx.effect(() => webServer.register(qqRoute(service, config.allowedHosts, doors)), 'dsh-world qq route');
+      void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
+    }
+    // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
+    // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
+    // 这里只负责「什么时候该拉」，怎么拉仍然是 bridge.ts 的事。
+    const supervisor = qq
+      ? createQqSupervisor({ dir: config.qqBridgeDir, port: config.qqBridgePort, bridge: qq, logger: lifeCtx.logger })
+      : undefined;
+    if (supervisor) {
+      supervisor.start();
+      lifeCtx.effect(() => () => supervisor.stop(), 'dsh-world qq supervisor');
+    }
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
@@ -154,7 +190,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
+    // Her album lives in her room, so the console shows it whether or not the life line is running.
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, ...(qq ? { qq: async () => ({ ...(await qq.status()), ...(supervisor ? { supervisor: supervisor.snapshot() } : {}) }) } : {}), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;

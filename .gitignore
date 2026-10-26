@@ -7,3 +7,6 @@ lib/
 # Design notes and working logs stay local (personal paths and names).
 docs/
 __pycache__/
+
+# Local scratch (patch scripts, probes)
+/room/
