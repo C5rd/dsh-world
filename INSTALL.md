@@ -188,6 +188,8 @@ node scripts/setup-dsh.mjs
 
 > 这条命令会把旧会话**归档**（不是删）。要恢复，在 DSH 里取消归档：`workspace/unarchiveSession`，参数 `{"request":{"sessionId":"<会话号>"}}`。
 
+> **不用手改桥的文件**：dsh-world 自己有一个同名开关 `qqBridgeBindHomeSession`（取值 `owner` / `all` / `none` / 留空），填在 `cordis.patch.yml` 里那条 insert 的 `config:` 下面就行。它会趁桥启动前把这个键写进桥的 `config.json`；留空表示不碰。注意 Bridge 只在启动时读这份 config，所以「重载插件」和「重启桥」最好连在一起做。
+
 然后起桥，二选一：
 
 - 让插件拉：控制台 QQ 卡上按「拉起桥」
