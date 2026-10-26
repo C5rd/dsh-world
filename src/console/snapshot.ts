@@ -36,6 +36,8 @@ export interface SnapshotDeps {
   includesSession?(id: string): boolean;
   /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
   faults(): string[];
+  /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
+  modules?(): unknown;
   /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
   qq?: () => Promise<unknown>;
 }
@@ -64,6 +66,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
       qq: deps.qq ? qq : null,
+      modules: deps.modules?.() ?? null,
     };
   }
   return {

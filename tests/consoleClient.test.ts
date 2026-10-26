@@ -76,3 +76,26 @@ test('the client registers the world console settings section under the bundle i
   const noSupervisor = text(react.createElement(tested.Qq, { qq: bridge }));
   assert.doesNotMatch(noSupervisor, /巡检/, '没有巡检数据就不该凭空画一行');
 });
+
+test('the module switches say what is on, what is off and what the config does not provide', async () => {
+  const source = await readFile('client/index.js', 'utf8');
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { Modules: unknown } } } | undefined;
+  const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
+  runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const { Modules } = loaded!.factory(() => react).__test;
+  type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
+  const text = (node: unknown): string => {
+    if (node == null || typeof node === 'boolean') return '';
+    if (Array.isArray(node)) return node.map(text).join('');
+    if (typeof node !== 'object') return String(node);
+    const el = node as El;
+    if (typeof el.type === 'function') return text((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children }));
+    return text(el.children);
+  };
+  const render = (modules: unknown, running = true) => text(react.createElement(Modules, { modules, running }));
+  const on = render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false } });
+  assert.match(on, /微信 · 运行中/); assert.match(on, /wechat_send/); assert.match(on, /QQ · 未配置/);
+  const off = render({ wechat: { available: true, enabled: false, running: false }, qq: { available: true, enabled: false, running: false } });
+  assert.match(off, /微信 · 已关闭/); assert.match(off, /QQ · 已关闭/); assert.match(off, /工具未注册/);
+  assert.match(render({ wechat: { available: true, enabled: true, running: false }, qq: { available: true, enabled: true, running: false } }, false), /已开启，世界启动后生效/);
+});

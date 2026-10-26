@@ -441,6 +441,28 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dw-btn', disabled: busy, onClick: signIn }, busy ? '……' : '登录并打开'),
           h('button', { className: 'dw-btn', style: { marginLeft: 10 }, onClick: function () { if (props.onClose) props.onClose() } }, '取消')))
     }
+    /** 接入：微信和 QQ 各一个开关。开着才注册微信的发送工具、路由和适配器 / 才由插件管理 QQ 桥；关掉就撤掉，立即生效，状态记在 world.json。 */
+    function Modules(props) {
+      var m = props.modules
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var busyState = useState(''), busy = busyState[0], setBusy = busyState[1]
+      function flip(name, value) {
+        var body = {}; body[name] = value
+        setBusy(name); setMsg('')
+        post('modules', body).then(function () { setBusy(''); if (props.onSaved) props.onSaved() }, function (e) { setBusy(''); setMsg('切换失败：' + (e.message || e)) })
+      }
+      function row(name, label, info, onText, offText) {
+        var state = !info.available ? '未配置' : !info.enabled ? '已关闭' : info.running ? '运行中' : props.running ? '启动中' : '已开启，世界启动后生效'
+        return h('div', { key: name, className: 'dw-setting' },
+          h('span', null, h('b', null, label), h('span', { className: 'dw-muted' }, ' · ' + state)),
+          h('button', { className: 'dw-btn', disabled: !info.available || busy === name, onClick: function () { flip(name, !info.enabled) } }, info.enabled ? '关闭' : '开启'),
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, info.enabled ? onText : offText))
+      }
+      return h(Card, { title: '接入', delay: 270 },
+        row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_send、wechat_delivery，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。'),
+        row('qq', 'QQ', m.qq, '由插件管理 qq-bridge：巡检、会话绑定、控制台 QQ 卡。关闭只停止管理，不会停掉已在运行的桥。', '插件不管理 QQ 桥，QQ 卡隐藏。开启后立即恢复。'),
+        msg ? h('div', { className: 'dw-bad' }, msg) : null)
+    }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
       var health = list(snap.health), wakes = life ? list(life.recentWakes) : []
@@ -467,6 +489,7 @@ window.__ModuleLoader__.load({
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
+          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null,
           snap.wechat ? h(Wechat, { wechat: snap.wechat, zone: zone, onSaved: props.refresh }) : null,
           snap.qq ? h(Qq, { qq: snap.qq, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
     }
@@ -666,7 +689,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
     return exports
   },
 })

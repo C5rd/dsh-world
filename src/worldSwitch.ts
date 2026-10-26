@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
@@ -26,6 +26,8 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
+    ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
+    ...(stored?.qqEnabled === false ? { qqEnabled: false } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -53,6 +55,14 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     setMemoryTurns(turns: number | undefined): void {
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
+    },
+    /** The console's switches for the WeChat and QQ modules; on unless turned off, and only an off switch is written out. */
+    wechatEnabled: () => settings.wechatEnabled !== false,
+    qqEnabled: () => settings.qqEnabled !== false,
+    setModules(next: { wechat?: boolean; qq?: boolean }): void {
+      const { wechatEnabled, qqEnabled, ...rest } = settings;
+      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled !== false;
+      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? {} : { qqEnabled: false }) });
     },
     /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
     wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,

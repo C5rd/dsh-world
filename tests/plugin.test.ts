@@ -505,6 +505,40 @@ test('the independent WeChat module follows the world start/stop lifecycle', asy
   assert.deepEqual(unregistered, ['/dsh-world/wechat/ask']);
 });
 
+test('the console switch takes the WeChat module down and up again while the world runs, and is remembered', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes, unregistered } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'console');
+  const file = join(root, 'worlds/fish/wechat.json');
+  await consolePost(routes, '/dsh-world/console/start');
+  await firstWakeDone(ctx, root);
+  assert.ok(existsSync(file));
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
+  await consolePost(routes, '/dsh-world/console/modules', { wechat: false });
+  assert.equal(existsSync(file), false, 'switching off removes the connection file');
+  assert.deepEqual(unregistered, ['/dsh-world/wechat/ask']);
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: false, running: false });
+  assert.equal(JSON.parse(await readFile(join(root, 'worlds/fish/world.json'), 'utf8')).wechatEnabled, false);
+  await consolePost(routes, '/dsh-world/console/modules', { wechat: true });
+  assert.ok(existsSync(file), 'switching on brings it back without a restart');
+  assert.equal(routes.filter(route => route.path === '/dsh-world/wechat/ask').length, 1, 'the route is registered again');
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
+});
+test('a module the config does not provide cannot be switched on from the console', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'console');
+  const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
+  assert.equal(result.status, 400);
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: true, running: false } });
+});
+
 test('the config takes outlets by name with the kinds they want; the bridge is off and the toast on unless set', () => {
   const parsed = worldPlugin.Config(config);
   assert.equal(parsed.archiveScope, 'workspace');

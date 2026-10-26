@@ -25,6 +25,7 @@ function fakeActions() {
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
+    setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
   };
@@ -58,6 +59,16 @@ test('the console can restart the plugin-managed adapter, and says so when there
   assert.equal((await post({ ...actions, restartWechatAdapter: async () => false })).status, 400);
   assert.equal((await handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat-adapter', write: false, body: {} })).status, 403);
 });
+test('the module switches take booleans, say what they change, and report why a module cannot be switched', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (body: Record<string, unknown>, a: ConsoleActions = actions) => handleConsole(sources, a, { method: 'POST', url: '/dsh-world/console/modules', write: true, body });
+  assert.equal((await post({ wechat: false })).status, 200);
+  assert.equal((await post({ wechat: true, qq: false })).status, 200);
+  for (const body of [{}, { wechat: 'yes' }, { qq: 1 }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
+  assert.deepEqual(calls, ['modules:{"wechat":false}', 'modules:{"wechat":true,"qq":false}']);
+  const refused = await post({ qq: true }, { ...actions, setModules: async () => '没有配置 QQ 桥目录' });
+  assert.deepEqual(refused, { status: 400, body: { error: '没有配置 QQ 桥目录' } });
+});
 test('wechat settings validate their range and keep omitted fields', async () => {
   const { actions, calls } = fakeActions();
   const post = (body: Record<string, unknown>) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat', write: true, body });
@@ -65,6 +76,18 @@ test('wechat settings validate their range and keep omitted fields', async () =>
   assert.equal((await post({ contextMessages: null })).status, 200);
   for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
   assert.deepEqual(calls, ['wechat:{"context":12,"bufferSeconds":1.5}', 'wechat:{"context":null}']);
+});
+test('the module switches default to on, only an off switch is written, and it survives a restart', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.deepEqual([power.wechatEnabled(), power.qqEnabled()], [true, true]);
+  power.setModules({ wechat: false });
+  assert.deepEqual([createWorldSwitch(dir).wechatEnabled(), createWorldSwitch(dir).qqEnabled()], [false, true]);
+  power.setModules({ qq: false });
+  assert.deepEqual([createWorldSwitch(dir).wechatEnabled(), createWorldSwitch(dir).qqEnabled()], [false, false], 'a switch left out keeps its value');
+  power.setModules({ wechat: true, qq: true });
+  const stored = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+  assert.equal('wechatEnabled' in stored || 'qqEnabled' in stored, false);
 });
 test('wechat settings default to 8 and 3, persist, and return to default', t => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-world-wechat-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
