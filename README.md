@@ -185,7 +185,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-tool-free-c
 
 ## 参与贡献
 
-新增 QQ、B 站等生态模块前，请阅读 [贡献协议](CONTRIBUTING.md)：平台代码放在 `src/ecosystem/<channel>/`，复用统一身份、会话和归档能力；涉及内核的修改必须说明原因、影响、兼容性与验证结果。
+**PR 统一提到 `dev` 分支**，`main` 由维护者从 `dev` 并入后发布，详见 [贡献协议](CONTRIBUTING.md#分支与-pr)。新增 QQ、B 站等生态模块前，请阅读 [贡献协议](CONTRIBUTING.md)：平台代码放在 `src/ecosystem/<channel>/`，复用统一身份、会话和归档能力；涉及内核的修改必须说明原因、影响、兼容性与验证结果。
 
 ## 许可
 
