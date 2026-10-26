@@ -263,13 +263,13 @@ test('works as installed: with no config the standard preset gets the world prom
   const fresh = ctx.plugin(worldPlugin, {}); await fresh.await();
   const before = await ctx.agents.create({ sessionId: SessionId('before-start'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   before.agent.followup(user('还没开始')); await before.agent.whenIdle();
-  assert.ok(!systemOf(requests[0]!).includes('我不只是一个助手') && !kinds(requests[0]!).includes('dsh-world-history'));
+  assert.ok(!systemOf(requests[0]!).includes('我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。') && !kinds(requests[0]!).includes('dsh-world-history'));
   await fresh.dispose(); await before.dispose(); requests.length = 0;
   await writeFile(join(root, 'worlds/default/world.json'), JSON.stringify({ running: true }));
   const plugin = ctx.plugin(worldPlugin, {}); cleanup.push(() => plugin.dispose()); await plugin.await();
   const standard = await ctx.agents.create({ sessionId: SessionId('installed'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   standard.agent.followup(user('第一次见面')); await standard.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /我不只是一个助手[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
+  assert.match(systemOf(requests[0]!), /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
   await plugin.dispose();
   const archive = createArchiveStore({ worldId: 'default', agentPreset: 'standard', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, root });
   const records = await archive.readPage({ worldId: 'default', limit: 10 }).then(page => page.records).finally(() => archive.close());
@@ -280,7 +280,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const second = await ctx.agents.create({ sessionId: SessionId('installed-2'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   second.agent.followup(user('又见面了')); await second.agent.whenIdle();
   assert.match(systemOf(requests.at(-1)!), /^[\s\S]*我自己的开头，小鱼。在 [^\n]*我是谁\.md。/);
-  assert.ok(!systemOf(requests.at(-1)!).includes('我不只是一个助手'));
+  assert.ok(!systemOf(requests.at(-1)!).includes('我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。'));
   assert.equal(errors.length, 0);
 });
 test('the bundled patch inserts the row enabled', async () => {
@@ -503,6 +503,40 @@ test('the independent WeChat module follows the world start/stop lifecycle', asy
   await consolePost(routes, '/dsh-world/console/stop');
   assert.equal(existsSync(file), false);
   assert.deepEqual(unregistered, ['/dsh-world/wechat/ask']);
+});
+
+test('the console switch takes the WeChat module down and up again while the world runs, and is remembered', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes, unregistered } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'console');
+  const file = join(root, 'worlds/fish/wechat.json');
+  await consolePost(routes, '/dsh-world/console/start');
+  await firstWakeDone(ctx, root);
+  assert.ok(existsSync(file));
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
+  await consolePost(routes, '/dsh-world/console/modules', { wechat: false });
+  assert.equal(existsSync(file), false, 'switching off removes the connection file');
+  assert.deepEqual(unregistered, ['/dsh-world/wechat/ask']);
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: false, running: false });
+  assert.equal(JSON.parse(await readFile(join(root, 'worlds/fish/world.json'), 'utf8')).wechatEnabled, false);
+  await consolePost(routes, '/dsh-world/console/modules', { wechat: true });
+  assert.ok(existsSync(file), 'switching on brings it back without a restart');
+  assert.equal(routes.filter(route => route.path === '/dsh-world/wechat/ask').length, 1, 'the route is registered again');
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
+});
+test('a module the config does not provide cannot be switched on from the console', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'console');
+  const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
+  assert.equal(result.status, 400);
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: true, running: false } });
 });
 
 test('the config takes outlets by name with the kinds they want; the bridge is off and the toast on unless set', () => {

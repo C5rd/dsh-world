@@ -109,6 +109,7 @@ def connect(config, stateDir):
     from incoming import IncomingImages
     images = IncomingImages(database, config, checkProcess)
     database.readImage = images.read
+    database.readSticker = images.readSticker
 
     sender = None
     def getSender():

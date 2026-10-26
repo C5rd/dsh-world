@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createQqSupervisor } from '../src/qq/supervisor.ts';
-import type { QqBridge } from '../src/qq/bridge.ts';
+import { createQqSupervisor } from '../src/ecosystem/qq/supervisor.ts';
+import type { QqBridge } from '../src/ecosystem/qq/bridge.ts';
 
 /** 一个只回答 start/intent 的假桥：这两个就是 supervisor 用到的全部能力。 */
 function fakeBridge(options: {

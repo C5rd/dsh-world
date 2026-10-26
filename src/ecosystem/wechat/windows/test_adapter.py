@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from adapter import MessageStore, baselineChat, flushReceipts, messageKey, newMessages, normalizeMessage, validateConfig, watch
+from adapter import syncSettings, MessageStore, baselineChat, flushReceipts, messageKey, newMessages, normalizeMessage, validateConfig, watch
 
 
 class AdapterTest(unittest.TestCase):
@@ -108,3 +108,27 @@ class AdapterTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SettingsSyncTests(unittest.TestCase):
+    def test_syncSettings_accepts_only_in_range_numbers(self):
+        config = {}
+        syncSettings(config, {'contextMessages': 12, 'bufferSeconds': 1.5})
+        self.assertEqual((config['contextMessages'], config['bufferSeconds']), (12, 1.5))
+        syncSettings(config, {'contextMessages': 0, 'bufferSeconds': 99})
+        syncSettings(config, {'contextMessages': True, 'bufferSeconds': '3'})
+        syncSettings(config, None)
+        self.assertEqual((config['contextMessages'], config['bufferSeconds']), (12, 1.5))
+
+
+class NeedsHumanTests(unittest.TestCase):
+    def test_pending_message_asks_for_a_person_and_stays_a_runtime_error(self):
+        from adapter import NeedsHuman, EXIT_NEEDS_HUMAN
+        with tempfile.TemporaryDirectory() as directory:
+            store = MessageStore(Path(directory) / 'state.sqlite')
+            try:
+                store.beginBatch('owner', [dict(local_id=1, shard='m.db', sort_seq=11, type='文本')])
+                with self.assertRaises(NeedsHuman) as caught: store.checkPending()
+                self.assertIsInstance(caught.exception, RuntimeError)
+                self.assertEqual(EXIT_NEEDS_HUMAN, 2)
+            finally: store.close()

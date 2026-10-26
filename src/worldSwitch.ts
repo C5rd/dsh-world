@@ -3,9 +3,12 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
+/** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
+export const DEFAULT_WECHAT_CONTEXT = 8, MAX_WECHAT_CONTEXT = 20;
+export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
 
 /**
  * Her world's own settings, changed from the world console and kept in `<world>/world.json` so they outlast a
@@ -21,6 +24,10 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
+    ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
+    ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
+    ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
+    ...(stored?.qqEnabled === false ? { qqEnabled: false } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -49,7 +56,27 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
     },
+    /** The console's switches for the WeChat and QQ modules; on unless turned off, and only an off switch is written out. */
+    wechatEnabled: () => settings.wechatEnabled !== false,
+    qqEnabled: () => settings.qqEnabled !== false,
+    setModules(next: { wechat?: boolean; qq?: boolean }): void {
+      const { wechatEnabled, qqEnabled, ...rest } = settings;
+      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled !== false;
+      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? {} : { qqEnabled: false }) });
+    },
+    /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
+    wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,
+    wechatBufferSeconds: () => settings.wechatBufferSeconds ?? DEFAULT_WECHAT_BUFFER_SECONDS,
+    setWechat(next: { context?: number | null; bufferSeconds?: number | null }): void {
+      const { wechatContext: oldContext, wechatBufferSeconds: oldBuffer, ...rest } = settings;
+      const context = next.context === undefined ? oldContext : next.context ?? undefined;
+      const buffer = next.bufferSeconds === undefined ? oldBuffer : next.bufferSeconds ?? undefined;
+      save({ ...rest, ...(context === undefined || context === DEFAULT_WECHAT_CONTEXT ? {} : { wechatContext: context }), ...(buffer === undefined || buffer === DEFAULT_WECHAT_BUFFER_SECONDS ? {} : { wechatBufferSeconds: buffer }) });
+    },
   };
 }
 export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
+
+export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
+export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;

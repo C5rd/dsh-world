@@ -128,6 +128,11 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
   })];
   return {
     tools,
+    /** Bound account, chats the adapter reported, and jobs waiting to go out or needing a human check. */
+    status() {
+      const count = (...states: string[]) => (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE status IN (${states.map(() => '?').join(',')})`).get(...states) as { n: number }).n;
+      return { accountId: accountId ?? null, chats: chats.length, pending: count('staged', 'queued', 'claimed'), uncertain: count('uncertain') };
+    },
     async poll(value: unknown): Promise<Job | undefined> {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的适配器绑定');
       const input = value as { accountId?: unknown; chats?: unknown };

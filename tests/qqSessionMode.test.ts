@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { syncBridgeSessionMode } from '../src/qq/bridge.ts';
+import { syncBridgeSessionMode } from '../src/ecosystem/qq/bridge.ts';
 
 function makeBridge(config: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-world-qq-mode-'));

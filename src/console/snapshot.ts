@@ -31,9 +31,13 @@ export interface SnapshotDeps {
   /** Turns her memory block carries. */
   memoryTurns(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
+  /** The WeChat module's state; undefined while it is off or her world is stopped. */
+  wechat?(): unknown;
   includesSession?(id: string): boolean;
   /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
   faults(): string[];
+  /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
+  modules?(): unknown;
   /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
   qq?: () => Promise<unknown>;
 }
@@ -58,9 +62,11 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
       qq: deps.qq ? qq : null,
+      modules: deps.modules?.() ?? null,
     };
   }
   return {

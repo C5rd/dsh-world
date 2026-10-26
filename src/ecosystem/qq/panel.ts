@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { durableWrite } from '../life/lifeStore.ts';
+import { durableWrite } from '../../life/lifeStore.ts';
 
 /**
  * The two consoles her partner opens from the QQ card, both reached from this machine only.

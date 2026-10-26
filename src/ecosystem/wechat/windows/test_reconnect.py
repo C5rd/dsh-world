@@ -30,10 +30,11 @@ class ReconnectTest(unittest.TestCase):
                 jobs.append(dict(id='a'*64, accountId='wxid_bot', chatId='private', messages=[dict(type='text',text='听到了')]))
                 return dict(text='留在家里')
             ask = Mock(side_effect=enqueue)
-            report, sleep = Mock(), Mock()
+            report, sleep, status = Mock(), Mock(), Mock()
             try:
                 with patch('builtins.print') as logs, patch('adapter.time.sleep',side_effect=PollComplete), self.assertRaises(PollComplete):
-                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _: jobs.pop(0) if jobs else None,sleep=sleep)
+                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _: jobs.pop(0) if jobs else None,sleep=sleep,status=status)
+                self.assertEqual([call.args[1] for call in status.call_args_list],['offline','offline'], 'the console is told while waiting for the account')
                 self.assertEqual(connector.call_count,3)
                 self.assertEqual(sleep.call_count,2)
                 self.assertEqual(sum('指定微信账号已离线' in str(call.args) for call in logs.call_args_list),2)

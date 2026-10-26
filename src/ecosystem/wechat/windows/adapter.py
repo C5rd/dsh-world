@@ -13,9 +13,19 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from outgoing import deliverMessages, prepareMessages
 from snapshot import SnapshotBusy
-from groups import mentionedIds, recentContext
+from groups import MAX_CONTEXT_MESSAGES, mentionedIds, recentContext
 from incoming import ImageUnavailable
 from binding import WechatOffline
+
+IMAGE_BUFFER_SECONDS = 3
+# Exit code for "a person must check WeChat and run acknowledge"; the plugin stops restarting the adapter on it.
+EXIT_NEEDS_HUMAN = 2
+
+
+class NeedsHuman(RuntimeError):
+    pass
+IMAGE_BUFFER_POLL_SECONDS = 0.1
+MAX_PRIVATE_IMAGES = 2
 
 
 @contextmanager
@@ -88,6 +98,33 @@ def newMessages(database, chatId, sinceSeq, pageSize):
     return sorted(found.values(), key=lambda row: (int(row['sort_seq']), row['shard'], int(row['local_id'])))
 
 
+def bufferImageMessages(config, database, store, chat, first, *, clock=time.monotonic, sleep=time.sleep):
+    deadline = clock() + config.get('bufferSeconds', IMAGE_BUFFER_SECONDS)
+    order = lambda row: (int(row['sort_seq']), row['shard'], int(row['local_id']))
+    batch = [first]
+    while True:
+        if clock() >= deadline: return batch
+        candidates = newMessages(database, chat['id'], int(first['sort_seq']), config.get('pageSize', 50))
+        if clock() > deadline: return batch
+        batch = [first]
+        images = 1
+        for row in candidates:
+            if order(row) <= order(first) or store.seen(chat['id'], messageKey(row)):
+                continue
+            if row.get('sender_username') != first.get('sender_username') or row['type'] not in ('文本', '图片'):
+                return batch
+            if row['type'] == '图片':
+                if images == MAX_PRIVATE_IMAGES: return batch
+                images += 1
+                batch.append(row)
+            else:
+                if str(row['content']).strip() and len(str(row['content'])) <= 2000: batch.append(row)
+                return batch
+        remaining = deadline - clock()
+        if remaining <= 0: return batch
+        sleep(min(IMAGE_BUFFER_POLL_SECONDS, remaining))
+
+
 def normalizeMessage(row, chatId, selfId, people=None, *, includeSelf=False, conversationName=None):
     if row['type'] != '文本':
         return None
@@ -114,6 +151,20 @@ def normalizeMessage(row, chatId, selfId, people=None, *, includeSelf=False, con
 
 def incomingMessage(database, chat, row, config):
     if not chat['id'].endswith('@chatroom'):
+        if row['type'] == '图片':
+            message = normalizeMessage({**row, 'type': '文本', 'content': '【微信图片】'}, chat['id'], config['selfId'], config.get('people'), conversationName=chat.get('name'))
+            if message is None: return None
+            entry = dict(**message, id=messageKey(row), occurredAt=datetime.fromtimestamp(int(row['create_time']), timezone.utc).isoformat())
+            try: entry['image'] = database.readImage(chat['id'], row)
+            except ImageUnavailable as error: entry['text'] = f'【图片未读取：{error}】'
+            return dict(text='', identity=message['identity'], media=[entry])
+        if row['type'] == '动画表情' and row.get('sender_username') != config['selfId']:
+            message = normalizeMessage({**row, 'type': '文本', 'content': '【微信表情包】'}, chat['id'], config['selfId'], config.get('people'), conversationName=chat.get('name'))
+            if message is None: return None
+            entry = dict(**message, id=messageKey(row), occurredAt=datetime.fromtimestamp(int(row['create_time']), timezone.utc).isoformat())
+            try: entry['image'] = database.readSticker(chat['id'], row)
+            except ImageUnavailable as error: entry['text'] = f'【微信表情包，未读取：{error}】'
+            return dict(text='', identity=message['identity'], media=[entry])
         return normalizeMessage(row, chat['id'], config['selfId'], config.get('people'), conversationName=chat.get('name'))
     if row['type'] != '文本' or row.get('sender_username') == config['selfId']:
         return None
@@ -142,7 +193,7 @@ def incomingMessage(database, chat, row, config):
         if previous['type'] == '图片':
             entry['imageRow'] = {key: previous[key] for key in ('local_id','shard','sort_seq','create_time','type','sender_username')}
         return entry
-    message['context'] = recentContext(database, chat['id'], row, contextMessage, config.get('pageSize', 50))
+    message['context'] = recentContext(database, chat['id'], row, contextMessage, config.get('pageSize', 50), config.get('contextMessages', MAX_CONTEXT_MESSAGES))
     imageCount = 0
     for entry in reversed(message['context']):
         picture = entry.pop('imageRow', None)
@@ -191,11 +242,27 @@ class MessageStore:
             self.db.execute('UPDATE messages SET status=? WHERE chatId=? AND messageId=?', ('done', chatId, key))
             self.db.execute('UPDATE cursors SET seq=MAX(seq,?) WHERE chatId=?', (seq, chatId))
 
+    def beginBatch(self, chatId, rows):
+        with self.db:
+            self.db.executemany("INSERT INTO messages VALUES (?,?,?,'pending')", [(chatId, messageKey(row), int(row['sort_seq'])) for row in rows])
+
+    def finishBatch(self, chatId, rows):
+        with self.db:
+            result = self.db.executemany("UPDATE messages SET status='done' WHERE chatId=? AND messageId=? AND status='pending'", [(chatId, messageKey(row)) for row in rows])
+            if result.rowcount != len(rows): raise RuntimeError('接收批次状态不一致，停止且不推进位置')
+            self.db.execute('UPDATE cursors SET seq=MAX(seq,?) WHERE chatId=?', (max(int(row['sort_seq']) for row in rows), chatId))
+
     def checkPending(self, activeIncoming=None):
-        excluded = ' AND NOT(chatId=? AND messageId=?)' if activeIncoming else ''
-        row = self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending'" + excluded + ' ORDER BY rowid LIMIT 1', activeIncoming or ()).fetchone()
+        excluded, parameters = '', ()
+        if activeIncoming:
+            chatId, keys = activeIncoming
+            keys = [keys] if isinstance(keys, str) else keys
+            if not keys: raise ValueError('活动接收批次不能为空')
+            excluded = ' AND NOT(chatId=? AND messageId IN (' + ','.join('?' for _ in keys) + '))'
+            parameters = (chatId, *keys)
+        row = self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending'" + excluded + ' ORDER BY rowid LIMIT 1', parameters).fetchone()
         if row:
-            raise RuntimeError(f'上次消息结果尚未确认：{row[0]} / {row[1]}。核对家和微信后使用 acknowledge，不自动重发。')
+            raise NeedsHuman(f'上次消息结果尚未确认：{row[0]} / {row[1]}。核对家和微信后使用 acknowledge，不自动重发。')
 
     def acknowledge(self, chatId, key):
         row = self.db.execute("SELECT seq FROM messages WHERE chatId=? AND messageId=? AND status='pending' LIMIT 1", (chatId, key)).fetchone()
@@ -242,6 +309,8 @@ class MessageStore:
 
 def postHome(moduleFile, message):
     connection = json.loads(Path(moduleFile).read_text(encoding='utf-8-sig'))
+    if message.get('media') and connection.get('protocol', 0) < 3:
+        raise RuntimeError('私聊图片需要新版宿主协议，请更新并重载 DSH 的 dsh-world 插件')
     origin = urlparse(connection['origin'])
     if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '::1') or connection.get('path') != '/dsh-world/wechat/ask':
         raise ValueError('微信模块地址必须是本机 DSH 的独立接口')
@@ -280,7 +349,22 @@ def flushReceipts(moduleFile, store, report=reportReceipt):
 
 def pollOutgoing(config):
     result = postHome(config['moduleFile'], dict(outbox=dict(accountId=config['selfId'], chats=[dict(id=chat['id'], name=chat['name']) for chat in config['chats']])))
+    syncSettings(config, result.get('settings'))
     return result.get('job')
+
+
+def reportStatus(config, state):
+    # Best effort: the console shows this, and a missing module file must not take the adapter down while it waits.
+    try: postHome(config['moduleFile'], dict(status=dict(wechat=state)))
+    except Exception: pass
+
+
+def syncSettings(config, settings):
+    # The console owns these two numbers; a missing or odd value keeps what the adapter already runs with.
+    if not isinstance(settings, dict): return
+    context, buffer = settings.get('contextMessages'), settings.get('bufferSeconds')
+    if isinstance(context, int) and not isinstance(context, bool) and 1 <= context <= 20: config['contextMessages'] = context
+    if isinstance(buffer, (int, float)) and not isinstance(buffer, bool) and 0 <= buffer <= 30: config['bufferSeconds'] = buffer
 
 
 def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=reportReceipt, activeIncoming=None):
@@ -302,7 +386,7 @@ def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=re
             report(config['moduleFile'], previous)
             store.receiptPosted(previous)
             if previous['status'] == 'uncertain':
-                raise RuntimeError('此前发送结果不明，只补报回执，不能重复发送')
+                raise NeedsHuman('此前发送结果不明，只补报回执，不能重复发送')
             continue
         baselineChat(database, store, chat['id'], config.get('pageSize', 50))
         seq, key = store.cursor(chat['id']), 'outgoing:' + replyId
@@ -357,14 +441,21 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
             for chat in config['chats']:
                 baselineChat(database, store, chat['id'], pageSize)
                 for row in newMessages(database, chat['id'], store.cursor(chat['id']), pageSize):
-                    key, seq = messageKey(row), int(row['sort_seq'])
-                    if store.seen(chat['id'], key):
+                    if store.seen(chat['id'], messageKey(row)):
                         continue
+                    rows = bufferImageMessages(config, database, store, chat, row) if not chat['id'].endswith('@chatroom') and row['type'] == '图片' and row.get('sender_username') != config['selfId'] else [row]
                     message = incomingMessage(database, chat, row, config)
-                    store.begin(chat['id'], key, seq)
+                    for following in rows[1:]:
+                        extra = incomingMessage(database, chat, following, config)
+                        if extra is None: raise RuntimeError('接收批次包含无法识别的消息')
+                        if extra['text']:
+                            message['text'] = extra['text']
+                            message['identity'] = extra['identity']
+                        if extra.get('media'): message.setdefault('media', []).extend(extra['media'])
+                    store.beginBatch(chat['id'], rows)
                     if message:
-                        askWhileSending(config, message, database, store, send, ask, report, poll, (chat['id'], key))
-                    store.finish(chat['id'], key, seq)
+                        askWhileSending(config, message, database, store, send, ask, report, poll, (chat['id'], [messageKey(member) for member in rows]))
+                    store.finishBatch(chat['id'], rows)
                     flushOutgoing(config, database, store, send, poll=poll, report=report)
         except SnapshotBusy:
             # Re-read an unstable snapshot next poll; no message is re-sent here.
@@ -372,7 +463,7 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
         time.sleep(config.get('pollSeconds', 2))
 
 
-def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=reportReceipt, poll=pollOutgoing, sleep=time.sleep):
+def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=reportReceipt, poll=pollOutgoing, sleep=time.sleep, status=reportStatus):
     waiting = False
     while True:
         store.checkPending()
@@ -386,6 +477,7 @@ def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=repo
                 send.close()
         except WechatOffline:
             store.checkPending()
+            status(config, 'offline')
             if not waiting:
                 print('指定微信账号已离线，暂停收发，等待原账号重新登录；无需重启 DSH。', flush=True)
             waiting = True
@@ -462,6 +554,7 @@ def main():
     validateConfig(config, requireChats=args.command != 'chats')
     stateDir = configPath.parent / config['account']
     stateDir.mkdir(parents=True, exist_ok=True)
+    config['engineDir'] = str(configPath.parent / 'engine')
     with exclusiveRun(stateDir):
         run(args, config, stateDir)
 
@@ -471,6 +564,9 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         print('已停止微信适配器。')
+    except NeedsHuman as error:
+        print(f'微信适配器停止：{error}', file=sys.stderr)
+        sys.exit(EXIT_NEEDS_HUMAN)
     except Exception as error:
         print(f'微信适配器停止：{error}', file=sys.stderr)
         sys.exit(1)

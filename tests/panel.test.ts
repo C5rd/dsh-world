@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bridgeConsoleUrl, createConsoleDoors, createPanelSecrets, findSnowlumaConsole, loginSnowluma, readSnowlumaHome, PANEL_FILE } from '../src/qq/panel.ts';
+import { bridgeConsoleUrl, createConsoleDoors, createPanelSecrets, findSnowlumaConsole, loginSnowluma, readSnowlumaHome, PANEL_FILE } from '../src/ecosystem/qq/panel.ts';
 
 function tempHome(runtime?: unknown): string {
   const home = mkdtempSync(join(tmpdir(), 'snowluma-home-'));

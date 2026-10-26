@@ -201,6 +201,22 @@ test('host snapshots, the first-session skill catalog and memory recall do not c
   assert.equal((await channel.ask('在吗', identity)).text, '微信正常答复');
 });
 
+test('her own alarm ringing during a WeChat reply does not make the request fail', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { entered = resolve; });
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () {
+    entered(); await gate; yield* textResponse('回完了');
+  })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = channel.ask('微信问题', identity);
+  await running;
+  home.steer(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '闹钟响了' }] }));
+  release();
+  assert.equal((await reply).text, '回完了');
+});
+
 test('the independent WeChat endpoint authenticates and validates before entering home; stop removes only its own discovery file', async t => {
   let calls = 0;
   const receipts: unknown[] = [];

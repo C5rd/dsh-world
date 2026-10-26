@@ -15,10 +15,10 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './qq/bridge.ts';
-import { createQqSupervisor } from './qq/supervisor.ts';
-import { qqRoute } from './qq/route.ts';
-import { createConsoleDoors } from './qq/panel.ts';
+import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './ecosystem/qq/bridge.ts';
+import { createQqSupervisor } from './ecosystem/qq/supervisor.ts';
+import { qqRoute } from './ecosystem/qq/route.ts';
+import { createConsoleDoors } from './ecosystem/qq/panel.ts';
 import { createWorldRuntime } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -26,6 +26,7 @@ import { DEFAULT_TEMPLATE_FILE, roomTitle, worldNames } from './worldPrompt.ts';
 import { createWorldSwitch } from './worldSwitch.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
 import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
+import { createAdapterSupervisor, type AdapterSupervisor } from './ecosystem/wechat/supervisor.ts';
 import { createChannelSessions } from './ecosystem/shared/sessions.ts';
 import { createArchiveSelection } from './archiveSelection.ts';
 import { belongsToWorld } from './sourceArchive.ts';
@@ -50,6 +51,7 @@ export const Config = z.object({
   // A local app may hand her partner's words to her home through POST /dsh-world/bridge/say.
   bridge: z.boolean().default(false),
   wechat: z.boolean().default(false),
+  wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
@@ -117,35 +119,61 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const host = hostLife(lifeCtx);
     // QQ: one more door into her home, managed here rather than by a launcher script. The endpoint is aligned
     // on every start whether or not the bridge runs — DSH picks a new port each restart, and a stale baseUrl
-    // looks exactly like a dead bridge (a dead event stream, no error, for hours).
-    const qq = config.qqBridgeDir
-      ? createQqBridge({ dir: config.qqBridgeDir, port: config.qqBridgePort, nodePath: config.qqBridgeNode || process.execPath, origin: () => host.origin(), logger: lifeCtx.logger })
-      : undefined;
-    if (qq) {
-      const service = qq;
+    // looks exactly like a dead bridge (a dead event stream, no error, for hours). The console switch starts
+    // and stops this management at any time; it does not stop a bridge that is already running.
+    let qq: QqBridge | undefined;
+    let qqSupervisor: ReturnType<typeof createQqSupervisor> | undefined;
+    let unregisterQq: (() => void) | undefined;
+    function startQq(): void {
+      if (qq || !config.qqBridgeDir || !power.qqEnabled()) return;
+      const service = createQqBridge({ dir: config.qqBridgeDir, port: config.qqBridgePort, nodePath: config.qqBridgeNode || process.execPath, origin: () => host.origin(), logger: lifeCtx.logger });
+      qq = service;
       // 会话绑定先写：桥是启动时才读 config.json 的，这条必须在 ensureRunning/syncEndpoint 之前。
       syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
       // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
       const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
-      lifeCtx.effect(() => webServer.register(qqRoute(service, config.allowedHosts, doors)), 'dsh-world qq route');
+      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors));
       void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
+      // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
+      // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
+      // 这里只负责「什么时候该拉」，怎么拉仍然是 bridge.ts 的事。
+      qqSupervisor = createQqSupervisor({ dir: config.qqBridgeDir, port: config.qqBridgePort, bridge: service, logger: lifeCtx.logger });
+      qqSupervisor.start();
     }
-    // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
-    // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
-    // 这里只负责「什么时候该拉」，怎么拉仍然是 bridge.ts 的事。
-    const supervisor = qq
-      ? createQqSupervisor({ dir: config.qqBridgeDir, port: config.qqBridgePort, bridge: qq, logger: lifeCtx.logger })
-      : undefined;
-    if (supervisor) {
-      supervisor.start();
-      lifeCtx.effect(() => () => supervisor.stop(), 'dsh-world qq supervisor');
+    function stopQq(): void {
+      qqSupervisor?.stop(); qqSupervisor = undefined;
+      unregisterQq?.(); unregisterQq = undefined;
+      qq = undefined;
     }
+    startQq();
+    lifeCtx.effect(() => () => stopQq(), 'dsh-world qq');
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
+    let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
     let unregisterWechat: (() => void) | undefined;
     let lifeStop: Promise<void> | undefined;
+    let wechatClosing: Promise<void> = Promise.resolve();
+    /** Starts the WeChat module (its tools, route and, when configured, the adapter) against the running life line. */
+    async function startWechat(current: LifeRuntime): Promise<void> {
+      if (wechat || !config.wechat) return;
+      await wechatClosing;
+        const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
+        channels = groupSessions;
+        wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
+          ...createWechatRecorder(store, config.worldId, includesSession) });
+        wechat.start(); unregisterWechat = webServer.register(wechat.route);
+        if (config.wechatAdapter?.python && config.wechatAdapter.config) { adapter = createAdapterSupervisor({ python: config.wechatAdapter.python, config: config.wechatAdapter.config, logFile: join(worldDir, 'wechat-adapter.log'), log: message => lifeCtx.logger.warn(message) }); adapter.start(); }
+    }
+    /** Takes the WeChat tools, route and adapter down; the adapter goes first because it exits when the module's connection file disappears. */
+    function stopWechat(): Promise<void> {
+      unregisterWechat?.(); unregisterWechat = undefined;
+      const closingAdapter = adapter?.stop(); adapter = undefined;
+      const closing = Promise.all([closingAdapter, wechat?.stop()]).then(() => {}); wechat = undefined;
+      channels?.stop(); channels = undefined;
+      return wechatClosing = closing;
+    }
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
       try {
@@ -155,13 +183,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget });
         life = current; isHome = current.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
-        if (config.wechat) {
-          const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
-          channels = groupSessions;
-          wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts,
-            ...createWechatRecorder(store, config.worldId, includesSession) });
-          wechat.start(); unregisterWechat = webServer.register(wechat.route);
-        }
+        if (config.wechat && power.wechatEnabled()) await startWechat(current);
         faults.clear('life');
         await current.start({ resumed });
       } catch (error) {
@@ -173,9 +195,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     function stopLife(): Promise<void> {
       isHome = id => id === storedHome();
       bridge?.stop(); life?.stop();
-      unregisterWechat?.();
-      const closingWechat = wechat?.stop(); unregisterWechat = undefined; wechat = undefined;
-      channels?.stop(); channels = undefined;
+      const closingWechat = stopWechat();
       bridge = undefined; life = undefined;
       return lifeStop = Promise.all([lifeStop, closingWechat]).then(() => {});
     }
@@ -185,7 +205,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, includesSession, ...(qq ? { qq: async () => ({ ...(await qq.status()), ...(supervisor ? { supervisor: supervisor.snapshot() } : {}) }) } : {}), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
+      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqBridgeDir), enabled: power.qqEnabled(), running: qq !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -205,6 +226,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
+      async setModules(patch) {
+        if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
+        if (patch.qq !== undefined && !config.qqBridgeDir) return '没有配置 QQ 桥目录（配置里 qqBridgeDir）';
+        power.setModules(patch);
+        try {
+          if (patch.wechat === false) await stopWechat();
+          if (patch.wechat === true && life) await startWechat(life);
+          if (patch.qq === false) stopQq();
+          if (patch.qq === true) startQq();
+        } catch (error) { faults.set('wechat', `微信模块没能切换：${errorText(error)}`); lifeCtx.logger.error(error); return `切换失败：${errorText(error)}`; }
+        finally { sources.invalidate(); }
+        faults.clear('wechat');
+        return undefined;
+      },
+      restartWechatAdapter: async () => { if (!adapter) return false; try { await adapter.restart(); } finally { sources.invalidate(); } return true; },
+      setWechatSettings: next => { power.setWechat(next); sources.invalidate(); },
       setArchiveScope: scope => { power.setArchiveScope(scope); sources.invalidate(); return power.restartRequired(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validTurns } from '../worldSwitch.ts';
+import { validTurns, validWechatBuffer, validWechatContext, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
@@ -27,6 +27,12 @@ export interface ConsoleActions {
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
+  /** A field left out stays as it is; null goes back to its default. */
+  /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
+  setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | undefined>;
+  /** Restarts the adapter the plugin manages; false when it does not manage one. */
+  restartWechatAdapter(): Promise<boolean>;
+  setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
 }
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
@@ -53,6 +59,21 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       if (turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
       actions.setMemoryTurns(turns === null ? undefined : turns); return ok();
     }
+    case '/console/wechat': {
+      const context = body?.contextMessages, bufferSeconds = body?.bufferSeconds;
+      if (context !== undefined && context !== null && !validWechatContext(context)) return bad(`contextMessages must be a whole number from 1 to ${MAX_WECHAT_CONTEXT}, or null`);
+      if (bufferSeconds !== undefined && bufferSeconds !== null && !validWechatBuffer(bufferSeconds)) return bad(`bufferSeconds must be a number from 0 to ${MAX_WECHAT_BUFFER_SECONDS}, or null`);
+      if (context === undefined && bufferSeconds === undefined) return bad('nothing to change');
+      actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }) }); return ok();
+    }
+    case '/console/modules': {
+      const wechat = body?.wechat, qq = body?.qq;
+      if ((wechat !== undefined && typeof wechat !== 'boolean') || (qq !== undefined && typeof qq !== 'boolean')) return bad('wechat 和 qq 必须是 true 或 false');
+      if (wechat === undefined && qq === undefined) return bad('nothing to change');
+      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }) });
+      return refused ? bad(refused) : ok();
+    }
+    case '/console/wechat-adapter': return await actions.restartWechatAdapter() ? ok() : bad('适配器不是由插件管理的，请在配置里写 wechatAdapter');
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
       return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });

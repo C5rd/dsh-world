@@ -24,14 +24,11 @@
 ## 第一步：把 dsh-world 装进 profile
 
 ```bash
-# ⚠ QQ 卡目前还在 PR #7 里，没合进上游 main。合入之前请用这一条：
-git clone -b feat/console-doors-and-supervisor https://github.com/Wz0xx/dsh-world.git
-# 合入之后换成官方地址（两者内容一致，只是分支不同）：
-# git clone https://github.com/chenkezhen480/dsh-world.git
+git clone https://github.com/chenkezhen480/dsh-world.git
 
 cd dsh-world
 npm ci        # 仓库带 package-lock.json，能装全 devDependencies
-npm pack      # 会先 typecheck + build，产出 dsh-world-0.5.2.tgz
+npm pack      # 会先 typecheck + build，产出 dsh-world-<版本>.tgz
 ```
 
 拿到 `dsh-world-0.5.2.tgz` 的**绝对路径**，然后：
@@ -213,7 +210,7 @@ node scripts/setup-dsh.mjs
 
 | 现象 | 真正的原因 |
 |---|---|
-| 世界卡在，但完全没有 QQ 卡 | ① 装的是上游 `main`（0.5.2 移除了 QQ）→ 用第 1 步里 PR 分支那条命令重装；② `qqBridgeDir` 没填或路径里没有 `src/bridge.js` |
+| 世界卡在，但完全没有 QQ 卡 | ① 装的是不含 QQ 模块的旧版本（0.5.2 及之前的上游 `main`）→ 按第 1 步用当前仓库重新打包安装；② `qqBridgeDir` 没填或路径里没有 `src/bridge.js` |
 | 桥起来了，QQ 上毫无反应 | 没跑 `node scripts/setup-dsh.mjs`，或者跑了但没重启 DSH |
 | 桥报 `HTTP 426` | `wsUrl` / `httpUrl` 填成了同一个端口 |
 | 桥连上了，但 DSH 收不到 | `config.json` 的 `dsh.baseUrl` 端口不对。正常情况下插件每次启动会自己写回正确地址；如果手动改过就重启一次 DSH |

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
+import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import type { QqBridge } from './bridge.ts';
 import type { ConsoleDoors } from './panel.ts';
 

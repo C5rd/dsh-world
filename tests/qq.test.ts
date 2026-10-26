@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Readable } from 'node:stream';
-import { QQ_PREFIX, WRITE_HEADER, qqRoute } from '../src/qq/route.ts';
-import type { QqBridge } from '../src/qq/bridge.ts';
+import { QQ_PREFIX, WRITE_HEADER, qqRoute } from '../src/ecosystem/qq/route.ts';
+import type { QqBridge } from '../src/ecosystem/qq/bridge.ts';
 
 function request(method: string, path: string, options: { body?: unknown; headers?: Record<string, string> } = {}) {
   const text = options.body === undefined ? '' : JSON.stringify(options.body);

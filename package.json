@@ -1,6 +1,6 @@
 {
   "name": "dsh-world",
-  "version": "0.5.2",
+  "version": "0.5.6",
   "description": "Cross-session companion memory and life routines for DSH, with a world console, tool-free compaction and an independent Windows WeChat bridge",
   "license": "MIT",
   "repository": {
