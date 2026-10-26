@@ -47,7 +47,7 @@ export interface QqNativeConfig {
   /** QQ numbers allowed to talk to her at all; empty means nobody. */
   allowPrivate: readonly string[];
   allowGroups: readonly string[];
-  /** Only these conversations get an answer; empty means every allowed one. */
+  /** 她会不会回。关掉是「收到但不理」——连问都不问，不花调用。 */
   autoReply: boolean;
   /** How many earlier messages of the same conversation are shown to her with each new one. */
   contextMessages: number;
@@ -83,6 +83,25 @@ export interface QqNativeStatus {
  * back out. There is no separate session store: a conversation's identity key is the whole mapping,
  * so a group keeps talking to the same conversation she already has for it.
  */
+/** 传输层交给通道的那几件（真身上是 snowluma.js 的 createBridge，测试可以换掉）。 */
+export interface QqTransport {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  getState(): string;
+  sendGroup(groupId: string, text: string): Promise<{ messageId: string }>;
+  sendPrivate(userId: string, text: string): Promise<{ messageId: string }>;
+}
+
+/** createBridge 认的那几个选项，通道只用到这几个。 */
+export interface QqTransportOptions {
+  wsUrl: string;
+  accessToken?: string;
+  log(level: string, message: string): void;
+  onGroupMessage?(message: unknown): void;
+  onPrivateMessage?(message: unknown): void;
+  onNotice?(type: string, notice?: unknown): void;
+}
+
 export function createQqNativeModule(deps: {
   ctx: Context;
   home(identity: SpeakerIdentity): Promise<Agent>;
@@ -90,6 +109,8 @@ export function createQqNativeModule(deps: {
   /** 面板拨的开关存这儿；不给就只在内存里活到下一次重载。 */
   stateFile?: string;
   logger: { info(...args: unknown[]): void; warn(...args: unknown[]): void; error(...args: unknown[]): void };
+  /** 传输层；不给就用真身（snowluma.js 那条线）。测试靠它把合成事件灌进来。 */
+  transport?(options: QqTransportOptions): QqTransport;
 }) {
   const home = createQqHome({ ctx: deps.ctx, home: deps.home });
   const seen = new Set<string>();
@@ -98,7 +119,7 @@ export function createQqNativeModule(deps: {
   // 她自己的那条线：最后一次见到的账号，和「要不要先开口」的引擎。
   let lastSelfId = '';
   let proactive: QqProactive | undefined;
-  let client: ReturnType<typeof createBridge> | undefined;
+  let client: QqTransport | undefined;
   let stopped = false;
   // 面板要的那几个数自己记：传输层只交出一个 getState()，不带计数。
   const stats: { sent: number; failed: number; lastEventAt: string | null; lastError: string | null } = {
@@ -183,12 +204,17 @@ export function createQqNativeModule(deps: {
     } catch (error) { deps.logger.warn('QQ 消息身份不合法:', error); return; }
     if (!allowed(identity)) return;
     const key = conversationKey(identity);
+    // 关掉自动回复的意思就是「别理它」：连问都不问。原来是先问完再决定发不发，
+    // 于是开关关着每条还是照样花一轮（今晚拿假服务器实测：两条合成消息各烧了一轮）。
+    if (!config.autoReply || stopped) {
+      pushContext(key, { id: messageId || `${Date.now()}`, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
+      return;
+    }
     const context = contexts.get(key) ?? [];
     answering.add(key);
     try {
       const answer = await home.ask(text, identity, context);
       pushContext(key, { id: answer.id, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
-      if (!config.autoReply || stopped) return;
       const reply = answer.text.trim();
       if (!reply) return;
       if (isGroup) await client?.sendGroup(conversationId, reply);
@@ -275,7 +301,7 @@ export function createQqNativeModule(deps: {
       if (stopped) return;
       const config = settings();
       if (!config.enabled) return;
-      const bridge = createBridge({
+      const bridge = (deps.transport ?? createBridge)({
         wsUrl: config.wsUrl,
         ...(config.accessToken ? { accessToken: config.accessToken } : {}),
         log: (level: string, message: string) => {
