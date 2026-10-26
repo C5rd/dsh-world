@@ -62,6 +62,20 @@ export const Config = z.object({
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
+    // 她会不会自己先开口。底子阶段只把开关和数字留出来，还没接上面板；这里的默认值就是引擎里那套，
+    // 面板和细节明天再敲（schemastery 没有 optional，一律用默认值表达「可省略」）。
+    proactive: z.object({
+      enabled: z.boolean().default(false),
+      policy: z.object({
+        checkIntervalMs: z.number().default(5 * 60_000),
+        idleThresholdMs: z.number().default(30 * 60_000),
+        minIntervalMs: z.number().default(3 * 3600_000),
+        maxPerDay: z.number().default(3),
+        maxCallsPerDay: z.number().default(12),
+        sendProbability: z.number().default(1),
+        quietHours: z.object({ start: z.string().default('23:00'), end: z.string().default('08:00') }).default({ start: '23:00', end: '08:00' }),
+      }).default({ checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } }),
+    }).default({ enabled: false, policy: { checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } } }),
   }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
@@ -215,6 +229,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                     autoReply: q.autoReply ?? true,
                     contextMessages: q.contextMessages ?? 6,
                     bindHomeSession: q.bindHomeSession ?? 'owner',
+                    proactive: { enabled: q.proactive?.enabled ?? false, policy: q.proactive?.policy ?? {} },
                   };
                 },
       });

@@ -2,6 +2,7 @@ import type { OutletConfig } from './ecosystem/shared/outlets.ts';
 import type { SessionHeader } from '@deepseek-ai/dsh-session';
 import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
 import type { MemoryArchiveScope } from './archiveSelection.ts';
+import type { QqProactivePolicy } from './ecosystem/qq-native/proactive.ts';
 
 export interface WorldConfig {
   worldId: string;
@@ -34,7 +35,9 @@ export interface WorldConfig {
   /** The independent local WeChat module; the Windows adapter uses `<world>/wechat.json`. */
   wechat?: boolean;
   /** QQ straight to OneBot: no qq-bridge process, the plugin owns the sockets, the sessions and the state. */
-  qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; allowGroups?: string[]; autoReply?: boolean; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '' };
+  qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; allowGroups?: string[]; autoReply?: boolean; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
+    /** 她会不会自己先开口；policy 是给「明天敲细节」留的口子，字段都对得上 proactive.ts。 */
+    proactive?: { enabled?: boolean; policy?: Partial<QqProactivePolicy> } };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
   wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */

@@ -29,13 +29,13 @@ export function createQqHome(deps: {
   let stopped = false;
   let queued = 0;
 
-  function ask(text: string, suppliedIdentity: SpeakerIdentity, suppliedContext?: ChannelContextMessage[]): Promise<{ id: string; text: string }> {
+  function ask(text: string, suppliedIdentity: SpeakerIdentity, suppliedContext?: ChannelContextMessage[], options?: { nudge?: boolean }): Promise<{ id: string; text: string }> {
     if (stopped) return Promise.reject(new Error('QQ module is stopped'));
     if (queued >= 16) return Promise.reject(new Error('QQ request queue is full'));
     const identity = speakerIdentity(suppliedIdentity);
     // 只有群聊才谈得上「上下文」：私聊进的是她自己的家会话，那边本来就有全部历史，
     // 而 channelContext 只认群（私聊传进去必抛 Invalid group context）。
-    const context = identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : [];
+    const context = !options?.nudge && identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : [];
     queued++;
     const result = pending.then(async () => {
       if (stopped) throw new Error('QQ module is stopped');
@@ -53,7 +53,11 @@ export function createQqHome(deps: {
         const agent = await Promise.race([deps.home(identity), cancelled]);
         await Promise.race([agent.whenIdle(), cancelled]);
         if (stopped) throw new Error('QQ module is stopped');
-        const words = createUserMessage({ source: { kind: 'user', identity }, content: [{ type: 'text', text: identityPrefix(identity) + text }] });
+        // A nudge is not somebody speaking. No identity prefix (nobody said anything), and the
+        // source says what it is, so the "another person interrupted" rule above never fires on it.
+        const words = options?.nudge
+          ? createUserMessage({ source: { kind: 'dsh-world-proactive', form: 'nudge' }, content: [{ type: 'text', text: `【此刻没人跟你说话】这不是谁发来的消息，是你自己想说话了。\n${text}` }] })
+          : createUserMessage({ source: { kind: 'user', identity }, content: [{ type: 'text', text: identityPrefix(identity) + text }] });
         let reply = '';
         let turn: number | undefined;
         let ownTurn: number | undefined;

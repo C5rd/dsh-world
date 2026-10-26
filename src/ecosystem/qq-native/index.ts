@@ -1,15 +1,28 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
+import { createQqProactive, DEFAULT_QQ_PROACTIVE_POLICY, type QqProactive, type QqProactivePolicy, type QqProactiveStatus } from './proactive.ts';
 
 /** The largest single message we accept from QQ; anything longer is cut before it reaches her. */
 const MAX_INCOMING = 2_000;
 /** How many distinct messages we remember to drop repeats of. */
 const SEEN_LIMIT = 500;
+/**
+ * 问她要不要先开口时说的那段话。
+ *
+ * 她自己决定说什么 —— 想说的那句就是原话；不想说话，回 [SILENT] 就行（和旧桥一样的约定，
+ * 但这边不再有候选表、分数和重试：一次问一句，说不说都算一次调用）。
+ */
+const NUDGE_PROMPT = [
+  '现在没有人在跟你说话。',
+  '如果想对他说点什么，就直接写下来 —— 那就是要发出去的原话：不要解释、不要加引号、不要自称发了消息。',
+  '这一刻不想说话，就只回 [SILENT]。',
+].join('\n');
 
 /**
  * What we actually read off an incoming message.
@@ -41,6 +54,8 @@ export interface QqNativeConfig {
   /** Who shares her home session: `owner` keeps it for the owner's private chat, `none` gives every
    *  conversation its own, empty follows whatever the bridge's own setting says. */
   bindHomeSession: 'owner' | 'all' | 'none' | '';
+  /** 她会不会自己先开口。`enabled` 关着时 policy 里的数字都不看。 */
+  proactive: { enabled: boolean; policy: Partial<QqProactivePolicy> };
 }
 
 export interface QqNativeStatus {
@@ -57,6 +72,8 @@ export interface QqNativeStatus {
   sent: number;
   failed: number;
   bindHomeSession: 'owner' | 'all' | 'none' | '';
+  /** 主动开口那块自己的账；没开就是 null。 */
+  proactive: QqProactiveStatus | null;
 }
 
 /**
@@ -78,6 +95,9 @@ export function createQqNativeModule(deps: {
   const seen = new Set<string>();
   const contexts = new Map<string, ChannelContextMessage[]>();
   const answering = new Set<string>();
+  // 她自己的那条线：最后一次见到的账号，和「要不要先开口」的引擎。
+  let lastSelfId = '';
+  let proactive: QqProactive | undefined;
   let client: ReturnType<typeof createBridge> | undefined;
   let stopped = false;
   // 面板要的那几个数自己记：传输层只交出一个 getState()，不带计数。
@@ -144,6 +164,9 @@ export function createQqNativeModule(deps: {
     const conversationId = isGroup ? message.groupId ?? '' : userId;
     if (!conversationId) return;
     stats.lastEventAt = new Date().toISOString();
+    // 有人说话了：房间安静了多久她得记得，顺带记住自己这个号是哪个。
+    lastSelfId = selfId || lastSelfId;
+    proactive?.noteActivity(Date.now(), lastSelfId);
     const speakerName = message.sender?.card || message.sender?.nickname || '';
     let identity: SpeakerIdentity;
     try {
@@ -178,6 +201,47 @@ export function createQqNativeModule(deps: {
     } finally { answering.delete(key); }
   }
 
+    /**
+     * 她会不会先开口。
+     *
+     * 策略从配置来，剩下的交给 proactive.ts；这里只管两件它不会做的事：
+     * 问她要说什么（走同一条 home 线），以及把话发出去（走同一条传输）。
+     */
+    function startProactive(config: QqNativeConfig): void {
+      if (!deps.stateFile) return;
+      if (config.proactive.enabled !== true) return;
+      proactive = createQqProactive({
+        policy: { ...DEFAULT_QQ_PROACTIVE_POLICY, ...config.proactive.policy },
+        file: join(dirname(deps.stateFile), 'qq-proactive.json'),
+        log: (message: string) => deps.logger.info(`QQ 主动联系：${message}`),
+        target: () => settings().allowPrivate[0] ?? '',
+        selfId: () => lastSelfId,
+        generate: (hint: string) => nudge(hint),
+        deliver: async (text: string) => {
+          const target = settings().allowPrivate[0] ?? '';
+          if (!target) throw new Error('私聊白名单是空的，没处发');
+          await client?.sendPrivate(target, text);
+        },
+      });
+      proactive.start();
+    }
+
+    /** 问她要说什么。走同一条 home 线，只是这条消息不是谁发来的。 */
+    async function nudge(hint: string): Promise<string> {
+      const target = settings().allowPrivate[0] ?? '';
+      if (!target) throw new Error('私聊白名单是空的，没处问');
+      const account = lastSelfId || proactive?.knownSelfId() || '0';
+      const identity = speakerIdentity({
+        channel: 'qq',
+        accountId: account,
+        speakerId: `qq:${target}`,
+        conversationId: target,
+        conversationType: 'private',
+      });
+      const answer = await home.ask(`${NUDGE_PROMPT}${hint ? `\n（此刻的情况：${hint}）` : ''}`, identity, [], { nudge: true });
+      return answer.text;
+    }
+
   return {
     status(): QqNativeStatus {
       const config = settings();
@@ -195,6 +259,7 @@ export function createQqNativeModule(deps: {
         lastError: stats.lastError,
         sent: stats.sent,
         failed: stats.failed,
+        proactive: proactive ? proactive.status() : null,
       };
     },
     /** 面板上那个「会不会自己回」的开关。 */
@@ -227,6 +292,7 @@ export function createQqNativeModule(deps: {
         },
       });
       client = bridge;
+      startProactive(config);
       bridge.start().catch((error: unknown) => {
         stats.lastError = error instanceof Error ? error.message : String(error);
         deps.logger.warn('QQ 原生通道首次连接失败：', stats.lastError);
@@ -236,6 +302,8 @@ export function createQqNativeModule(deps: {
       if (stopped) return;
       stopped = true;
       home.stop();
+      proactive?.stop();
+      proactive = undefined;
       void client?.stop();
       client = undefined;
       contexts.clear();
