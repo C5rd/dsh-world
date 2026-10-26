@@ -15,7 +15,7 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { createQqBridge, type QqBridge } from './qq/bridge.ts';
+import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './qq/bridge.ts';
 import { createQqSupervisor } from './qq/supervisor.ts';
 import { qqRoute } from './qq/route.ts';
 import { createConsoleDoors } from './qq/panel.ts';
@@ -35,7 +35,7 @@ export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor }
 export const name = 'dsh-world';
 export const inject = ['agents', 'sessions', 'sessionPersistence', 'llm'];
 /** What `apply` receives: the schema below fills these defaults. */
-export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts' | 'qqBridgeDir' | 'qqBridgePort' | 'qqBridgeAutoStart'>>;
+export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts' | 'qqBridgeDir' | 'qqBridgePort' | 'qqBridgeAutoStart' | 'qqBridgeBindHomeSession'>>;
 // One companion per profile is the usual case, so it works as installed: the standard preset, a world named
 // default and the system time zone, with the life line on (it needs the desktop host's services and stays off without them).
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -57,6 +57,9 @@ export const Config = z.object({
   // this whole module off; the bridge is started by hand from the console unless qqBridgeAutoStart says otherwise.
   qqBridgeDir: z.string().default(''), qqBridgePort: z.number().default(3100), qqBridgeNode: z.string(),
   qqBridgeAutoStart: z.boolean().default(false),
+  // 谁和谁共用一个会话。空着就不碰桥的 config.json（尊重人自己填的）；'owner' 让每个群各自一份会话、
+  // 只有主人私聊用她的家会话——这是装上之后最想要的那个，人在插件配置里说一次就够了。
+  qqBridgeBindHomeSession: z.union([z.const('owner').description('群各自独立，主人私聊用她的家会话'), z.const('all').description('所有入口都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default(''),
 });
 interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof qqRoute>): () => void }
 
@@ -120,6 +123,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       : undefined;
     if (qq) {
       const service = qq;
+      // 会话绑定先写：桥是启动时才读 config.json 的，这条必须在 ensureRunning/syncEndpoint 之前。
+      syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
       // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
       const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
       lifeCtx.effect(() => webServer.register(qqRoute(service, config.allowedHosts, doors)), 'dsh-world qq route');

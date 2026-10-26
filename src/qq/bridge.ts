@@ -55,7 +55,10 @@ export interface QqStatus {
   supervisor?: unknown;
 }
 
-export interface SyncResult { changed: boolean; reason?: string; baseUrl?: string; before?: string }
+export interface SyncResult { changed: boolean; reason?: string; baseUrl?: string; before?: string; mode?: string }
+
+/** 谁和谁共用一个会话：群各自一份，还是所有入口都用她的家会话，还是谁都不绑。 */
+export type BindHomeSession = 'owner' | 'all' | 'none';
 export interface StartResult { started: boolean; reason?: string }
 export interface StopResult { stopped: boolean; reason?: string }
 export interface BindResult extends StartResult { key: string; sessionId?: string }
@@ -155,6 +158,40 @@ export function syncBridgeBaseUrl(dir: string, origin: string, logger?: QqLogger
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   logger?.info?.(`[qq] 桥的 DSH 端点已更新：${before || '(空)'} → ${url}`);
   return { changed: true, baseUrl: url, before };
+}
+
+/**
+ * 谁和谁共用一个会话，写进桥的 `socialV2.bindHomeSession`。
+ *
+ * 桥自己的默认是「谁都不绑」——装上之后每个群、每条私聊各建一个会话。那通常不是人想要的：主人私聊
+ * 应该是她记得的那个家会话，只有群才该各自独立。这个开关让人在插件配置里说一次，不用去翻桥的
+ * config.json。
+ *
+ * 空值表示不碰桥的配置（尊重人自己填的）；`none` 表示把这个键删掉，回到桥的默认。
+ */
+export function syncBridgeSessionMode(dir: string, mode: BindHomeSession | '', logger?: QqLogger): SyncResult {
+  if (!mode) return { changed: false, reason: 'no-mode' };
+  const file = join(dir, 'config.json');
+  let config: Record<string, any>;
+  try {
+    config = readJsonTolerant(file) as Record<string, any>;
+  } catch (error) {
+    return { changed: false, reason: `config.json 读不到：${messageOf(error)}` };
+  }
+  const socialV2 = (config.socialV2 = config.socialV2 ?? {});
+  const before = typeof socialV2.bindHomeSession === 'string' ? socialV2.bindHomeSession : '';
+  if (mode === 'none') {
+    if (!('bindHomeSession' in socialV2)) return { changed: false, mode, before };
+    delete socialV2.bindHomeSession;
+    writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    logger?.info?.(`[qq] 桥的会话绑定已去掉（原来 ${before || '空'}）：每个入口各用各的会话`);
+    return { changed: true, mode, before };
+  }
+  if (before === mode) return { changed: false, mode, before };
+  socialV2.bindHomeSession = mode;
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  logger?.info?.(`[qq] 桥的会话绑定已设为 ${mode}（原来 ${before || '空'}）：${mode === 'owner' ? '群各自独立，主人私聊用她的家会话' : '所有入口都用她的家会话'}`);
+  return { changed: true, mode, before };
 }
 
 interface CallResult { status: number; body: any }
