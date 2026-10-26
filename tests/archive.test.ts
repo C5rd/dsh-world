@@ -42,3 +42,16 @@ test('output-limit truncation is archived as interrupted visible text', () => {
   event.data.stream = [{ type: 'chunk', time: event.time, chunk: { type: 'finish', reason: { kind: 'max-tokens' } } }];
   assert.equal(extractConversationRecords(event, scope)[0].status, 'interrupted');
 });
+
+test('structured sender identity survives archiving while the role stays user', () => {
+  const event = user('wechat-message', 'hello');
+  const identity = { channel: 'wechat', accountId: 'wxid_bot', conversationId: 'family@chatroom', speakerId: 'wechat:wxid_mom', speakerName: '妈妈', platformMessageId: 'message_0.db:42', mentionIds: ['wechat:wxid_bot'] };
+  const source = { kind: 'user' as const, identity };
+  const tagged = { ...event, data: freezeMessage({ ...event.data, source }) };
+  const record = extractConversationRecords(tagged, scope)[0];
+  assert.equal(record.role, 'user');
+  assert.equal(record.speakerId, identity.speakerId);
+  assert.equal(record.conversationId, identity.conversationId);
+  assert.equal(record.platformMessageId, identity.platformMessageId);
+  assert.deepEqual(record.mentionIds, identity.mentionIds);
+});

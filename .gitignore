@@ -6,3 +6,4 @@ lib/
 
 # Design notes and working logs stay local (personal paths and names).
 docs/
+__pycache__/

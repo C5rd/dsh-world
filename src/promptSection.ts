@@ -8,7 +8,7 @@ import { belongsToWorld } from './sourceArchive.ts';
 import type { WorldConfig } from './types.ts';
 import { readTemplate, renderWorldPrompt, type WorldPrompt } from './worldPrompt.ts';
 
-export interface WorldPromptSource { prompt: WorldPrompt; isHome(sessionId: string): boolean }
+export interface WorldPromptSource { prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean }
 interface PromptText { template: string; self?: { file: string; text: string }; persona: string }
 interface Entry { text: PromptText; world: () => void; persona?: () => void }
 /** The host's persona section; a preset may also register it for its own agents. */

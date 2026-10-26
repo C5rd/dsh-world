@@ -24,8 +24,6 @@ import type { LifeStore } from './lifeStore.ts';
 import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
 import { createToolRegistry } from './toolRegistry.ts';
-import { createAlbum, recentImages } from './album.ts';
-import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { alarmDescriptions, lifeTools } from './tools.ts';
 import type { Alarm, Greeting, LifeOptions, Review, WakeRecord } from './types.ts';
 
@@ -243,11 +241,10 @@ export function createLifeRuntime(deps: LifeDeps) {
     ...(deps.notifier.toast ? { toast: (title: string, body: string) => faults.track('toast', '系统通知没送到', () => deps.notifier.toast!(title, body)) } : {}),
     outlets: deps.notifier.outlets.map(outlet => ({ ...outlet, send: push => faults.track(`outlet:${outlet.name}`, `${outlet.name}没送到`, () => outlet.send(push)) })),
   };
-  const album = createAlbum({ roomDir: options.roomDir, timeZone: config.timeZone, attachments: () => ctx.get('attachments') as AttachmentStore | undefined });
   const tools = createToolRegistry({
     faults, logger: ctx.logger,
     isHome: agent => agent.id === state.homeSessionId,
-    tools: agent => lifeTools({ planNext, checkAlarm, cancelAlarm, keepPhoto: input => album.keep(recentImages(agent.session.deriveMessages()), input), notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
   });
   const attach = (agent: Agent) => { if (!stopped && belongsToWorld(agent.session, config)) tools.attach(agent); };
   const home = createHome({

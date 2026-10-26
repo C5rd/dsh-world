@@ -1,12 +1,14 @@
-import type { OutletConfig } from './outlets.ts';
+import type { OutletConfig } from './ecosystem/shared/outlets.ts';
 import type { SessionHeader } from '@deepseek-ai/dsh-session';
+import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
+import type { MemoryArchiveScope } from './archiveSelection.ts';
 
 export interface WorldConfig {
   worldId: string;
   agentPreset: string;
   timeZone: string;
-  /** Which conversations are archived (and so remembered): every world session (default), or her home only. The memory block goes to every world session either way. */
-  archiveScope?: 'world' | 'home';
+  /** Archive her current home alone, or ordinary sessions in its workspace (default). */
+  archiveScope?: MemoryArchiveScope;
   /** The life line (home session, alarm, tools, console); on by default. */
   life?: boolean;
   /** Her diary directory; defaults to `<world>/diary`. */
@@ -29,12 +31,15 @@ export interface WorldConfig {
   outlets?: OutletConfig[];
   /** Runs the bridge: a local app may hand her partner's words to her home. */
   bridge?: boolean;
+  /** The independent local WeChat module; the Windows adapter uses `<world>/wechat.json`. */
+  wechat?: boolean;
   /** reach_out also shows a system notification (Windows only); on by default. */
   toast?: boolean;
   /** Names besides this machine the console and the bridge answer to (a LAN address or domain behind a reverse proxy). */
   allowedHosts?: string[];
 }
-export interface ConversationRecord {
+export interface DeliveryState { status: 'pending' | 'sent' | 'uncertain' | 'failed'; confirmed: number; total: number }
+export interface ConversationRecord extends Partial<SpeakerIdentity> {
   schemaVersion: 1;
   worldId: string;
   recordId: string;
@@ -46,6 +51,7 @@ export interface ConversationRecord {
   occurredAt: string;
   content: string;
   status: 'complete' | 'interrupted';
+  wechatDelivery?: DeliveryState;
 }
 export interface ArchiveScope {
   worldId: string;
@@ -53,6 +59,7 @@ export interface ArchiveScope {
   header: SessionHeader;
   inheritedEventCount: number;
   turn: number;
+  archiveScope?: MemoryArchiveScope;
 }
 export interface ArchiveCursor {
   date: string;

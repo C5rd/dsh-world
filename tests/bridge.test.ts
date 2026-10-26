@@ -8,9 +8,9 @@ import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk }
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/bridge/bridge.ts';
-import { BRIDGE_PATH, bridgeRoute } from '../src/bridge/route.ts';
-import type { Push } from '../src/outlets.ts';
+import { createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
+import { BRIDGE_PATH, bridgeRoute } from '../src/ecosystem/bridge/route.ts';
+import type { Push } from '../src/ecosystem/shared/outlets.ts';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const userMessage = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });

@@ -118,6 +118,7 @@ window.__ModuleLoader__.load({
       '.dw-activity{table-layout:fixed}.dw-activity td{overflow:hidden;overflow-wrap:anywhere}.dw-activity td:first-child{white-space:nowrap}',
       '.dw-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px}',
       '.dw-setting{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}.dw-setting input[type=text]{flex:1 1 120px;max-width:200px;min-width:0}',
+      '.dw-setting select{flex:1 1 140px;max-width:100%;min-width:0}',
       '.dw pre.dw-diary{white-space:pre-wrap;margin:10px 0 0;font-family:var(--serif)}',
       '.dw select{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:2px 6px}',
       '@media (prefers-reduced-motion:reduce){.dw *{animation:none!important;transition:none!important}}',
@@ -254,6 +255,9 @@ window.__ModuleLoader__.load({
     /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效。 */
     function Memory(props) {
       var mem = props.mem, window_ = mem && mem.windowTurns || 200
+      var activeScope = mem && mem.archiveScope || 'workspace'
+      var scopeNames = { home: '仅家会话', workspace: '家所在工作区' }
+      var scopeState = useState(mem && mem.selectedArchiveScope || activeScope), scope = scopeState[0], setScope = scopeState[1]
       var draftState = useState(String(window_)), draft = draftState[0], setDraft = draftState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       function save() {
@@ -261,10 +265,22 @@ window.__ModuleLoader__.load({
         if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 200'); return }
         post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
       }
+      function saveScope() {
+        post('archive-scope', { scope: scope }).then(function (result) {
+          setMsg(result.restartRequired ? '已保存。请重启 DSH，启动后按新范围和消息时间重建记忆块。' : '归档范围已保存。')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+      }
       return h(Card, { title: '记忆', delay: 180 }, mem ? [
         h('div', { key: 'm' }, h('span', { className: 'dw-big' }, mem.turns), h('span', { className: 'dw-muted' }, ' / ' + window_ + ' 轮')),
         h('div', { key: 'b', className: 'dw-meter' }, h('i', { style: { width: Math.min(100, Math.round((mem.turns || 0) / window_ * 100)) + '%' } })),
         h('div', { key: 'd', className: 'dw-muted' }, '约 ' + mem.approxTokens + ' token · 归档 ' + mem.records + ' 条 · 来自 ' + mem.sessions + ' 个会话'),
+        h('div', { key: 'active', className: 'dw-muted' }, '当前归档：' + scopeNames[activeScope]),
+        h('div', { key: 'scope', className: 'dw-setting' },
+          h('select', { value: scope, 'aria-label': '记忆归档范围', onChange: function (e) { setScope(e.target.value); setMsg('') } },
+            h('option', { value: 'home' }, '仅家会话'), h('option', { value: 'workspace' }, '家所在工作区')),
+          h('button', { className: 'dw-btn', onClick: saveScope }, '保存范围')),
+        mem.restartRequired ? h('div', { key: 'restart', className: 'dw-muted', role: 'status' }, '范围已修改，请重启 DSH。重启前继续使用当前范围。') : null,
         h('div', { key: 's', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),

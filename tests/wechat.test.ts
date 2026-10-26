@@ -1,0 +1,238 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createUserMessage, ToolCallId, type ContextFormed, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
+import { SessionId } from '@deepseek-ai/dsh-session';
+import { hostFixture, textResponse } from './hostFixture.ts';
+import { createWechatHome } from '../src/ecosystem/wechat/home.ts';
+import { createWechatModule } from '../src/ecosystem/wechat/index.ts';
+import { replyMessages } from '../src/ecosystem/wechat/messages.ts';
+import { createWechatRecorder } from '../src/ecosystem/wechat/archive.ts';
+import { createArchiveStore } from '../src/store.ts';
+import { defineTool } from '@deepseek-ai/dsh-tools';
+import { channelContext } from '../src/ecosystem/shared/context.ts';
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap { 'runtime-context': { kind: 'runtime-context' } & ContextFormed }
+  interface MessageSourceMap { 'skill-catalog': { kind: 'skill-catalog'; form: 'catalog'; entries: { name: string; description: string }[] } }
+}
+
+const identity = { channel: 'wechat', accountId: 'wxid_bot', conversationType: 'group' as const, conversationId: 'family@chatroom', speakerId: 'wechat:wxid_mom', speakerName: '妈妈' };
+
+test('group context preserves sender IDs without accepting another conversation or becoming a fresh user request', async t => {
+  const previous = { id: 'm.db:1', occurredAt: '2026-10-25T00:00:00Z', identity: { ...identity, speakerId: 'wechat:dad', speakerName: '爸爸' }, text: '前一句' };
+  assert.throws(() => channelContext([{ ...previous, identity: { ...identity, conversationId: 'other@chatroom' } }], identity));
+  assert.throws(() => channelContext(Array.from({ length: 9 }, () => previous), identity));
+  const requests: GenerateOptions[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('群回复'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('group'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async received => { assert.equal(received.conversationId, identity.conversationId); return agent; } }); cleanup.push(channel.stop);
+  await channel.ask('@她', identity, [previous]);
+  const context = requests[0].messages.find(message => message.source?.kind === 'dsh-world-channel-context');
+  assert.ok(context);
+  assert.match(JSON.stringify(context), /wechat:dad/);
+  assert.match(JSON.stringify(context), /前一句/);
+});
+
+test('delivery updates the same durable record, survives reopening and rejects stale or invalid receipts', async t => {
+  const { root, cleanup } = await hostFixture(t, () => textResponse('unused'));
+  const config = { root, worldId: 'test', agentPreset: 'test', timeZone: 'UTC' };
+  let store = createArchiveStore(config);
+  cleanup.push(() => store.close());
+  const recorder = createWechatRecorder(store, 'test');
+  const id = await recorder.record({ sessionId: 'home', messageId: 'answer', seq: 10, turn: 1, time: Date.now(), identity,
+    messages: [{ type: 'text', text: '第一句' }, { type: 'sticker', stickerId: 'st_hi' }, { type: 'text', text: '最后一句' }] });
+  await recorder.receipt({ id, confirmed: 1, status: 'uncertain' });
+  assert.match((await store.readPage({ worldId: 'test', limit: 10 })).records[0].content, /已确认发送 1\/3/);
+  store.close(); store = createArchiveStore(config);
+  const restored = createWechatRecorder(store, 'test');
+  await restored.receipt({ id, confirmed: 3, status: 'sent' });
+  await restored.receipt({ id, confirmed: 3, status: 'sent' });
+  await assert.rejects(restored.receipt({ id, confirmed: 1, status: 'uncertain' }));
+  await assert.rejects(restored.receipt({ id, confirmed: 4, status: 'sent' }));
+  const records = (await store.readPage({ worldId: 'test', limit: 10 })).records;
+  assert.equal(records.length, 1);
+  assert.match(records[0].content, /已确认发送 3\/3/);
+  assert.doesNotMatch(records[0].content, /待发送|送达尚未确认/);
+  const exported = await readFile(join(root, 'worlds/test/conversations', records[0].occurredAt.slice(0, 10) + '.jsonl'), 'utf8');
+  assert.equal(exported.trim().split('\n').length, 1);
+  assert.equal(JSON.parse(exported).content, records[0].content);
+});
+
+test('invalid outgoing payloads are rejected as a whole', () => {
+  assert.throws(() => replyMessages([{ type: 'text', text: 'ok' }, { type: 'image' }]));
+  assert.throws(() => replyMessages([{ type: 'text', text: '鱼'.repeat(1400) }]));
+  assert.throws(() => replyMessages(Array.from({ length: 17 }, () => ({ type: 'text', text: 'x' }))));
+});
+
+test('non-home group delivery cannot bypass the configured shared archive scope', async t => {
+  const { root, cleanup } = await hostFixture(t, () => textResponse('unused'));
+  const store = createArchiveStore({ root, worldId: 'test', agentPreset: 'test', timeZone: 'UTC' }); cleanup.push(() => store.close());
+  const recorder = createWechatRecorder(store, 'test', id => id === 'home');
+  const id = await recorder.record({ sessionId: 'group', messageId: 'group-answer', seq: 5, turn: 1, time: Date.now(), identity,
+    messages: [{ type: 'text', text: '只在群里的话' }] });
+  await recorder.receipt({ id, confirmed: 1, status: 'sent' });
+  assert.equal((await store.readPage({ worldId: 'test', limit: 10 })).records.length, 0);
+  assert.deepEqual(store.delivery(id), { status: 'sent', confirmed: 1, total: 1 });
+});
+
+test('an empty final answer does not send earlier tool commentary as the WeChat reply', async t => {
+  let calls = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* (): AsyncIterable<StreamChunk> {
+    if (calls++ === 0) {
+      yield { type: 'block-start', index: 0, blockType: 'text' };
+      yield { type: 'text-delta', index: 0, text: '我先查一下' };
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '我先查一下' } };
+      const block = { type: 'tool-call' as const, id: ToolCallId('check'), name: 'check', arguments: '{}' };
+      yield { type: 'block-start', index: 1, blockType: 'tool-call' };
+      yield { type: 'tool-call-delta', index: 1, id: block.id, name: block.name, argumentsDelta: block.arguments };
+      yield { type: 'block-end', index: 1, block };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } };
+    } else yield { type: 'finish', reason: { kind: 'stop' } };
+  })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  cleanup.push(home.ctx.tools.register(defineTool({ name: 'check', description: 'check', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'done' })));
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = await channel.ask('查一下', identity);
+  assert.equal(reply.text, '');
+  assert.equal('messages' in reply, false);
+});
+
+test('WeChat requests use the existing home and keep user-role sender identity', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('最终答复'); });
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = await channel.ask('今晚吃什么', identity);
+  assert.equal(reply.text, '最终答复');
+  assert.equal('deliveryId' in reply, false, 'ordinary final text is kept in the session, not automatically sent');
+  assert.equal('messages' in reply, false);
+  const sent = requests[0].messages.find(message => message.id === reply.id)!;
+  assert.equal(sent.role, 'user');
+  assert.deepEqual((sent.source as unknown as { identity: unknown }).identity, identity);
+  const event = home.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.id === reply.id);
+  assert.ok(event, 'the actual home log contains the message');
+});
+
+test('WeChat conversations wait their turn and do not receive each other\'s reply', async t => {
+  const { ctx, cleanup } = await hostFixture(t, request => {
+    const last = request.messages.filter(message => message.role === 'user').at(-1)!;
+    return textResponse(last.content.filter(block => block.type === 'text').map(block => block.text).join('').split('\n').at(-1)!);
+  });
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const [a, b] = await Promise.all([channel.ask('第一人', identity), channel.ask('第二人', { ...identity, conversationId: 'private', speakerId: 'wechat:wxid_dad' })]);
+  assert.equal(a.text, '第一人'); assert.equal(b.text, '第二人'); assert.notEqual(a.id, b.id);
+  channel.stop(); await assert.rejects(channel.ask('停止后', identity), /stopped/);
+});
+
+test('a later desktop turn is not returned as the WeChat answer', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { entered = resolve; });
+  let calls = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () {
+    const first = calls++ === 0;
+    if (first) { entered(); await gate; }
+    yield* textResponse(first ? '微信答复' : '桌面私密答复');
+  })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = channel.ask('群里的问题', identity);
+  await running;
+  home.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '桌面问题' }] }));
+  release();
+  assert.equal((await reply).text, '微信答复');
+  await home.whenIdle();
+});
+
+test('a cancelled home request is a failure, not a successful empty answer', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('不应发送'));
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  cleanup.push(ctx.on('session/event', (session, event) => {
+    if (session.id === home.id && event.type === 'user/message') home.cancel({ kind: 'user' });
+  }));
+  await assert.rejects(channel.ask('取消的消息', identity), /did not finish/);
+});
+
+test('a reply is not released for sending until its own session log is durable', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('不能丢失的群回复'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('group'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  let ended = false;
+  const offEvent = ctx.on('session/event', (session, event) => { if (session.id === agent.id && event.type === 'turn/end') ended = true; });
+  const offFlush = ctx.on('session/flush', async session => { if (ended && session.id === agent.id) throw new Error('group log disk failure'); });
+  const channel = createWechatHome({ ctx, home: async () => agent }); cleanup.push(channel.stop);
+  try {
+    await assert.rejects(channel.ask('群问题', identity), /group log disk failure/);
+  } finally { offEvent(); offFlush(); }
+});
+
+test('desktop words steered into the same turn prevent a mixed answer from leaving on WeChat', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { entered = resolve; });
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () {
+    entered(); await gate; yield* textResponse('混合内容');
+  })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = channel.ask('微信问题', identity);
+  const rejected = assert.rejects(reply, /did not finish/);
+  await running;
+  home.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '桌面内容' }] }));
+  release();
+  await rejected; await home.whenIdle();
+});
+
+test('host snapshots, the first-session skill catalog and memory recall do not count as another person speaking', async t => {
+  let injectSnapshot = () => {};
+  const { ctx, cleanup } = await hostFixture(t, () => { injectSnapshot(); return textResponse('微信正常答复'); });
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  injectSnapshot = () => {
+    home.session.append('user/message', createUserMessage({ source: { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'time', text: '当前时间' }] }, content: [{ type: 'text', text: '当前时间' }] }), { surfaceOp: 'append' });
+    home.session.append('user/message', createUserMessage({ source: { kind: 'skill-catalog', form: 'catalog', entries: [{ name: 'test', description: '工具目录' }] }, content: [{ type: 'text', text: '可用技能目录' }] }), { surfaceOp: 'append' });
+    home.session.append('user/message', createUserMessage({ source: { kind: 'dsh-world-history', form: 'recall' }, content: [{ type: 'text', text: '压缩后重注入的记忆' }] }), { surfaceOp: 'append' });
+  };
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  assert.equal((await channel.ask('在吗', identity)).text, '微信正常答复');
+});
+
+test('the independent WeChat endpoint authenticates and validates before entering home; stop removes only its own discovery file', async t => {
+  let calls = 0;
+  const receipts: unknown[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, () => { calls++; return textResponse('已收到'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const file = join(root, 'wechat.json');
+  const channel = createWechatModule({ ctx, file, home: async () => agent, origin: () => 'http://127.0.0.1:1', allowedHosts: [], receipt: async receipt => { receipts.push(receipt); } });
+  channel.start(); cleanup.push(channel.stop);
+  const { token, path } = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(path, '/dsh-world/wechat/ask');
+  const server = createServer((req, res) => { void channel.route.handler(req, res); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  const address = server.address(); assert.ok(address && typeof address === 'object');
+  const url = `http://127.0.0.1:${address.port}${path}`;
+  const request = (body: unknown, auth = token) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-world-token': auth }, body: JSON.stringify(body) });
+  const receipt = { id: 'a'.repeat(64), confirmed: 2, status: 'sent' };
+  assert.equal((await request({ receipt }, 'invalid')).status, 403);
+  assert.equal((await request({ receipt: { ...receipt, confirmed: -1 } })).status, 400);
+  assert.deepEqual(receipts, []);
+  assert.equal((await request({ receipt })).status, 200);
+  assert.deepEqual(receipts, [receipt]);
+  assert.equal((await request({ text: 'hello', identity }, 'invalid')).status, 403);
+  assert.equal((await request({ text: 'hello', identity: { ...identity, speakerId: 'qq:123' } })).status, 400);
+  assert.equal((await request({ text: 'hello', identity: { ...identity, channel: 'qq', speakerId: 'qq:123' } })).status, 400);
+  assert.equal((await request({ text: 'a'.repeat(40000), identity })).status, 400);
+  assert.equal(calls, 0);
+  const response = await request({ text: 'hello', identity });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).text, '已收到');
+  channel.stop(); assert.equal(existsSync(file), false);
+  assert.equal((await request({ text: 'hello', identity })).status, 503);
+  await writeFile(file, JSON.stringify({ token: 'newer-module' }));
+  channel.stop(); assert.equal(existsSync(file), true);
+});

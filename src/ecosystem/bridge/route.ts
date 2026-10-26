@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
+import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import { HomeUnavailable, type Bridge } from './bridge.ts';
 
 export const BRIDGE_PATH = '/dsh-world/bridge/say';

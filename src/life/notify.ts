@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import type { Outlet } from '../outlets.ts';
+import type { Outlet } from '../ecosystem/shared/outlets.ts';
 
 /** reach_out's channels: the system notification where there is one, then every outlet that takes `reach`. */
 export interface Notifier {

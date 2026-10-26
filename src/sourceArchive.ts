@@ -4,13 +4,15 @@ import type {} from '@deepseek-ai/dsh-session-persistence';
 import { extractConversationRecords } from './archive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
+import { wechatDeliveryPatch } from './ecosystem/wechat/archive.ts';
 
 const pageSize = 128;
-const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
 export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldConfig): boolean {
   const header = session.header;
   return header.agentPreset === config.agentPreset && header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 }
+const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
+const ordinary =(header: Session['header']) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 
 /**
  * Copies her conversations from the host's session logs into the archive. Each session is replayed from where
@@ -41,7 +43,10 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
         if (!events.length) break;
         const records = events.flatMap(event => {
           if (event.type === 'turn/start') turn = event.data.turn;
-          return skip ? [] : extractConversationRecords(event, { ...config, header: handle.header, inheritedEventCount: handle.inheritedEventCount, turn });
+          return skip ? [] : extractConversationRecords(event, { ...config, header: handle.header, inheritedEventCount: handle.inheritedEventCount, turn }).map(record => {
+            const delivery = record.wechatDelivery ? store.delivery(record.recordId) : undefined;
+            return delivery ? { ...record, ...wechatDeliveryPatch(record, delivery) } : record;
+          });
         });
         nextSeq = events.at(-1)!.seq + 1;
         await store.commitRecords(records, { sessionId: id, nextSeq, turn });
@@ -77,12 +82,24 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
     async catchUp(skip = false): Promise<void> {
       // One session's failure is kept for flush(); it must not stop the sessions after it.
       const replayOne = (id: string) => (skip ? enqueue(() => replay(id, true)) : schedule(id)).catch(() => {});
+      // The host exposes a metadata inventory; every selected message log is still read in pages.
+      const snapshots = await ctx.sessionPersistence.list();
+      const visited = new Set<string>();
+      for (let offset = 0; offset < snapshots.length; offset += pageSize) {
+        for (const { header } of snapshots.slice(offset, offset + pageSize)) {
+          if (!ordinary(header) || (!config.archiveScope && header.agentPreset !== config.agentPreset) || !archived(header.id)) continue;
+          visited.add(header.id);
+          await replayOne(header.id);
+        }
+      }
       let after = '';
       for (let ids = store.sourcePage(after); ids.length; ids = store.sourcePage(after)) {
         for (const id of ids) {
           after = id;
+          if (visited.has(id)) continue;
           // A session deleted from the host (not merely archived there) keeps its records but has nothing left to resume.
           if (!await ctx.sessionPersistence.stat(SessionId(id))) { store.forgetProgress(id); continue; }
+          if (!archived(id)) continue;
           await replayOne(id);
         }
       }

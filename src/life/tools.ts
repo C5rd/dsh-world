@@ -2,8 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Notifier } from './notify.ts';
 import type { WorldNames } from '../worldPrompt.ts';
 import { exampleTime, fillMessage, readAlarmMessages } from './messages.ts';
-import { pushOf } from '../outlets.ts';
-import type { KeepInput } from './album.ts';
+import { pushOf } from '../ecosystem/shared/outlets.ts';
 
 export interface AlarmDescriptions { plan: string; check: string; cancel: string }
 export interface LifeToolHost {
@@ -11,8 +10,6 @@ export interface LifeToolHost {
   /** With both, check_alarm and cancel_alarm are offered too. */
   checkAlarm?(): string;
   cancelAlarm?(): string;
-  /** With it, keep_photo is offered: a copy of a picture she was shown goes into her album. */
-  keepPhoto?(input: KeepInput): Promise<string>;
   notifier: Notifier;
   names?: WorldNames;
   /** The DSH origin, for sticker URLs in her words. */
@@ -56,16 +53,9 @@ export function lifeTools(host: LifeToolHost) {
       return summary;
     },
   });
-  const keepPhoto = host.keepPhoto && defineTool({
-    name: 'keep_photo',
-    description: `${partner}给你看的图里，若有让你觉得值得留下来的（好看的、有意义的、想以后再翻出来的），当场用它留进你的相册（房间里的「相册」文件夹，旁边有相册.md 记着日期和你写的话）。caption 写你为什么想留它，用你自己的话；title 可选，给它起个名字；which 默认 1，是最近看到的那张，2 是再往前一张。留下的是一份副本，会话以后被压缩或删掉也还在。同一张图只会留一次。`,
-    parameters: { caption: { type: 'string', required: true }, title: { type: 'string' }, which: { type: 'number' } },
-    output: text,
-    execute: async ({ caption, title, which }) => host.keepPhoto!({ caption, ...(title === undefined ? {} : { title }), ...(which === undefined ? {} : { which }) }),
-  });
   const { checkAlarm, cancelAlarm } = host;
-  if (!checkAlarm || !cancelAlarm) return keepPhoto ? [planNext, reachOut, keepPhoto] as const : [planNext, reachOut] as const;
+  if (!checkAlarm || !cancelAlarm) return [planNext, reachOut] as const;
   const check = defineTool({ name: 'check_alarm', description: descriptions.check, parameters: {}, output: text, execute: async () => checkAlarm.call(host) });
   const cancel = defineTool({ name: 'cancel_alarm', description: descriptions.cancel, parameters: {}, output: text, execute: async () => cancelAlarm.call(host) });
-  return keepPhoto ? [planNext, reachOut, check, cancel, keepPhoto] as const : [planNext, reachOut, check, cancel] as const;
+  return [planNext, reachOut, check, cancel] as const;
 }

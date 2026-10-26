@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
-import { createBridge, type Bridge } from './bridge/bridge.ts';
-import { bridgeRoute } from './bridge/route.ts';
+import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
+import { bridgeRoute } from './ecosystem/bridge/route.ts';
 import { consoleRoute, type ConsoleActions } from './console/routes.ts';
 import { consoleSources } from './console/snapshot.ts';
 import { errorText, Faults } from './faults.ts';
@@ -13,13 +13,18 @@ import { createLifeStore, durableWrite } from './life/lifeStore.ts';
 import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
 import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
-import { createOutlet } from './outlets.ts';
+import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
 import { createWorldRuntime } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
-import { DEFAULT_TEMPLATE_FILE, worldNames } from './worldPrompt.ts';
+import { DEFAULT_TEMPLATE_FILE, roomTitle, worldNames } from './worldPrompt.ts';
 import { createWorldSwitch } from './worldSwitch.ts';
+import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
+import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
+import { createChannelSessions } from './ecosystem/shared/sessions.ts';
+import { createArchiveSelection } from './archiveSelection.ts';
+import { belongsToWorld } from './sourceArchive.ts';
 
 export { createWorldRuntime } from './runtime.ts';
 export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor } from './types.ts';
@@ -33,13 +38,14 @@ const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 export const Config = z.object({
   worldId: z.string().default('default'), agentPreset: z.string().default('standard'), timeZone: z.string().default(systemTimeZone),
   companionName: z.string(), partnerName: z.string(),
-  archiveScope: z.union([z.const('world'), z.const('home')]).default('world'),
+  archiveScope: z.union([z.const('home').description('仅家会话'), z.const('workspace').description('家所在工作区'), z.transform(z.const('world').hidden(), () => 'workspace' as const).hidden()]).default('workspace').description('记忆归档范围，修改后重启生效'),
   life: z.boolean().default(true), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00'),
   selfFile: z.string(), worldPromptFile: z.string(), alarmTemplateFile: z.string(), personaFile: z.string(),
   // Where her words go outside DSH; no app is known by name (see README for the push body).
   outlets: z.array(z.object({ name: z.string().required(), url: z.string(), urlFile: z.string(), path: z.string(), kinds: z.array(z.union([z.const('reply'), z.const('busy'), z.const('reach')])) })).default([]),
   // A local app may hand her partner's words to her home through POST /dsh-world/bridge/say.
   bridge: z.boolean().default(false),
+  wechat: z.boolean().default(false),
   toast: z.boolean().default(true),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
@@ -55,7 +61,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const dshHome = resolveDshHome();
   const worldDir = join(dshHome, 'worlds', config.worldId);
   const store = createArchiveStore({ ...config, root: dshHome });
-  const power = createWorldSwitch(worldDir);
+  const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace');
+  const memoryConfig = { ...config, archiveScope: power.archiveScope() };
   const faults = new Faults();
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
@@ -64,60 +71,84 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const options: LifeOptions = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: config.diaryDir || join(worldDir, 'diary'), selfFile, fallbackWakeTime: config.fallbackWakeTime, timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
   /** The name in her persona comes first, then the configured one. */
   const names = () => worldNames({ ...config, companionName: readPersona(personaFile).名字 || config.companionName });
-  // Set while the life line runs; otherwise no session is her home.
-  let isHome: (sessionId: string) => boolean = () => false;
+  const lifeStore = (() => {
+    if (!config.life) return undefined;
+    try { const current = createLifeStore(worldDir, config.timeZone); current.read(); return current; }
+    catch (error) { faults.set('life', `生活线没能启动：${errorText(error)}`); ctx.logger.error(error); return undefined; }
+  })();
+  const storedHome = () => lifeStore?.read().homeSessionId;
+  let isHome: (sessionId: string) => boolean = id => id === storedHome();
+  const includesSession = createArchiveSelection(ctx, power.archiveScope(), id => isHome(id), options.roomDir);
 
   let memory: ReturnType<typeof createWorldRuntime> | undefined;
+  let stopLifeLine: (() => Promise<void>) | undefined;
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt, isHome: id => isHome(id) }, power.memoryTurns);
+    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession: includesSession }, power.memoryTurns);
     await memory.start({ fresh });
   }
   async function stopMemory(): Promise<void> {
     const running = memory; memory = undefined;
     await running?.stop();
   }
-  ctx.effect(() => () => stopMemory().finally(() => store.close()), 'dsh-world memory line');
+  ctx.effect(() => async () => {
+    try { await stopLifeLine?.(); }
+    finally { await stopMemory().finally(() => store.close()); }
+  }, 'dsh-world memory line');
   if (power.running()) await startMemory(false);
+  // The host's workspace service may come up after this plugin; what the first catch-up could not place is read then.
+  ctx.inject(['workspaceRegistry'], injected => { void memory?.retryCatchUp().catch(error => injected.logger.error(error)); });
 
   // The console and the life line need the desktop host.
   ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
-    const lifeStore = (() => {
-      if (!config.life) return undefined;
-      try { return createLifeStore(worldDir, config.timeZone); }
-      catch (error) { faults.set('life', `生活线没能启动：${errorText(error)}`); lifeCtx.logger.error(error); return undefined; }
-    })();
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
+    let wechat: WechatModule | undefined;
+    let channels: ReturnType<typeof createChannelSessions> | undefined;
+    let unregisterWechat: (() => void) | undefined;
+    let lifeStop: Promise<void> | undefined;
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
       try {
+        await lifeStop;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast() } : {}), outlets };
         const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget });
         life = current; isHome = current.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
+        if (config.wechat) {
+          const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
+          channels = groupSessions;
+          wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts,
+            ...createWechatRecorder(store, config.worldId, includesSession) });
+          wechat.start(); unregisterWechat = webServer.register(wechat.route);
+        }
         faults.clear('life');
         await current.start({ resumed });
       } catch (error) {
         // The console still opens and says why, instead of looking as if the life line were simply off.
-        stopLife();
+        await stopLife();
         faults.set('life', `生活线没能启动：${errorText(error)}`); lifeCtx.logger.error(error);
       }
     }
-    function stopLife(): void {
-      isHome = () => false;
+    function stopLife(): Promise<void> {
+      isHome = id => id === storedHome();
       bridge?.stop(); life?.stop();
+      unregisterWechat?.();
+      const closingWechat = wechat?.stop(); unregisterWechat = undefined; wechat = undefined;
+      channels?.stop(); channels = undefined;
       bridge = undefined; life = undefined;
+      return lifeStop = Promise.all([lifeStop, closingWechat]).then(() => {});
     }
+    stopLifeLine = stopLife;
     lifeCtx.effect(() => () => stopLife(), 'dsh-world life line');
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
-    const sources = consoleSources({ ctx: lifeCtx, config, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, includesSession, faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -127,7 +158,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       async stop() {
         if (!power.running()) return;
         power.set(false);
-        stopLife();
+        await stopLife();
         try { await stopMemory(); } finally { sources.invalidate(); }
       },
       prompts: () => ({
@@ -137,6 +168,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
+      setArchiveScope: scope => { power.setArchiveScope(scope); sources.invalidate(); return power.restartRequired(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };
     lifeCtx.effect(() => webServer.register(consoleRoute(sources, actions, config.allowedHosts)), 'dsh-world console routes');

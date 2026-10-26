@@ -78,3 +78,23 @@ test('local sticker and image links become short markers in the rendered memory,
   const remote = '![cat](https://example.com/api/memes/cat.png)';
   assert.ok(render(remote).includes(remote));
 });
+
+test('identified users keep the user role and are not all described as the partner', () => {
+  const messages = [record('a', { role: 'user', speakerId: 'wechat:wxid_mom', speakerName: '妈妈', channel: 'wechat', conversationId: 'family@chatroom', platformMessageId: 'm.db:42', mentionIds: ['wechat:bot'] })];
+  const text = renderHistory([{ turnId: 't', occurredAt: messages[0].occurredAt, messages }], 'UTC', { companion: '鲸鲸', partner: '伙伴' });
+  const row = JSON.parse(text.split('\n')[1]);
+  assert.equal(row.messages[0].role, 'user');
+  assert.equal(row.messages[0].speakerId, 'wechat:wxid_mom');
+  assert.equal(row.messages[0].platformMessageId, 'm.db:42');
+  assert.deepEqual(row.messages[0].mentionIds, ['wechat:bot']);
+  assert.ok(!text.includes('role 为 user 的是伙伴说的话'));
+});
+test('retained WeChat words keep only their delivery status in the reloaded memory', () => {
+  const message = record('wechat', { content: '微信回复给 owner（已确认发送 1/2；第 2 条结果不明）：\n只说一次的正文',
+    wechatDelivery: { status: 'uncertain', confirmed: 1, total: 2 } });
+  const turns = [{ turnId: message.turnId, occurredAt: message.occurredAt, messages: [message] }];
+  const selected = excludePresentMessages(turns, new Set([message.sourceMessageId]));
+  assert.equal(selected.length, 1);
+  assert.match(selected[0].messages[0].content, /已确认发送 1\/2/);
+  assert.doesNotMatch(selected[0].messages[0].content, /只说一次/);
+});
