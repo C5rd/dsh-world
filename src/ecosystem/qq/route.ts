@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
-import type { QqBridge } from './bridge.ts';
+import type { ProactivePatch, QqBridge } from './bridge.ts';
 import type { ConsoleDoors } from './panel.ts';
 
 /**
@@ -19,7 +19,7 @@ import type { ConsoleDoors } from './panel.ts';
  *        POST /dsh-world/qq/unbind    { key }
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
- *        POST /dsh-world/qq/proactive  { enabled?, dryRun? } flips the two switches; the bridge writes them into
+ *        POST /dsh-world/qq/proactive  { enabled?, dryRun?, probability? } flips the switches and the send chance;
  *                                     its own config.json and applies them on the spot, so nothing restarts
  *
  * Writes require the `x-dsh-world` header: a cross-site page cannot add it (that would trigger a preflight,
@@ -56,10 +56,19 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
       return ok({ snowluma: await doors.remember(username, password) });
     }
     case '/proactive': {
-      const patch: { enabled?: boolean; dryRun?: boolean } = {};
+      const patch: ProactivePatch = {};
       if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
       if (typeof body?.dryRun === 'boolean') patch.dryRun = body.dryRun;
-      if (patch.enabled === undefined && patch.dryRun === undefined) return bad('enabled 和 dryRun 至少要给一个布尔');
+      // 开口概率：面板上的滑块直接把这个数发下来。越界当场拒绝，
+      // 不要指望桥那边帮你收敛 —— 那是给配置文件兜底的，不是给接口兜底的。
+      if (body?.probability !== undefined) {
+        const p = Number(body.probability);
+        if (!Number.isFinite(p) || p < 0 || p > 1) return bad('probability 要是 0 到 1 之间的数字');
+        patch.policy = { sendProbability: p };
+      }
+      if (patch.enabled === undefined && patch.dryRun === undefined && patch.policy === undefined) {
+        return bad('enabled / dryRun / probability 至少要给一个');
+      }
       return ok(await qq.setProactive(patch));
     }
     case '/bind': {

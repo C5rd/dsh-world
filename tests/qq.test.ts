@@ -76,7 +76,7 @@ test('绑定只接受 group:数字 和 private:数字，缺会话 id 直接拒',
   assert.deepEqual(seen, ['group:681528723=session-1']);
 });
 test('主动联系的两个开关走 POST，只认布尔，多余字段不给桥', async () => {
-  const seen: Array<Record<string, unknown>> = [];
+  const seen: unknown[] = [];
   const bridge = stub({ setProactive: async patch => { seen.push(patch); return { ok: true, config: patch }; } });
   const headers = { [WRITE_HEADER]: '1' };
   // 一个布尔都没给，就没得改
@@ -86,6 +86,21 @@ test('主动联系的两个开关走 POST，只认布尔，多余字段不给桥
   assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { enabled: true } }))).status, 200);
   assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { dryRun: false, policy: { maxPerDay: 99 } } }))).status, 200);
   assert.deepEqual(seen, [{ enabled: true }, { dryRun: false }]);
+});
+test('开口概率走滑块：0–1 之外当场拒绝，0 和 1 都算给了', async () => {
+  const seen: unknown[] = [];
+  const bridge = stub({ setProactive: async patch => { seen.push(patch); return { ok: true, config: patch }; } });
+  const headers = { [WRITE_HEADER]: '1' };
+  const post = (body: Record<string, unknown>) => call(route(bridge), request('POST', '/proactive', { headers, body }));
+  assert.equal((await post({ probability: 1.5 })).status, 400);
+  assert.equal((await post({ probability: -0.1 })).status, 400);
+  assert.equal((await post({ probability: '经常' })).status, 400);
+  assert.equal((await post({ probability: 0.35 })).status, 200);
+  assert.deepEqual(seen, [{ policy: { sendProbability: 0.35 } }]);
+  // 0 和 1 都是合法值，不能当成「没给」而被 400 掉
+  assert.equal((await post({ probability: 0 })).status, 200);
+  assert.equal((await post({ probability: 1 })).status, 200);
+  assert.deepEqual(seen.slice(1), [{ policy: { sendProbability: 0 } }, { policy: { sendProbability: 1 } }]);
 });
 test('两个控制台的地址是读接口：一个来自桥的令牌文件，一个要用面板密码现换', async () => {
   const doors = {

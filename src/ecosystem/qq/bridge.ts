@@ -76,6 +76,16 @@ export interface QqBridgeOptions {
   logger?: QqLogger;
 }
 
+/**
+ * 主动聊天可以改的东西。policy 目前只有 sendProbability 一项，
+ * 但它走的是桥的 policy 整段合并，所以形状留成通用对象。
+ */
+export interface ProactivePatch {
+  enabled?: boolean;
+  dryRun?: boolean;
+  policy?: { sendProbability?: number } & Record<string, unknown>;
+}
+
 export interface QqBridge {
   status(): Promise<QqStatus>;
   start(): Promise<StartResult>;
@@ -91,7 +101,7 @@ export interface QqBridge {
   syncEndpoint(): Promise<SyncEndpointResult>;
   /** 主动聊天的统计：今天花了多少次、平均多少 token、成了几条、被规则拦下几条。读不到返回 undefined。 */
   proactive(): Promise<any>;
-  setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any>;
+  setProactive(patch: ProactivePatch): Promise<any>;
   faults(): string[];
 }
 
@@ -258,12 +268,12 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
   }
 
   /**
-   * 改主动聊天的两个开关。
+   * 改主动聊天的开关与开口概率。
    *
    * 桥收到后会写进它自己的 config.json 并当场生效（引擎的 configure 是就地改），
    * 所以不用重启桥。桥没起来就抛错，让上面那层回 503，而不是假装改成功。
    */
-  async function setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any> {
+  async function setProactive(patch: ProactivePatch): Promise<any> {
     const token = readConsoleToken(dir);
     const { status, body } = await call(base, `/api/socialV2/proactive${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
       method: 'POST',

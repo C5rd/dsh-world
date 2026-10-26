@@ -518,6 +518,8 @@ window.__ModuleLoader__.load({
       var e = useState(null), error = e[0], setError = e[1]
       var s2 = useState(false), saving = s2[0], setSaving = s2[1]
       var s3 = useState(null), saveError = s3[0], setSaveError = s3[1]
+      // 滑块拖动中的临时值；松手才提交，避免一路拖一路 POST。
+      var s4 = useState(null), draft = s4[0], setDraft = s4[1]
       useEffect(function () {
         var alive = true
         function load() {
@@ -557,6 +559,39 @@ window.__ModuleLoader__.load({
           h('span', null, label),
           h('span', { className: 'dw-muted', style: { fontSize: 12 } }, hint))
       }
+      // 开口概率：policy.sendProbability 是 0–1 的小数。1 = 分数够了就发，
+      // 0 = 只看不说，中间值每次机会独立抽一次签（抽不中不花额度）。
+      function commitDraft() {
+        var v = draft
+        if (v == null) return
+        var cur = typeof policy.sendProbability === 'number' ? policy.sendProbability : 1
+        if (Math.abs(cur - v) < 0.005) { setDraft(null); return }
+        setSaving(true); setSaveError(null)
+        qqPost('proactive', { probability: v }).then(function () {
+          setData(Object.assign({}, data, { policy: Object.assign({}, policy, { sendProbability: v }) }))
+          setSaving(false); setDraft(null)
+        }, function (err) {
+          setSaveError(String((err && err.message) || err)); setSaving(false)
+        })
+      }
+      function sliderRow() {
+        var cur = typeof policy.sendProbability === 'number' ? policy.sendProbability : 1
+        var shown = draft != null ? draft : cur
+        return h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '2px 0 12px' } },
+          h('span', null, '开口概率'),
+          h('input', {
+            type: 'range', min: 0, max: 1, step: 0.01, value: shown, disabled: saving,
+            style: { width: 220, accentColor: 'currentColor' },
+            onChange: function (e) { setDraft(Number(e.target.value)) },
+            onMouseUp: commitDraft,
+            onTouchEnd: commitDraft,
+            onKeyUp: commitDraft,
+            onBlur: commitDraft
+          }),
+          h('span', { style: { width: 44, fontVariantNumeric: 'tabular-nums' } }, Math.round(shown * 100) + '%'),
+          h('span', { className: 'dw-muted', style: { fontSize: 12 } },
+            '判定通过以后，这一次真的开口的机会；拖到 0 就只看不说'))
+      }
       var flags = []
       if (data.enabled !== true) flags.push('未启用')
       if (data.dryRun !== false) flags.push('演练模式（不真的发）')
@@ -574,6 +609,7 @@ window.__ModuleLoader__.load({
           toggleRow('演练模式', '只判断、不真的发出去', data.dryRun, 'dryRun'),
           saving ? h('span', { className: 'dw-muted' }, '保存中…') : null,
           saveError ? h('span', { className: 'dw-bad' }, '没存上：' + saveError) : null),
+        sliderRow(),
         h('div', { style: { marginBottom: 6 } }, '今天（' + (today.dayKey || '—') + '）'),
           h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
             h('tbody', null,
