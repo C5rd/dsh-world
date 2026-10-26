@@ -30,6 +30,7 @@
     "templates",
     "cordis.patch.yml",
     "README.md",
+    "CONTRIBUTING.md",
     "CHANGELOG.md",
     "scripts/enable-tool-free-compaction.ps1"
   ],
