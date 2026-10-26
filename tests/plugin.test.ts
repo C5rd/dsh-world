@@ -263,13 +263,13 @@ test('works as installed: with no config the standard preset gets the world prom
   const fresh = ctx.plugin(worldPlugin, {}); await fresh.await();
   const before = await ctx.agents.create({ sessionId: SessionId('before-start'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   before.agent.followup(user('还没开始')); await before.agent.whenIdle();
-  assert.ok(!systemOf(requests[0]!).includes('我不只是一个助手') && !kinds(requests[0]!).includes('dsh-world-history'));
+  assert.ok(!systemOf(requests[0]!).includes('我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。') && !kinds(requests[0]!).includes('dsh-world-history'));
   await fresh.dispose(); await before.dispose(); requests.length = 0;
   await writeFile(join(root, 'worlds/default/world.json'), JSON.stringify({ running: true }));
   const plugin = ctx.plugin(worldPlugin, {}); cleanup.push(() => plugin.dispose()); await plugin.await();
   const standard = await ctx.agents.create({ sessionId: SessionId('installed'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   standard.agent.followup(user('第一次见面')); await standard.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /我不只是一个助手[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
+  assert.match(systemOf(requests[0]!), /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
   await plugin.dispose();
   const archive = createArchiveStore({ worldId: 'default', agentPreset: 'standard', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, root });
   const records = await archive.readPage({ worldId: 'default', limit: 10 }).then(page => page.records).finally(() => archive.close());
@@ -280,7 +280,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const second = await ctx.agents.create({ sessionId: SessionId('installed-2'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   second.agent.followup(user('又见面了')); await second.agent.whenIdle();
   assert.match(systemOf(requests.at(-1)!), /^[\s\S]*我自己的开头，小鱼。在 [^\n]*我是谁\.md。/);
-  assert.ok(!systemOf(requests.at(-1)!).includes('我不只是一个助手'));
+  assert.ok(!systemOf(requests.at(-1)!).includes('我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。'));
   assert.equal(errors.length, 0);
 });
 test('the bundled patch inserts the row enabled', async () => {

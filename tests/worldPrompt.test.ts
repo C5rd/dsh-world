@@ -185,7 +185,7 @@ test('without her own template the shipped one is used, and a session that is no
   const handle = await ctx.agents.create({ sessionId: SessionId('away'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();
   const system = systemOf(requests[0]!);
-  assert.match(system, /我不只是一个助手[\s\S]*# 我的世界[\s\S]*我的世界线在「小鱼的家」那个会话里/);
+  assert.match(system, /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*# 我的世界[\s\S]*我的世界线在「小鱼的家」那个会话里/);
   assert.ok(!system.includes('## 我是谁'), 'no self file configured, no 我是谁 part');
 });
 test('without a world prompt source nothing is added to the system prompt', async t => {

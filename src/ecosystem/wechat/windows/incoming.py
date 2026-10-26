@@ -17,7 +17,7 @@ class ImageUnavailable(RuntimeError):
     pass
 
 
-def saveGroupImage(source, root, selfId, chatId, quality):
+def saveImage(source, root, selfId, chatId, quality):
     from PIL import Image, ImageOps, UnidentifiedImageError
     if Path(source).stat().st_size > MAX_IMAGE_BYTES:
         raise ImageUnavailable('图片超过当前大小限制')
@@ -32,7 +32,7 @@ def saveGroupImage(source, root, selfId, chatId, quality):
         raise ImageUnavailable('微信缓存尚未形成可解码图片') from error
     if len(data) > MAX_IMAGE_BYTES:
         raise ImageUnavailable('转换后的图片超过当前大小限制')
-    key = hashlib.sha256(json.dumps(['wechat', selfId, 'group', chatId], ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps(['wechat', selfId, 'group' if chatId.endswith('@chatroom') else 'private', chatId], ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     directory = Path(root) / key
     directory.mkdir(parents=True, exist_ok=True)
     name = hashlib.sha256(data).hexdigest() + '.png'
@@ -70,7 +70,7 @@ class ScopedMedia(MediaDownloader):
 
     def _probe_ct(self, dat_path=None):
         if not self.probeFile:
-            raise ImageUnavailable('没有选中群图片缓存')
+            raise ImageUnavailable('没有选中图片缓存')
         return super()._probe_ct(str(self.probeFile))
 
     def _collect_templates(self, limit=32, keep=16):
@@ -95,22 +95,22 @@ class IncomingImages:
         self.media = None
 
     def read(self, chatId, row):
-        if not chatId.endswith('@chatroom') or not any(chat['id'] == chatId for chat in self.config['chats']):
-            raise ValueError('图片必须来自已配置的群')
+        if not any(chat['id'] == chatId for chat in self.config['chats']):
+            raise ValueError('图片必须来自已配置的聊天')
         self.checkProcess()
         if self.media is None: self.media = ScopedMedia(self.database, self.checkProcess)
         raw = self.database.get_message_row(chatId, row['local_id'], local_type=3, shard=row['shard'])
         if not raw or raw.get('local_type') != 3 or raw.get('sender_username') != row.get('sender_username'):
-            raise ImageUnavailable('群图片的消息来源无法核对')
+            raise ImageUnavailable('图片的消息来源无法核对')
         digest = self.media._img_md5(raw)
-        if not digest: raise ImageUnavailable('群图片缺少有效缓存标识')
+        if not digest: raise ImageUnavailable('图片缺少有效缓存标识')
         files = self.media._image_files(chatId, digest)
         tier = next((tier for tier in ('original', 'mid', 'thumb') if tier in files and
                      (self.media.original_ready(files[tier][1]) if tier == 'original' else files[tier][1] > 0)), None)
         if not tier: raise ImageUnavailable('图片尚未下载到这台电脑')
         path = Path(files[tier][0]).resolve()
         allowed = Path(self.database.account_dir).resolve() / 'msg' / 'attach' / self.media._chat_md5(chatId)
-        if not path.is_relative_to(allowed): raise ValueError('图片缓存越过当前群目录')
+        if not path.is_relative_to(allowed): raise ValueError('图片缓存越过当前聊天目录')
         if path.stat().st_size > MAX_IMAGE_BYTES: raise ImageUnavailable('微信图片缓存超过当前大小限制')
         self.media.probeFile = path
         self.media._key_probe = None
@@ -131,6 +131,6 @@ class IncomingImages:
         scratch = target / '.decoded' / self.media._chat_md5(chatId)
         result = self.media.download_image(chatId, row['local_id'], save_dir=str(scratch), aes_key=aesKey, xor_key=xorKey, tier=tier, shard=row['shard'])
         self.checkProcess()
-        if stamp != fileStamp(path): raise SnapshotBusy('读取期间群图片缓存变化，稍后重读')
+        if stamp != fileStamp(path): raise SnapshotBusy('读取期间图片缓存变化，稍后重读')
         if not result: raise ImageUnavailable('图片缓存尚不可用')
-        return saveGroupImage(result, target, self.config['selfId'], chatId, {'original': 'original', 'mid': 'cached', 'thumb': 'thumbnail'}[tier])
+        return saveImage(result, target, self.config['selfId'], chatId, {'original': 'original', 'mid': 'cached', 'thumb': 'thumbnail'}[tier])

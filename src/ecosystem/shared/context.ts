@@ -5,7 +5,21 @@ export interface ChannelContextMessage { id: string; occurredAt: string; text: s
 
 export function channelContext(value: unknown, current: SpeakerIdentity): ChannelContextMessage[] {
   if (value === undefined || (Array.isArray(value) && value.length === 0)) return [];
-  if (current.conversationType !== 'group' || !Array.isArray(value) || value.length > 8 || Buffer.byteLength(JSON.stringify(value)) > 16 * 1024) throw new Error('Invalid group context');
+  if (current.conversationType !== 'group') throw new Error('Invalid group context');
+  return contextMessages(value, current, 8);
+}
+
+export function channelMedia(value: unknown, current: SpeakerIdentity): ChannelContextMessage[] {
+  if (value === undefined || (Array.isArray(value) && value.length === 0)) return [];
+  if (current.conversationType !== 'private') throw new Error('Invalid private media');
+  const messages = contextMessages(value, current, 2);
+  if (messages.some(message => message.identity.speakerId !== current.speakerId)) throw new Error('Media belongs to another speaker');
+  if (new Set(messages.map(message => message.id)).size !== messages.length) throw new Error('Duplicate media message');
+  return messages;
+}
+
+function contextMessages(value: unknown, current: SpeakerIdentity, limit: number): ChannelContextMessage[] {
+  if (!Array.isArray(value) || value.length > limit || Buffer.byteLength(JSON.stringify(value)) > 16 * 1024) throw new Error('Invalid channel context');
   let images = 0;
   return value.map(item => {
     if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id || item.id.length > 256 || /[\u0000-\u001f\u007f]/.test(item.id)

@@ -8,7 +8,7 @@ import { speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import { durableWrite } from '../../life/lifeStore.ts';
 import { createWechatHome } from './home.ts';
 import type { PreparedReply, WechatReceipt } from './archive.ts';
-import { channelContext, type ChannelContextMessage } from '../shared/context.ts';
+import { channelContext, channelMedia, type ChannelContextMessage } from '../shared/context.ts';
 import { admitContextImages } from './images.ts';
 import { dirname, join } from 'node:path';
 import { createWechatSending } from './sending.ts';
@@ -56,17 +56,17 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
       catch (error) { deps.ctx.logger.warn('dsh-world WeChat receipt failed:', error); return { status: 503, body: { error: 'receipt not recorded; retry receipt only' } }; }
     }
     const text = typeof body?.text === 'string' ? body.text.trim() : '';
-    if (!text || [...text].length > 2000) return { status: 400, body: { error: 'bad request' } };
-    let identity: SpeakerIdentity; let context: ChannelContextMessage[];
-    try { identity = speakerIdentity(body?.identity); context = channelContext(body?.context, identity); } catch { return { status: 400, body: { error: 'bad identity or context' } }; }
+    let identity: SpeakerIdentity; let context: ChannelContextMessage[]; let media: ChannelContextMessage[];
+    try { identity = speakerIdentity(body?.identity); context = channelContext(body?.context, identity); media = channelMedia(body?.media, identity); } catch { return { status: 400, body: { error: 'bad identity or context' } }; }
+    if ((!text && !media.length) || [...text].length > 2000) return { status: 400, body: { error: 'bad request' } };
     if (identity.channel !== 'wechat') return { status: 400, body: { error: 'bad channel' } };
     if ((identity.conversationType === 'group') !== identity.conversationId.endsWith('@chatroom')) return { status: 400, body: { error: 'bad conversation type' } };
-    try { return { status: 200, body: { accepted: true, ...(await home.ask(text, identity, context)) } }; }
+    try { return { status: 200, body: { accepted: true, ...(await home.ask(text, identity, context, media)) } }; }
     catch (error) { deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } }; }
   }
   return {
     start() {
-      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 2 }, null, 2));
+      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 3 }, null, 2));
       for (const agent of deps.ctx.agents.list()) if (deps.acceptAgent?.(agent)) attach(agent);
     },
     stop() {

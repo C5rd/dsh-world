@@ -3,10 +3,12 @@ import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
 import { AttachmentId, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { admitContextImages } from '../src/ecosystem/wechat/images.ts';
 import { createWechatHome } from '../src/ecosystem/wechat/home.ts';
+import { createWechatModule } from '../src/ecosystem/wechat/index.ts';
 import { channelContext } from '../src/ecosystem/shared/context.ts';
 import { conversationKey } from '../src/ecosystem/shared/identity.ts';
 import { extractConversationRecords } from '../src/archive.ts';
@@ -61,4 +63,68 @@ test('image admission refuses traversal, another group and changed bytes before 
   await assert.rejects(admitContextImages(ctx, root, identity, [previous]), /digest/);
   await assert.rejects(admitContextImages(ctx, root, { ...identity, conversationId: 'other@chatroom' }, [previous]));
   assert.equal(saves, 0);
+});
+
+for (const caption of ['', '这张图里有什么']) test(`private images reach the model and only real caption text is archived: ${caption || 'image only'}`, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('看到了'); });
+  const privateIdentity = { ...identity, conversationType: 'private' as const, conversationId: 'owner' };
+  const media = [{ ...previous, identity: privateIdentity }];
+  const incoming = join(root, 'incoming');
+  const directory = join(incoming, createHash('sha256').update(conversationKey(privateIdentity)).digest('hex'));
+  await mkdir(directory, { recursive: true }); await writeFile(join(directory, image.file), png);
+  let saved = false;
+  ctx.provide('attachments', {
+    imageLimits: { maxImageBytes: 1024 },
+    saveImages: async (inputs: readonly SaveImageAttachment[]) => {
+      assert.deepEqual(inputs[0].data, png); saved = true;
+      return [{ attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }];
+    },
+  } as never);
+  const agent = (await ctx.agents.create({ sessionId: SessionId('private'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => agent, images: (source, context) => admitContextImages(ctx, incoming, source, context) }); cleanup.push(channel.stop);
+  await channel.ask(caption, privateIdentity, undefined, media);
+  assert.equal(saved, true, 'the image must be saved before the model request');
+  assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'image')));
+  const log = await ctx.sessionPersistence.open(agent.id, 'read');
+  try {
+    const { events } = await log.read(0, 128);
+    assert.ok(events.some(event => event.type === 'user/message' && JSON.stringify(event).includes(digest)));
+    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', agentPreset: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
+    assert.deepEqual(records.filter(record => record.role === 'user').map(record => record.content), caption ? [caption] : []);
+    assert.doesNotMatch(JSON.stringify(records), new RegExp(digest));
+  } finally { await log.close(); }
+  await assert.rejects(admitContextImages(ctx, incoming, privateIdentity, [{ ...media[0], identity: { ...privateIdentity, speakerId: 'wechat:other' } }]));
+  if (!caption) {
+    await channel.ask('刚才这张图再说明一下', privateIdentity);
+    assert.ok(requests.at(-1)!.messages.some(message => message.content.some(block => block.type === 'image')), 'a later caption keeps the already admitted image context');
+  }
+});
+
+test('protocol 3 accepts an image-only private request and rejects another conversation or sender', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('看到了'); });
+  const privateIdentity = { ...identity, conversationType: 'private' as const, conversationId: 'owner' };
+  const incoming = join(root, 'incoming');
+  const directory = join(incoming, createHash('sha256').update(conversationKey(privateIdentity)).digest('hex'));
+  await mkdir(directory, { recursive: true }); await writeFile(join(directory, image.file), png);
+  ctx.provide('attachments', { imageLimits: { maxImageBytes: 1024 }, saveImages: async () => [{ attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }] } as never);
+  const agent = (await ctx.agents.create({ sessionId: SessionId('private-api'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const file = join(root, 'wechat.json');
+  const module = createWechatModule({ ctx, file, home: async () => agent, origin: () => 'http://127.0.0.1:1', allowedHosts: [], incomingDir: incoming });
+  module.start(); cleanup.push(() => module.stop());
+  const server = createServer((req, res) => { void module.route.handler(req, res); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address(); assert.ok(address && typeof address === 'object');
+  const { token, path, protocol } = JSON.parse(await readFile(file, 'utf8')); assert.equal(protocol, 3);
+  const post = (media: unknown, text = '') => fetch(`http://127.0.0.1:${address.port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-world-token': token }, body: JSON.stringify({ identity: privateIdentity, text, media }) });
+  assert.equal((await post([])).status, 400);
+  assert.equal((await post([{ ...previous, identity }])).status, 400);
+  assert.equal((await post([{ ...previous, identity: { ...privateIdentity, speakerId: 'wechat:other' } }])).status, 400);
+  const response = await post([{ ...previous, identity: privateIdentity }]);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).text, '看到了');
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'image')));
 });
