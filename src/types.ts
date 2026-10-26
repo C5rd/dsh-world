@@ -37,7 +37,7 @@ export interface WorldConfig {
   /** QQ straight to OneBot: no qq-bridge process, the plugin owns the sockets, the sessions and the state. */
   qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; allowGroups?: string[]; autoReply?: boolean; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
     /** 她会不会自己先开口；policy 是给「明天敲细节」留的口子，字段都对得上 proactive.ts。 */
-    proactive?: { enabled?: boolean; policy?: Partial<QqProactivePolicy> } };
+    proactive?: { enabled?: boolean; dryRun?: boolean; policy?: Partial<QqProactivePolicy> } };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
   wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */

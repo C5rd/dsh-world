@@ -55,7 +55,7 @@ export interface QqNativeConfig {
    *  conversation its own, empty follows whatever the bridge's own setting says. */
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 她会不会自己先开口。`enabled` 关着时 policy 里的数字都不看。 */
-  proactive: { enabled: boolean; policy: Partial<QqProactivePolicy> };
+  proactive: { enabled: boolean; dryRun: boolean; policy: Partial<QqProactivePolicy> };
 }
 
 export interface QqNativeStatus {
@@ -216,6 +216,7 @@ export function createQqNativeModule(deps: {
         log: (message: string) => deps.logger.info(`QQ 主动联系：${message}`),
         target: () => settings().allowPrivate[0] ?? '',
         selfId: () => lastSelfId,
+        dryRun: () => settings().proactive?.dryRun === true,
         generate: (hint: string) => nudge(hint),
         deliver: async (text: string) => {
           const target = settings().allowPrivate[0] ?? '';
@@ -230,6 +231,7 @@ export function createQqNativeModule(deps: {
     async function nudge(hint: string): Promise<string> {
       const target = settings().allowPrivate[0] ?? '';
       if (!target) throw new Error('私聊白名单是空的，没处问');
+      if (settings().proactive?.dryRun === true) throw new Error('演练模式，不问她');
       const account = lastSelfId || proactive?.knownSelfId() || '0';
       const identity = speakerIdentity({
         channel: 'qq',

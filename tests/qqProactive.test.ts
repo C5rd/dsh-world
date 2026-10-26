@@ -113,6 +113,12 @@ test('decide：优先级排得对，静默时段压过一切，骰子排最后',
   assert.equal(go.kind === 'go' && go.note, '闲了 45 分钟');
 });
 
+test('decide：从来没收到过消息时，那句「闲了多久」不报天文数字', () => {
+  const decision = decide({ policy: POLICY, now: at(12), state: stateAt(), target: '3475994805', roll: () => 0 });
+  assert.equal(decision.kind, 'go');
+  assert.equal(decision.note, '一直没人说过话');
+});
+
 test('decide：换天了就按新的一天算，昨天的配额不算数', () => {
   const state = stateAt({ dayKey: dayKeyOf(at(12, 0, 1)), sentToday: 99, callsToday: 99, lastActivityAt: at(12, 0, 1) - 2 * HOUR });
   const decision = decide({ policy: POLICY, now: at(12, 0, 2), state, target: '1', roll: () => 0 });
@@ -229,6 +235,58 @@ test('tick：骰子没中就什么都不写 —— 不花调用、不落事件',
     assert.equal(decision.kind, 'dice');
     assert.equal(asked, 0, '没中就一个字都不问');
     assert.deepEqual([engine.status().today.calls, engine.status().events.length], [0, 0]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('演练模式：该开口还是判得出来，但不问她、不发、调用也不算花', async () => {
+  const { file, dir } = tempFile();
+  try {
+    let asked = 0;
+    let delivered = 0;
+    const engine = createQqProactive({
+      policy: POLICY, file, log: () => {},
+      generate: async () => { asked += 1; return '在忙吗'; },
+      deliver: async () => { delivered += 1; },
+      target: () => '3475994805', selfId: () => '', dryRun: () => true,
+      now: () => at(12), roll: () => 0,
+    });
+    await engine.noteActivity(at(12) - 2 * HOUR);
+    const decision = await engine.tick();
+    assert.equal(decision.kind, 'go', '演练里决定本身照算');
+    assert.deepEqual([asked, delivered], [0, 0], '既不问她也不发出去');
+    const status = engine.status();
+    assert.equal(status.dryRun, true);
+    assert.deepEqual([status.today.sent, status.today.calls], [0, 0], '演练不花调用');
+    assert.equal(status.events[0].kind, 'dry-run');
+    assert.match(status.events[0].note, /本该问她一次/);
+    assert.equal(status.lastProactiveAt, 0, '演练习不算「联系过」');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('演练开关是活的：关掉之后下一次 tick 就真的问', async () => {
+  const { file, dir } = tempFile();
+  try {
+    let dry = true;
+    let asked = 0;
+    const engine = createQqProactive({
+      policy: POLICY, file, log: () => {},
+      generate: async () => { asked += 1; return '在忙吗'; },
+      deliver: async () => {},
+      target: () => '3475994805', selfId: () => '', dryRun: () => dry,
+      now: () => at(12), roll: () => 0,
+    });
+    await engine.noteActivity(at(12) - 2 * HOUR);
+    await engine.tick();
+    assert.equal(asked, 0);
+    dry = false;
+    const decision = await engine.tick();
+    assert.equal(decision.kind, 'go');
+    assert.equal(asked, 1, '开关一关就该真问');
+    assert.equal(engine.status().dryRun, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

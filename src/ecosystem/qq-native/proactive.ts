@@ -136,7 +136,9 @@ export function decide(input: {
   }
   const rollValue = roll();
   if (!(rollValue < policy.sendProbability)) return { kind: 'dice', roll: rollValue };
-  return { kind: 'go', note: `闲了 ${Math.round((now - lastActivity) / 60_000)} 分钟` };
+  // 「闲了多久」是写给她看的一句话：从来没收到过消息时，别报一个天文数字。
+  const idleNote = lastActivity ? `闲了 ${Math.round((now - lastActivity) / 60_000)} 分钟` : '一直没人说过话';
+  return { kind: 'go', note: idleNote };
 }
 
 /** 新的一天，两个计数都从零开始；同一天里什么都不动。 */
@@ -175,6 +177,8 @@ export function createQqProactiveState(file: string) {
 
 export interface QqProactiveStatus {
   enabled: boolean;
+  /** 演练中：判而不做。 */
+  dryRun: boolean;
   policy: QqProactivePolicy;
   today: { dayKey: string; sent: number; calls: number };
   lastActivityAt: number;
@@ -199,6 +203,8 @@ export function createQqProactive(deps: {
   target: () => string;
   /** The account she is; recorded with every message and reused here. */
   selfId: () => string;
+  /** 演练：只判不做 —— 决定照记，但不问她也不发消息。 */
+  dryRun?: () => boolean;
   timers?: LifeTimers;
   now?: () => number;
   roll?: () => number;
@@ -224,8 +230,15 @@ export function createQqProactive(deps: {
       const decision = decide({ policy: deps.policy, now: at, state, target: deps.target(), roll });
       lastDecision = decision;
       if (decision.kind !== 'go') return decision;
-      // She is about to be asked, so the call is spent whatever she answers.
       rollDay(state, at);
+      if (deps.dryRun?.()) {
+        state.events.unshift({ at, kind: 'dry-run', note: "演练：本该问她一次（" + decision.note + "），没问" });
+        state.events = state.events.slice(0, EVENT_LIMIT);
+        store.write(state);
+        deps.log("主动联系：演练模式，没问她（" + decision.note + "）");
+        return decision;
+      }
+      // She is about to be asked, so the call is spent whatever she answers.
       state.callsToday += 1;
       try {
         const text = (await deps.generate(decision.note)).trim();
@@ -280,6 +293,7 @@ export function createQqProactive(deps: {
       const day = dayKeyOf(now());
       return {
         enabled,
+        dryRun: deps.dryRun?.() === true,
         policy: deps.policy,
         today: { dayKey: day, sent: state.dayKey === day ? state.sentToday : 0, calls: state.dayKey === day ? state.callsToday : 0 },
         lastActivityAt: state.lastActivityAt,
