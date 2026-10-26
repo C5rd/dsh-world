@@ -53,7 +53,8 @@ test('the template engine keeps or drops flag sections, nests different flags, a
 });
 test('the shipped template: room, diary, 我是谁, world line and ask-first rules, with her names', () => {
   const home = renderWorldPrompt({ names, life, conversationsDir: 'C' }, shipped, { file: 'S.md', text: 'SELF' }, true);
-  assert.match(home, /更早的聊天都还在 C，一天一个文件/);
+  assert.match(home, /更早的聊天（归档范围内的.*）都还在 C，一天一个文件/);
+  assert.match(home, /图只留下一段附件记录/); assert.match(home, /## 相册\n[^\n]*keep_photo/);
   assert.ok(!/\{\{/.test(home), home);
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));

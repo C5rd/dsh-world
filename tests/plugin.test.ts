@@ -492,3 +492,26 @@ test('the config validates fallbackWakeTime as HH:MM and defaults to 09:00', () 
   assert.equal(worldPlugin.Config(config).fallbackWakeTime, '09:00');
   assert.doesNotThrow(() => worldPlugin.Config({ ...config, fallbackWakeMinutes: 60 }));
 });
+
+test('a photo she was shown in any world session can be kept into her room, through the tool the plugin registers', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('好看'); });
+  isolateHome(t, root);
+  const image = { attachmentId: 'a'.repeat(64), mediaType: 'image/png', bytes: 7, width: 1, height: 1 };
+  ctx.provide('attachments', { readImage: async (ref: unknown) => ({ ref, data: new Uint8Array([137, 80, 78, 71, 1, 2, 3]) }) });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose());
+  await plugin.await(); await until(async () => routes.length === 1, 'console');
+  await consolePost(routes, '/dsh-world/console/start');
+  await firstWakeDone(ctx, root);
+  const chat = await ctx.agents.create({ sessionId: SessionId('chat'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  chat.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '你看这个' }, { type: 'image', attachment: image as never }] }));
+  await chat.agent.whenIdle();
+  const keep = ctx.tools.get('keep_photo', chat.agent as never);
+  assert.ok(keep, 'every world session can keep a photo');
+  const answer = await keep.execute({ caption: '想一直记得' }, {} as never);
+  assert.match(String(answer), /已留在相册/);
+  const folder = join(root, 'worlds/fish/room/相册');
+  assert.ok((await readFile(join(folder, '相册.md'), 'utf8')).includes('想一直记得'));
+  assert.equal((await readdir(folder)).filter(name => name.endsWith('.png')).length, 1);
+  assert.equal(errors.length, 0);
+});

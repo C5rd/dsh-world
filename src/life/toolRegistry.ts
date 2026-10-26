@@ -4,7 +4,7 @@ import { errorText, type Faults } from '../faults.ts';
 import type { lifeTools } from './tools.ts';
 
 type Registration = (() => void)[];
-const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
+const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm', 'keep_photo'];
 const HOME_TOOLS = ['reach_out'];
 
 /** Disposes in reverse; a disposer whose agent scope is already gone may throw and is skipped. */
@@ -13,11 +13,11 @@ function undo(list: Registration): void {
 }
 
 /**
- * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home);
+ * The alarm tools and keep_photo are held by every world session (she can set her alarm, or keep a photo she was shown, anywhere; the alarm rings at home);
  * reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
  * agent creation; it registers all of a group or none.
  */
-export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: () => ReturnType<typeof lifeTools>; isHome(agent: Agent): boolean }) {
+export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: (agent: Agent) => ReturnType<typeof lifeTools>; isHome(agent: Agent): boolean }) {
   const alarm = new Map<Agent, Registration>();
   const home = new Map<Agent, Registration>();
   function register(agent: Agent, tools: ReturnType<typeof lifeTools>, names: string[]): Registration {
@@ -31,7 +31,7 @@ export function createToolRegistry(deps: { faults: Faults; logger: { error(...ar
       const needsAlarm = !alarm.get(agent)?.length, needsHome = deps.isHome(agent) && !home.get(agent)?.length;
       if (!needsAlarm && !needsHome) return;
       try {
-        const tools = deps.tools();
+        const tools = deps.tools(agent);
         if (needsAlarm) alarm.set(agent, register(agent, tools, ALARM_TOOLS));
         if (needsHome) home.set(agent, register(agent, tools, HOME_TOOLS));
         deps.faults.clear(`attach:${agent.id}`);
