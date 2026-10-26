@@ -79,6 +79,8 @@ const EMPTY_STATE: QqProactiveState = {
   lastActivityAt: 0, lastProactiveAt: 0, selfId: '', events: [],
 };
 const EVENT_LIMIT = 60;
+/** 「谁在说话」这件事一分钟落一次盘就够了：静默门槛是几十分钟，秒级的差别没有意义。 */
+const ACTIVITY_WRITE_MS = 60_000;
 
 export function minuteOfDay(text: string): number {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(text));
@@ -287,10 +289,16 @@ export function createQqProactive(deps: {
     /** Anyone spoke — she now knows how long the room has been quiet. */
     noteActivity(at = now(), selfId = ''): void {
       const state = store.read();
+      // 群里一热闹就是几十条消息，每条都重写一遍这个文件没必要。一分钟内只落一次；
+      // 换天（配额要归零）和第一次学到 selfId 要立刻落，时钟往回跳也照落不误。
+      const worthWriting = state.dayKey !== dayKeyOf(at)
+        || (selfId !== '' && selfId !== state.selfId)
+        || at < state.lastActivityAt
+        || at - state.lastActivityAt >= ACTIVITY_WRITE_MS;
       state.lastActivityAt = at;
       rollDay(state, at);
       if (selfId) state.selfId = selfId;
-      store.write(state);
+      if (worthWriting) store.write(state);
     },
     /** 她这个号是哪个：从第一条消息学到，存进状态文件，重启也记得。 */
     knownSelfId(): string {

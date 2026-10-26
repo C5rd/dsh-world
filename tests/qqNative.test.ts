@@ -233,3 +233,21 @@ test('groupTrigger 拨成 all：群里每句都接（逃生口）', async t => {
   await settle(600);
   assert.equal(turns, 1, 'all 就是老的「句句都接」');
 });
+
+test('不在白名单的消息：到过、被挡下，状态里分得出来', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('不该被问到'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emit(incoming({ userId: '111111', messageId: '9501' }));
+  await settle();
+
+  const status = channel.status();
+  assert.equal(turns, 0, '不在白名单不该问她');
+  assert.equal(status.blocked, 1, '但要记一笔：这条确实到过通道');
+  assert.ok(status.lastBlockedAt, '时间戳也留着');
+  assert.ok(status.lastEventAt, 'lastEventAt 同时会动 —— 两个数一起看才知道是「送到了但被挡」');
+});

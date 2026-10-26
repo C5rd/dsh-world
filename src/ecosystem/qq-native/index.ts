@@ -77,6 +77,10 @@ export interface QqNativeStatus {
   lastError: string | null;
   sent: number;
   failed: number;
+  /** 到了通道、但不在白名单里被挡下的条数。 */
+  blocked: number;
+  /** 最近一次被白名单挡下的时刻。 */
+  lastBlockedAt: string | null;
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 群里接话的规矩。 */
   groupTrigger: 'mention' | 'all';
@@ -130,8 +134,8 @@ export function createQqNativeModule(deps: {
   let client: QqTransport | undefined;
   let stopped = false;
   // 面板要的那几个数自己记：传输层只交出一个 getState()，不带计数。
-  const stats: { sent: number; failed: number; lastEventAt: string | null; lastError: string | null } = {
-    sent: 0, failed: 0, lastEventAt: null, lastError: null,
+  const stats: { sent: number; failed: number; blocked: number; lastEventAt: string | null; lastBlockedAt: string | null; lastError: string | null } = {
+    sent: 0, failed: 0, blocked: 0, lastEventAt: null, lastBlockedAt: null, lastError: null,
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
@@ -247,7 +251,13 @@ export function createQqNativeModule(deps: {
         ...(messageId ? { platformMessageId: messageId } : {}),
       });
     } catch (error) { deps.logger.warn('QQ 消息身份不合法:', error); return; }
-    if (!allowed(identity)) return;
+    // 不在白名单也算「到过」：不然分不清「消息根本没送到」和「送到了但被白名单挡下」——
+    // 明天拿手机发一条时，这两件事的区别就是全部的意义。
+    if (!allowed(identity)) {
+      stats.blocked += 1;
+      stats.lastBlockedAt = new Date().toISOString();
+      return;
+    }
     const key = conversationKey(identity);
     // 关掉自动回复的意思就是「别理它」：连问都不问。原来是先问完再决定发不发，
     // 于是开关关着每条还是照样花一轮（今晚拿假服务器实测：两条合成消息各烧了一轮）。
@@ -336,6 +346,8 @@ export function createQqNativeModule(deps: {
         conversations: contexts.size,
         answering: answering.size,
         lastEventAt: stats.lastEventAt,
+        blocked: stats.blocked,
+        lastBlockedAt: stats.lastBlockedAt,
         lastError: stats.lastError,
         sent: stats.sent,
         failed: stats.failed,

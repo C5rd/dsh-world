@@ -351,3 +351,37 @@ test('start：开着就按 checkIntervalMs 设一个定时器，stop 收掉', as
 test('quietUntil 就是静默时段的结束时刻', () => {
   assert.equal(quietUntil({ ...POLICY, quietHours: { start: '23:00', end: '07:30' } }), '07:30');
 });
+
+test('noteActivity：一分钟内重复说话只落一次盘，换天或换账号要立刻落', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'qq-proactive-write-'));
+  try {
+    const file = path.join(dir, 's.json');
+    const engine = createQqProactive({
+      policy: POLICY, file, log: () => {},
+      generate: async () => '', deliver: async () => {},
+      target: () => '', selfId: () => '',
+    });
+    const read = () => JSON.parse(readFileSync(file, 'utf8'));
+
+    engine.noteActivity(1_000_000, '2039693365');
+    assert.equal(read().lastActivityAt, 1_000_000, '第一次一定落盘');
+    assert.equal(read().selfId, '2039693365', '顺手把账号记下来');
+
+    engine.noteActivity(1_030_000, '2039693365');
+    assert.equal(read().lastActivityAt, 1_000_000, '半分钟内的第二次不落盘');
+
+    engine.noteActivity(1_060_001, '2039693365');
+    assert.equal(read().lastActivityAt, 1_060_001, '过了阈值就落');
+
+    engine.noteActivity(1_060_500, '999');
+    assert.equal(read().selfId, '999', '学到新的 selfId 立刻落');
+
+    // 换天：配额归零那件事不能等一分钟
+    const base = new Date(1_060_500);
+    const tomorrow = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, 9).getTime();
+    engine.noteActivity(tomorrow, '999');
+    assert.equal(read().dayKey, dayKeyOf(tomorrow), '换天立刻落');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
