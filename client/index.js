@@ -689,7 +689,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
     return exports
   },
 })
