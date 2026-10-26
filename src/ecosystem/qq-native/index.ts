@@ -280,8 +280,12 @@ export function createQqNativeModule(deps: {
         ...(config.accessToken ? { accessToken: config.accessToken } : {}),
         log: (level: string, message: string) => {
           const line = `QQ 原生通道：${message}`;
-          if (level === 'info') deps.logger.info(line);
-          else if (level === 'warn') deps.logger.warn(line);
+          // 连回来就把上次的报错擦掉（不然面板上挂着一句昨天的错，会让人以为现在还坏着）。
+          // 「QQ 账号离线」不是这一层的事，留着。
+          if (level === 'info') {
+            if (message.startsWith('WS 已连接') && stats.lastError !== 'QQ 账号离线') stats.lastError = null;
+            deps.logger.info(line);
+          } else if (level === 'warn') deps.logger.warn(line);
           else { stats.lastError = message; deps.logger.error(line); }
         },
         // 传输层只交出一条归一化过的消息，形状见 QqIncoming；两边对不上的字段这里本来也不用。
