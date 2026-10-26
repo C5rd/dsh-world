@@ -163,6 +163,9 @@ node scripts/setup-dsh.mjs
 "allow": {
   "private": [主人的QQ号],
   "groups": [要放行的群号]
+},
+"socialV2": {
+  "bindHomeSession": "owner"
 }
 ```
 
@@ -170,6 +173,20 @@ node scripts/setup-dsh.mjs
 
 - **`wsUrl` 和 `httpUrl` 不能填同一个端口。** 填错会报 `HTTP 426`。
 - **`allow` 留空等于什么都不回。** 模板里 `allowAllWhenEmpty` 是 `false`，白名单空着就 fail-closed，一条消息也不理。这是故意的，别改成 `true`——那等于把 QQ 账号交给模型。
+
+### 谁和谁共用一个会话
+
+`socialV2.bindHomeSession` 管的是这件事，值得单独说清楚：
+
+| 值 | 效果 |
+|---|---|
+| `"owner"`（模板默认） | 主人私聊用她的「家会话」（`~/.dsh/worlds/<世界>/life.json` 里的 `homeSessionId`），**每个群各自一个独立会话**。群里聊的不会串到私聊，私聊里的记忆也不会漏进群 |
+| `"all"` | 所有入口都用家会话，记忆完全共享；群里人多的时候上下文容易串味 |
+| 删掉这个键 | 谁都不绑家会话，私聊也另建一个独立的 |
+
+改完要重启桥才生效。**已经绑过的不会自动拆**：想让某一条换个会话，就在桥的控制台里「清除会话上下文」（`POST /api/session/reset`，参数 `{"key":"group:<群号>"}`），把它退役，下一条消息来了按新规则重绑。
+
+> 这条命令会把旧会话**归档**（不是删）。要恢复，在 DSH 里取消归档：`workspace/unarchiveSession`，参数 `{"request":{"sessionId":"<会话号>"}}`。
 
 然后起桥，二选一：
 
