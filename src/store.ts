@@ -112,6 +112,10 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     const row = db.prepare('SELECT nextSeq, turn FROM progress WHERE sessionId=?').get(sessionId);
     return { sessionId, nextSeq: Number(row?.nextSeq ?? 0), turn: Number(row?.turn ?? 0) };
   }
+  /** The host no longer has this session; only the place to resume from goes, never what it archived. */
+  function forgetProgress(sessionId: string): void {
+    db.prepare('DELETE FROM progress WHERE sessionId=?').run(sessionId);
+  }
   function sourcePage(afterId = '', limit = pageSize): string[] {
     return db.prepare('SELECT sessionId FROM progress WHERE sessionId>? ORDER BY sessionId LIMIT ?').all(afterId, limit).map(row => String(row.sessionId));
   }
@@ -120,6 +124,6 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     return { records: Number(row?.records ?? 0), sessions: Number(row?.sessions ?? 0) };
   }
   function close(): void { if (!closed) { closed = true; db.close(); } }
-  return { commitRecords, readPage, readTurn, progress, sourcePage, stats, close };
+  return { commitRecords, readPage, readTurn, progress, forgetProgress, sourcePage, stats, close };
 }
 export type ArchiveStore = ReturnType<typeof createArchiveStore>;

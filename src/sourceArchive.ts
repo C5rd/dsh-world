@@ -6,6 +6,7 @@ import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 
 const pageSize = 128;
+const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
 export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldConfig): boolean {
   const header = session.header;
   return header.agentPreset === config.agentPreset && header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
@@ -27,7 +28,12 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
     const id = SessionId(sessionId);
     const live = ctx.sessions.get(id);
     if (live) await ctx.sessions.flush(live);
-    const handle = await ctx.sessionPersistence.open(id, 'read');
+    // A deleted session keeps what it already archived; there is nothing left to replay.
+    const handle = await ctx.sessionPersistence.open(id, 'read').catch(error => {
+      if (isNotFound(error)) { ctx.logger.warn(`dsh-world: session ${sessionId} is no longer stored; skipping replay`); store.forgetProgress(sessionId); return undefined; }
+      throw error;
+    });
+    if (!handle) return;
     try {
       let { nextSeq, turn } = store.progress(id);
       while (true) {
@@ -69,9 +75,16 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
      * missed; with `skip`, what was said while her world was stopped is passed over instead.
      */
     async catchUp(skip = false): Promise<void> {
+      // One session's failure is kept for flush(); it must not stop the sessions after it.
+      const replayOne = (id: string) => (skip ? enqueue(() => replay(id, true)) : schedule(id)).catch(() => {});
       let after = '';
       for (let ids = store.sourcePage(after); ids.length; ids = store.sourcePage(after)) {
-        for (const id of ids) { if (skip) await enqueue(() => replay(id, true)); else await schedule(id); after = id; }
+        for (const id of ids) {
+          after = id;
+          // A session deleted from the host (not merely archived there) keeps its records but has nothing left to resume.
+          if (!await ctx.sessionPersistence.stat(SessionId(id))) { store.forgetProgress(id); continue; }
+          await replayOne(id);
+        }
       }
     },
     /** Moves past everything a session holds now without keeping it (said while her world was stopped). */
