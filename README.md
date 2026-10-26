@@ -78,6 +78,10 @@ dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你�
 
 > **微信首次接入与升级**：开启插件的微信开关本身不会启动 Windows 适配器；可手动启动，或在配置里写 `wechatAdapter` 让插件随微信模块启动和停止它（见适配器 README）。无论哪种，都需要配套适配器并完成账号及聊天目标注册后，微信工具才可使用。这套原生桥不依赖 `dsh-plugin-weixin` 或 iLink。升级插件和适配器后，两者均需重启，不能让旧适配器进程继续运行新版协议；保留原配置、游标和回执。
 
+> **QQ 目前只绑定 qq-bridge**：QQ 模块不是自己实现收发，而是管理外部的 [qq-bridge](https://github.com/Derpyu520/qq-bridge) 进程（配合 SnowLuma 登录 QQ），除它之外不支持别的 QQ 实现。插件依赖它的 HTTP 接口（`/api/status`、`/api/restart`、`/api/stop`、`/api/sessions`、`/api/socialV2/proactive`）和配置、状态文件（`config.json` 里的 `dsh.baseUrl`、`socialV2.bindHomeSession`，`state/` 下的令牌与运行意图）；桥改了这些，插件需要跟着改。真停桥（`/api/stop`）需要较新的桥版本，旧版只能重启，控制台会如实提示。桥的代码、许可和 SnowLuma 的使用条款（包括不得以自动化脚本部署 SnowLuma）都在对方仓库，不随本插件分发，装法见 [INSTALL.md](INSTALL.md)。
+
+> **QQ 的记忆与开关**：QQ 消息由桥通过会话接口送进家里，插件没有为它做微信那样的渠道身份。按桥的 `bindHomeSession` 设置，主人的私聊用她的家会话，因此按普通家会话归档；每个群各用桥自己装的 `qq-chat` 预设会话，不属于本世界的预设，**不进归档，也不进记忆块**，归档里也分不出 QQ 与桌面。控制台「接入」里的 QQ 开关只决定插件是否管理桥（巡检、会话绑定、QQ 卡）：关闭后不会停掉已在运行的桥，要停桥请在 QQ 卡上按「真停」。微信开关则会立即注册或撤掉 `wechat_chats`、`wechat_send`、`wechat_delivery`，并拉起或停止适配器。两个开关默认开，没在配置里启用的模块不能从控制台打开。
+
 外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
 
 微信原生发送引擎单独适用非商业许可，详见该模块的许可说明。
