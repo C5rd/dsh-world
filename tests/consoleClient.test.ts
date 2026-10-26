@@ -28,7 +28,7 @@ test('the client registers the world console settings section under the bundle i
     return text(el.children);
   };
   assert.match(text(registered[0].render()), /读取中/);
-  const tested = (plugin as unknown as { __test: { Activity: unknown; Diary: unknown; View: unknown; loadSnapshot: unknown; renderPersona: (p: Record<string, string>) => string } }).__test;
+  const tested = (plugin as unknown as { __test: { Activity: unknown; Diary: unknown; Qq: unknown; View: unknown; loadSnapshot: unknown; renderPersona: (p: Record<string, string>) => string } }).__test;
   assert.doesNotThrow(() => text(react.createElement(tested.Activity, { days: ['2026-10-23'], zone: 'Asia/Tokyo', tick: 1 })));
   assert.match(text(react.createElement(tested.Activity, { days: [], zone: 'UTC', tick: 0 })), /还没有活动记录/);
   assert.doesNotThrow(() => text(react.createElement(tested.Diary, { dates: ['2026-10-23'] })));
@@ -57,4 +57,22 @@ test('the client registers the world console settings section under the bundle i
   for (const persona of [{ 名字: '小鱼', 她是谁: '一条鱼。', 性格: '嘴硬', 说话方式: '', 愿景: '自由', 补充: '别复述' }, { 名字: '', 她是谁: '', 性格: '', 说话方式: '短句', 愿景: '', 补充: '' }]) {
     assert.equal(tested.renderPersona(persona), renderPersona(persona), 'the console previews exactly what she reads');
   }
+  // QQ 卡：巡检状态要能看见，四种停/坏的情形说得明白。
+  const bridge = { running: true, port: 3100, dsh: true, connected: true, accountOnline: true, sessions: [], faults: [] };
+  const healthy = text(react.createElement(tested.Qq, { qq: { ...bridge, supervisor: { state: 'healthy', consecutiveFailures: 0, restartsInWindow: 0, backoffMs: 0, dshReady: true } } }));
+  assert.match(healthy, /巡检 正常/);
+  assert.match(healthy, /连续失败 0 次/);
+  assert.doesNotMatch(healthy, /退避/, '没在退避就别写退避时长');
+  assert.match(healthy, /停桥（不再自动拉起）/, '真停那扇门要在界面上');
+  const supDegraded = text(react.createElement(tested.Qq, { qq: { ...bridge, supervisor: { state: 'degraded', consecutiveFailures: 2, restartsInWindow: 1, backoffMs: 0, dshReady: false } } }));
+  assert.match(supDegraded, /巡检 探测失败/);
+  assert.match(supDegraded, /DSH 那边没就绪/);
+  const failed = text(react.createElement(tested.Qq, { qq: { ...bridge, running: false, supervisor: { state: 'failed', consecutiveFailures: 3, restartsInWindow: 5, backoffMs: 0, lastError: '10 分钟内已自动拉起 5 次，停止重试（修好再手动启动）' } } }));
+  assert.match(failed, /巡检 放弃自动恢复/);
+  assert.match(failed, /停止重试/);
+  assert.match(failed, /● 没在跑/);
+  const stopped = text(react.createElement(tested.Qq, { qq: { ...bridge, running: false, supervisor: { state: 'stopped', consecutiveFailures: 0, restartsInWindow: 0, backoffMs: 0 } } }));
+  assert.match(stopped, /巡检 已停（不会自动拉起）/);
+  const noSupervisor = text(react.createElement(tested.Qq, { qq: bridge }));
+  assert.doesNotMatch(noSupervisor, /巡检/, '没有巡检数据就不该凭空画一行');
 });

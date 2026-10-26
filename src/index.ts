@@ -16,7 +16,9 @@ import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
 import { createQqBridge, type QqBridge } from './qq/bridge.ts';
+import { createQqSupervisor } from './qq/supervisor.ts';
 import { qqRoute } from './qq/route.ts';
+import { createConsoleDoors } from './qq/panel.ts';
 import { createWorldRuntime } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -118,8 +120,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       : undefined;
     if (qq) {
       const service = qq;
-      lifeCtx.effect(() => webServer.register(qqRoute(service, config.allowedHosts)), 'dsh-world qq route');
+      // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
+      const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
+      lifeCtx.effect(() => webServer.register(qqRoute(service, config.allowedHosts, doors)), 'dsh-world qq route');
       void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
+    }
+    // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
+    // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
+    // 这里只负责「什么时候该拉」，怎么拉仍然是 bridge.ts 的事。
+    const supervisor = qq
+      ? createQqSupervisor({ dir: config.qqBridgeDir, port: config.qqBridgePort, bridge: qq, logger: lifeCtx.logger })
+      : undefined;
+    if (supervisor) {
+      supervisor.start();
+      lifeCtx.effect(() => () => supervisor.stop(), 'dsh-world qq supervisor');
     }
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
@@ -165,7 +179,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, includesSession, ...(qq ? { qq: () => qq.status() } : {}), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
+    // Her album lives in her room, so the console shows it whether or not the life line is running.
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, includesSession, ...(qq ? { qq: async () => ({ ...(await qq.status()), ...(supervisor ? { supervisor: supervisor.snapshot() } : {}) }) } : {}), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;

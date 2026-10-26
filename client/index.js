@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
       return fetch('/dsh-world/console/' + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
     }
     /** QQ 那几扇门在自己的前缀下（/dsh-world/qq/*），不和 console 混在一起。 */
+    function qqGet(path) { return fetch('/dsh-world/qq/' + path, { cache: 'no-store' }).then(settle) }
     function qqPost(path, body) {
       return fetch('/dsh-world/qq/' + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
     }
@@ -182,6 +183,7 @@ window.__ModuleLoader__.load({
           open && !err ? h('pre', { className: 'dw-diary' }, text) : null))
     }
 
+    /** 她的相册：keep_photo 留下的照片，和她当时写的话。照片点开才去取字节。 */
     /** 分层人设：每层一张卡，右边是她实际读到的样子。 */
     function PersonaEditor(props) {
       var state = useState(null), persona = state[0], setPersona = state[1]
@@ -292,6 +294,17 @@ window.__ModuleLoader__.load({
       ] : h('div', { className: 'dw-muted' }, '—'))
     }
     /** QQ：外面的 qq-bridge 进程，在这里看状态、拉起、停掉；入口绑到哪个会话也在这里看。 */
+    // 巡检的状态词和颜色。键是 src/qq/supervisor.ts 的 SupervisorState。
+    var SUP_TONES = {
+      healthy: ['dw-ok', '正常'],
+      degraded: ['dw-bad', '探测失败'],
+      recovering: ['dw-bad', '正在拉起'],
+      starting: ['dw-muted', '启动中'],
+      stopped: ['dw-muted', '已停（不会自动拉起）'],
+      failed: ['dw-bad', '放弃自动恢复'],
+    }
+    function supTone(state) { return (SUP_TONES[state] || ['dw-muted', '未知'])[0] }
+    function supLabel(state) { return (SUP_TONES[state] || ['dw-muted', state || '未知'])[1] }
     function Qq(props) {
       var qq = props.qq || {}
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
@@ -304,21 +317,83 @@ window.__ModuleLoader__.load({
           if (props.onSaved) props.onSaved()
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
+      // 两个控制台都带 X-Frame-Options: DENY，塞不进 iframe，所以交给系统浏览器开。
+      // 地址和令牌由宿主半侧现给（/dsh-world/qq/console），所以打开就是登录态。
+      function openDoor(kind) {
+        var label = kind === 'snowluma' ? 'SnowLuma' : 'QQ Bridge'
+        setBusy(true); setMsg('')
+        qqGet('console').then(function (res) {
+          var door = res && res[kind]
+          // 还差密码的门也带着地址，先认这件事，别把登录页当成品打开。
+          if (door && door.needs === 'password') { if (props.onNeedPassword) props.onNeedPassword(kind); return null }
+          if (door && door.url) {
+            return qqPost('open', { kind: kind }).then(function (r) {
+              setMsg(r && r.opened ? '已在浏览器打开 ' + label + ' 控制台' : '失败：' + ((r && r.error) || '打不开'))
+            })
+          }
+          setMsg('失败：' + ((door && door.error) || '宿主没给地址'))
+          return null
+        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
       var faults = list(qq.faults)
+      var sup = qq.supervisor || null
       return h(Card, { title: 'QQ', delay: 240 }, [
         h('div', { key: 's' }, h('span', { className: qq.running ? 'dw-ok' : 'dw-muted' }, qq.running ? '● 桥在跑' : '● 没在跑'),
           h('span', { className: 'dw-muted' }, ' · 端口 ' + qq.port + (qq.mode ? ' · ' + qq.mode : ''))),
         qq.running ? h('div', { key: 'c', className: 'dw-muted' },
           'DSH ' + (qq.dsh ? '已连上' : '没连上') + ' · QQ ' + (qq.connected ? (qq.accountOnline ? '在线' : '已连接、号没上线') : '没连上') + (qq.lastPacketAgoMs === null || qq.lastPacketAgoMs === undefined ? '' : ' · 上次收包 ' + Math.round(qq.lastPacketAgoMs / 1000) + ' 秒前')) : null,
+        sup ? h('div', { key: 'p', className: 'dw-muted' },
+          h('span', { className: supTone(sup.state) }, '● 巡检 ' + supLabel(sup.state)),
+          ' · 连续失败 ' + (sup.consecutiveFailures || 0) + ' 次 · 10 分钟内已拉起 ' + (sup.restartsInWindow || 0) + ' 次',
+          sup.backoffMs ? ' · 退避 ' + Math.round(sup.backoffMs / 1000) + ' 秒' : '',
+          sup.dshReady === false ? ' · DSH 那边没就绪' : '') : null,
+        sup && sup.lastError ? h('div', { key: 'pe', className: 'dw-bad' }, '● ' + sup.lastError) : null,
         h('div', { key: 'e', className: 'dw-trail' }, rows.length ? rows.map(function (r, i) {
           return h('span', { key: i }, r.key + ' → ' + String(r.sessionId || '').replace(/^session-/, '').slice(0, 8))
         }) : h('span', { className: 'dw-muted' }, '还没有入口绑到会话')),
+        h('div', { key: 'k', className: 'dw-setting' },
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台'),
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('qq') } }, '打开 QQ Bridge 控制台')),
         h('div', { key: 'b', className: 'dw-setting' },
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run(qq.running ? 'stop' : 'start') } }, busy ? '……' : qq.running ? '停桥' : '拉起桥'),
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('start') } }, busy ? '……' : '拉起桥'),
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('stop') } }, '重启'),
+          // 真停：桥记下 intent=stopped 且不拉接力进程，巡检看到 stopped 就不会再拉它起来。
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('halt') } }, '停桥（不再自动拉起）'),
           h('button', { className: 'dw-btn', disabled: busy, onClick: function () { if (props.onSaved) props.onSaved() } }, '刷新')),
         msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
         faults.length ? faults.map(function (f, i) { return h('div', { key: 'f' + i, className: 'dw-bad' }, '● ' + f) }) : null,
       ])
+    }
+    /**
+     * 第一次打开 SnowLuma 控制台时，得先用面板密码换一个会话令牌：那令牌只活在那边的进程内存里，重启就没了。
+     * 密码不在浏览器里存着，填完就交给宿主半侧，换到令牌后由宿主把系统浏览器拉起来。
+     * 两个控制台都发 X-Frame-Options: DENY，塞不进 iframe，所以只能这样开。
+     */
+    function Panel(props) {
+      var passState = useState(''), pass = passState[0], setPass = passState[1]
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      var errState = useState(''), err = errState[0], setErr = errState[1]
+      function signIn() {
+        if (!pass) { setErr('先填密码'); return }
+        setBusy(true); setErr('')
+        qqPost('panel-password', { password: pass }).then(function (body) {
+          var next = body && body.snowluma
+          if (!next || !next.url) { setErr((next && next.error) || '登录失败'); return null }
+          setPass('')
+          return qqPost('open', { kind: 'snowluma' }).then(function (r) {
+            if (r && r.opened) { if (props.onClose) props.onClose() } else setErr((r && r.error) || '打不开浏览器')
+          })
+        }, function (e) { setErr(String((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
+      return h('div', { style: { position: 'fixed', left: 0, top: 0, width: '100%', height: '100%', zIndex: 60, background: 'rgba(10,14,20,.66)', display: 'flex', alignItems: 'center', justifyContent: 'center' } },
+        h('div', { style: { width: 480, maxWidth: '92%', background: '#141b25', border: '1px solid rgba(255,255,255,.1)', borderRadius: 12, padding: 20, boxSizing: 'border-box' } },
+          h('h3', { style: { margin: '0 0 8px', color: '#e8edf4' } }, '第一次打开 SnowLuma 控制台'),
+          h('div', { className: 'dw-muted', style: { marginBottom: 16, lineHeight: 1.6 } }, '它只认密码、没有账号名这回事；会话令牌只存在进程内存里，过期就没了，所以要用面板密码换一次。密码留在你这台机器上，不会回传浏览器。'),
+          h('label', { style: { display: 'block', marginBottom: 16, color: '#c7d2de' } }, '密码 ',
+            h('input', { type: 'password', value: pass, onChange: function (e) { setPass(e.target.value) }, onKeyDown: function (e) { if (e.key === 'Enter') signIn() }, style: { width: 220 } })),
+          err ? h('div', { className: 'dw-bad', style: { marginBottom: 12 } }, '● ' + err) : null,
+          h('button', { className: 'dw-btn', disabled: busy, onClick: signIn }, busy ? '……' : '登录并打开'),
+          h('button', { className: 'dw-btn', style: { marginLeft: 10 }, onClick: function () { if (props.onClose) props.onClose() } }, '取消')))
     }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
@@ -346,7 +421,7 @@ window.__ModuleLoader__.load({
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
-          snap.qq ? h(Qq, { qq: snap.qq, onSaved: props.refresh }) : null))
+          snap.qq ? h(Qq, { qq: snap.qq, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)
@@ -363,6 +438,7 @@ window.__ModuleLoader__.load({
     function View(props) {
       var snap = props.snap, error = props.error
       var tabState = useState('overview'), tab = tabState[0], setTab = tabState[1]
+      var panelState = useState(null), panel = panelState[0], setPanel = panelState[1]
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       var failState = useState(null), fail = failState[0], setFail = failState[1]
       var running = snap.running === true
@@ -382,10 +458,11 @@ window.__ModuleLoader__.load({
               fail ? h('span', { className: 'dw-bad' }, ' · ' + fail) : null)),
           h('button', { className: 'dw-power' + (running ? ' stop' : ''), disabled: busy, onClick: power }, busy ? '……' : running ? '停止' : '开始')),
         h('nav', { className: 'dw-tabs' }, TABS.map(function (t) { return h('button', { key: t[0], className: 'dw-tab' + (tab === t[0] ? ' on' : ''), onClick: function () { setTab(t[0]) } }, t[1]) })),
-        tab === 'overview' ? h(Overview, { snap: snap, refresh: props.refresh }) : null,
+        tab === 'overview' ? h(Overview, { snap: snap, refresh: props.refresh, onNeedPassword: setPanel }) : null,
         tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : null,
         tab === 'prompt' ? h(PromptEditor) : null,
-        tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null)
+        tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
+        panel ? h(Panel, { kind: panel, onClose: function () { setPanel(null) } }) : null)
     }
 
     function Console() {
@@ -429,7 +506,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Activity: Activity, Diary: Diary, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

@@ -12,6 +12,7 @@ export interface ConsoleSources {
   snapshot(): Promise<unknown>;
   activity(day: string, outsideOnly: boolean): unknown;
   diary(date: string): string | undefined;
+  /** The pictures she kept with `keep_photo`, newest first. */
 }
 /** What the console can change: whether her world runs, and her persona and world prompt. */
 export interface ConsoleActions {
