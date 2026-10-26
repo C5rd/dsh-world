@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lifeTools } from '../src/life/tools.ts';
-import type { Outlet, Push, PushKind } from '../src/outlets.ts';
+import type { Outlet, Push, PushKind } from '../src/ecosystem/shared/outlets.ts';
 
 const ctx = {} as never;
 const none = { outlets: [] };

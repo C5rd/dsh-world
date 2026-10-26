@@ -72,3 +72,16 @@ test('the next look back is the next 23:00 in her zone, for that local day', () 
   assert.deepEqual(nextReview(new Date('2026-10-23T14:00:00Z'), 'Asia/Seoul'), { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' }, 'strictly after now');
   assert.deepEqual(nextReview(new Date('2026-10-23T15:30:00Z'), 'Asia/Seoul'), { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' }, 'after midnight it is tonight');
 });
+test('the alarm carries what she actually did when the caller supplies it, and stays quiet when it does not', () => {
+  const plan = { at: '2026-10-26T10:00:00.000Z', note: '读两篇文章', setAt: '2026-10-26T09:00:00.000Z', source: 'plan' as const };
+  const withRecord = wakeText(plan, new Date('2026-10-26T10:00:00.000Z'), 'UTC', '09:00', undefined, { did: '这段时间我动了 3 次手（pwsh、read）。' });
+  assert.match(withRecord, /这段时间我动了 3 次手（pwsh、read）。/);
+  assert.match(withRecord, /读两篇文章/, 'her own note is still quoted next to it');
+  const without = wakeText(plan, new Date('2026-10-26T10:00:00.000Z'), 'UTC', '09:00', undefined, {});
+  assert.doesNotMatch(without, /动了/);
+  assert.match(without, /读两篇文章/);
+});
+test('the morning fallback never carries a work record — it is not a promise she made', () => {
+  const fallback = { at: '2026-10-26T10:00:00.000Z', note: '', setAt: '2026-10-26T01:00:00.000Z', source: 'fallback' as const };
+  assert.doesNotMatch(wakeText(fallback, new Date('2026-10-26T10:00:00.000Z'), 'UTC', '09:00', undefined, { did: '不该出现' }), /不该出现/);
+});

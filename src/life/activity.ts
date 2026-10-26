@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
+import type { ActivityRecord } from './types.ts';
 
 const shells = new Set(['pwsh', 'bash', 'powershell', 'shell']);
 const pathKeys = new Set(['path', 'file_path', 'filePath', 'paths', 'cwd', 'directory', 'dir', 'target', 'source', 'destination', 'root', 'folder']);
@@ -21,4 +22,27 @@ export function summarizeCall(tool: string, argumentsJson: string, roomDir: stri
   const paths = collectPaths(args, false, []);
   const inside = (path: string) => { const rel = relative(roomDir, resolve(roomDir, path)); return rel === '' || (!/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel)); };
   return { summary: clip(paths.length ? paths.join(', ') : argumentsJson), outside: paths.some(path => !inside(path)) };
+}
+
+/**
+ * What she actually did between `since` and `now`, in one line she can hold against the note she wrote.
+ *
+ * She asked for this (2026-10-26): an alarm that only repeats her own promise lets her believe she kept
+ * it. Counting her calls and naming the last thing she touched turns "歇着" into a claim that can fail.
+ * Empty string means "nothing to say" — the caller drops the sentence rather than print an empty one.
+ */
+export function summarizeSince(records: readonly ActivityRecord[], sinceIso: string, now: Date): string {
+  const from = Date.parse(sinceIso);
+  const until = now.getTime();
+  if (!Number.isFinite(from)) return '';
+  const mine = records.filter(record => {
+    const at = Date.parse(record.time);
+    return Number.isFinite(at) && at >= from && at <= until;
+  });
+  if (!mine.length) return '这段时间我没动过手。';
+  const tools = [...new Set(mine.map(record => record.tool))];
+  const shown = tools.slice(0, 3).join('、') + (tools.length > 3 ? ` 等 ${tools.length} 种` : '');
+  const last = mine[mine.length - 1]!;
+  const touched = Array.from(last.summary).slice(0, 40).join('').trim();
+  return `这段时间我动了 ${mine.length} 次手（${shown}）${touched ? `，最后一次是：${touched}` : ''}。`;
 }

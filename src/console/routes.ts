@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
 import { validTurns } from '../worldSwitch.ts';
+import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
@@ -11,6 +12,7 @@ export interface ConsoleSources {
   snapshot(): Promise<unknown>;
   activity(day: string, outsideOnly: boolean): unknown;
   diary(date: string): string | undefined;
+  /** The pictures she kept with `keep_photo`, newest first. */
 }
 /** What the console can change: whether her world runs, and her persona and world prompt. */
 export interface ConsoleActions {
@@ -24,6 +26,7 @@ export interface ConsoleActions {
   setDailyBudget(yuan: number | undefined): void;
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
+  setArchiveScope(scope: MemoryArchiveScope): boolean;
 }
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
@@ -49,6 +52,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       const turns = body?.turns;
       if (turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
       actions.setMemoryTurns(turns === null ? undefined : turns); return ok();
+    }
+    case '/console/archive-scope': {
+      if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
+      return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });
     }
     case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };

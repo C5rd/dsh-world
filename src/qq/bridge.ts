@@ -26,6 +26,12 @@ export interface QqLogger {
 
 export interface QqSessionEntry { key: string; sessionId: string; owner: boolean }
 
+/**
+ * 桥自己记下的运行意图。`stopped` 只可能来自一次显式的 `/api/stop`（或插件 halt），
+ * 意思是「人让它停的，别再自动拉」。巡检靠它区分「死了」和「关掉了」。
+ */
+export interface QqIntent { desired: 'running' | 'stopped'; at: number; by: string }
+
 /** What the console shows: is it up, is it talking to DSH, which entries are bound where. */
 export interface QqStatus {
   running: boolean;
@@ -43,9 +49,16 @@ export interface QqStatus {
   allowGroups?: string[];
   sessions: QqSessionEntry[];
   faults: string[];
+  /** 上次是「想跑」还是「想停」。桥不在线时从 state 文件读，在线时取桥自报的值。 */
+  intent: QqIntent;
+  /** 巡检状态：由 index.ts 在 console 快照里填上，桥自己不认识它。 */
+  supervisor?: unknown;
 }
 
-export interface SyncResult { changed: boolean; reason?: string; baseUrl?: string; before?: string }
+export interface SyncResult { changed: boolean; reason?: string; baseUrl?: string; before?: string; mode?: string }
+
+/** 谁和谁共用一个会话：群各自一份，还是所有入口都用她的家会话，还是谁都不绑。 */
+export type BindHomeSession = 'owner' | 'all' | 'none';
 export interface StartResult { started: boolean; reason?: string }
 export interface StopResult { stopped: boolean; reason?: string }
 export interface BindResult extends StartResult { key: string; sessionId?: string }
@@ -66,11 +79,19 @@ export interface QqBridgeOptions {
 export interface QqBridge {
   status(): Promise<QqStatus>;
   start(): Promise<StartResult>;
+  /** 重启式停止：桥会自己回来。给 bind/unbind/syncEndpoint 这类「中间改文件」的场景用。 */
   stop(): Promise<StopResult>;
+  /** 真停：桥不会回来，并写下 desired=stopped 让巡检别拉起。 */
+  halt(): Promise<StopResult>;
+  /** 只读意图文件，不联网；巡检判「该不该拉」用这个。 */
+  intent(): QqIntent;
   bind(key: string, sessionId: string): Promise<BindResult>;
   unbind(key: string): Promise<BindResult>;
   ensureRunning(): Promise<StartResult>;
   syncEndpoint(): Promise<SyncEndpointResult>;
+  /** 主动聊天的统计：今天花了多少次、平均多少 token、成了几条、被规则拦下几条。读不到返回 undefined。 */
+  proactive(): Promise<any>;
+  setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any>;
   faults(): string[];
 }
 
@@ -94,6 +115,25 @@ export function readConsoleToken(dir: string): string {
 function readJsonTolerant(file: string): Record<string, any> {
   const raw = readFileSync(file, 'utf8');
   return JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as Record<string, any>;
+}
+
+const INTENT_FILE = 'bridge.intent.json';
+
+/**
+ * 读桥写下的运行意图。读不到一律当 `running`——未知状态不能变成「永久不启动」，
+ * 那是比「该停的又起来了」更难受的故障。
+ */
+export function readIntent(dir: string): QqIntent {
+  try {
+    const raw = readJsonTolerant(join(dir, 'state', INTENT_FILE));
+    return {
+      desired: raw?.desired === 'stopped' ? 'stopped' : 'running',
+      at: Number(raw?.at) || 0,
+      by: String(raw?.by ?? ''),
+    };
+  } catch {
+    return { desired: 'running', at: 0, by: '' };
+  }
 }
 
 /**
@@ -121,6 +161,40 @@ export function syncBridgeBaseUrl(dir: string, origin: string, logger?: QqLogger
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   logger?.info?.(`[qq] 桥的 DSH 端点已更新：${before || '(空)'} → ${url}`);
   return { changed: true, baseUrl: url, before };
+}
+
+/**
+ * 谁和谁共用一个会话，写进桥的 `socialV2.bindHomeSession`。
+ *
+ * 桥自己的默认是「谁都不绑」——装上之后每个群、每条私聊各建一个会话。那通常不是人想要的：主人私聊
+ * 应该是她记得的那个家会话，只有群才该各自独立。这个开关让人在插件配置里说一次，不用去翻桥的
+ * config.json。
+ *
+ * 空值表示不碰桥的配置（尊重人自己填的）；`none` 表示把这个键删掉，回到桥的默认。
+ */
+export function syncBridgeSessionMode(dir: string, mode: BindHomeSession | '', logger?: QqLogger): SyncResult {
+  if (!mode) return { changed: false, reason: 'no-mode' };
+  const file = join(dir, 'config.json');
+  let config: Record<string, any>;
+  try {
+    config = readJsonTolerant(file) as Record<string, any>;
+  } catch (error) {
+    return { changed: false, reason: `config.json 读不到：${messageOf(error)}` };
+  }
+  const socialV2 = (config.socialV2 = config.socialV2 ?? {});
+  const before = typeof socialV2.bindHomeSession === 'string' ? socialV2.bindHomeSession : '';
+  if (mode === 'none') {
+    if (!('bindHomeSession' in socialV2)) return { changed: false, mode, before };
+    delete socialV2.bindHomeSession;
+    writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    logger?.info?.(`[qq] 桥的会话绑定已去掉（原来 ${before || '空'}）：每个入口各用各的会话`);
+    return { changed: true, mode, before };
+  }
+  if (before === mode) return { changed: false, mode, before };
+  socialV2.bindHomeSession = mode;
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  logger?.info?.(`[qq] 桥的会话绑定已设为 ${mode}（原来 ${before || '空'}）：${mode === 'owner' ? '群各自独立，主人私聊用她的家会话' : '所有入口都用她的家会话'}`);
+  return { changed: true, mode, before };
 }
 
 interface CallResult { status: number; body: any }
@@ -167,6 +241,39 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     }
   }
 
+  /**
+   * 主动聊天的统计。
+   *
+   * 只读：这个方法的唯一用途是给设置页画一张表，它不该能改开关（那要走 POST）。
+   * 桥没起来时返回 undefined —— 面板显示「未运行」，而不是报一个错。
+   */
+  async function proactive(): Promise<any> {
+    try {
+      const token = readConsoleToken(dir);
+      const { status, body } = await call(base, `/api/socialV2/proactive${token ? `?token=${encodeURIComponent(token)}` : ''}`);
+      return status === 200 ? body ?? {} : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 改主动聊天的两个开关。
+   *
+   * 桥收到后会写进它自己的 config.json 并当场生效（引擎的 configure 是就地改），
+   * 所以不用重启桥。桥没起来就抛错，让上面那层回 503，而不是假装改成功。
+   */
+  async function setProactive(patch: { enabled?: boolean; dryRun?: boolean }): Promise<any> {
+    const token = readConsoleToken(dir);
+    const { status, body } = await call(base, `/api/socialV2/proactive${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (status !== 200) throw new Error(String(body?.error ?? `桥没接受这次改动（HTTP ${status}）`));
+    return body;
+  }
+
   async function sessions(): Promise<any[]> {
     try {
       const token = readConsoleToken(dir);
@@ -179,7 +286,8 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
 
   async function status(): Promise<QqStatus> {
     const alive = await ping();
-    if (!alive) return { running: false, port, dir, faults: [...faults.values()], sessions: [] };
+    const stored = readIntent(dir);
+    if (!alive) return { running: false, port, dir, faults: [...faults.values()], sessions: [], intent: stored };
     const list = await sessions();
     const snowluma = (alive.snowluma ?? {}) as { connected?: boolean; accountOnline?: boolean; lastPacketAgoMs?: number };
     return {
@@ -195,6 +303,11 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
       allowGroups: Array.isArray(alive.allowGroups) ? alive.allowGroups : [],
       sessions: list.map((item: any) => ({ key: String(item?.key ?? ''), sessionId: String(item?.sessionId ?? ''), owner: item?.owner === true })),
       faults: [...faults.values()],
+      // 桥在线时以它自报的为准：那是最新的（刚被 /api/stop 写过也不会漏），
+      // 拿不到就退回文件里的那份。
+      intent: alive?.intent?.desired === 'stopped' || alive?.intent?.desired === 'running'
+        ? { desired: alive.intent.desired, at: Number(alive.intent.at) || 0, by: String(alive.intent.by ?? '') }
+        : stored,
     };
   }
 
@@ -222,7 +335,13 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     return { started: false, reason: 'not-ready' };
   }
 
-  /** Graceful shutdown through the bridge's own `/api/restart` (it flushes state first), then wait for the port. */
+  /**
+   * 重启式停止：打 `/api/restart`，桥先拉起接力子进程再退出，所以它几秒后**自己会回来**。
+   *
+   * 这个语义对 bind/unbind/syncEndpoint 是**对的**——它们紧接着就要 start()，中间那点空档正好
+   * 用来改 `sessions.json` / `config.json`。但它不能当「停止」按钮：用户点停止，桥又活了。
+   * 真要停请用 halt()。
+   */
   async function stop(): Promise<StopResult> {
     const token = readConsoleToken(dir);
     if (!(await ping())) return { stopped: false, reason: 'already-stopped' };
@@ -242,6 +361,42 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
       }
     }
     note('stop', new Error('请求重启后端口仍在响应，可能被别的守护进程又拉起来了'));
+    return { stopped: false, reason: 'still-alive' };
+  }
+
+  /**
+   * 真停：打 `/api/stop`，桥写下 `desired=stopped` 的意图、落盘、释放锁、退出，**不拉接力进程**。
+   *
+   * 意图文件是巡检的唯一判据：`desired=stopped` 时巡检只报状态不拉起。想让它再起来必须显式
+   * start()（桥启动成功时会把意图翻回 running）。
+   *
+   * 旧版桥没有 `/api/stop`（会 404），这时退回 `/api/restart` 并如实报 stop-failed——
+   * 宁可界面说「没停干净」，也不要假装停了然后它自己又回来。
+   */
+  async function halt(): Promise<StopResult> {
+    ensureDir();
+    const token = readConsoleToken(dir);
+    if (!(await ping())) return { stopped: false, reason: 'already-stopped' };
+    let status = 0;
+    try {
+      const res = await call(base, `/api/stop${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      });
+      status = res.status;
+    } catch {
+      // 退出过程中会掐断连接，这个错误是预期内的。
+    }
+    const deadline = Date.now() + STOP_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(300);
+      if (!(await ping())) {
+        clear('stop');
+        return { stopped: true };
+      }
+    }
+    note('stop', new Error(status === 404
+      ? '桥没有 /api/stop（旧版本）：这个桥只会重启不会停，请更新 qq-bridge'
+      : '请求停止后端口仍在响应：可能有别的守护进程把它拉起来了'));
     return { stopped: false, reason: 'still-alive' };
   }
 
@@ -297,5 +452,5 @@ export function createQqBridge(options: QqBridgeOptions): QqBridge {
     }
   }
 
-  return { status, start, stop, bind, unbind, ensureRunning, syncEndpoint, faults: () => [...faults.values()] };
+  return { status, start, stop, halt, intent: () => readIntent(dir), bind, unbind, ensureRunning, syncEndpoint, proactive, setProactive, faults: () => [...faults.values()] };
 }

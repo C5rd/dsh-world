@@ -1,7 +1,7 @@
 {
   "name": "dsh-world",
-  "version": "0.5.0",
-  "description": "Cross-session memory, a self-paced life line, a read-only world console and tool-free compaction for a DSH companion",
+  "version": "0.5.2",
+  "description": "Cross-session companion memory and life routines for DSH, with a world console, tool-free compaction and an independent Windows WeChat bridge",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,9 +25,15 @@
   "files": [
     "lib",
     "client",
+    "src/ecosystem/wechat/windows",
+    "src/ecosystem/README.md",
     "templates",
     "cordis.patch.yml",
     "README.md",
+    "INSTALL.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "assets",
     "scripts/enable-tool-free-compaction.ps1"
   ],
   "engines": {
@@ -51,13 +57,15 @@
     },
     "compatibility": {
       "dshReleases": {
-        "0.2.1-rc.2": "compatible"
+        "0.2.1-rc.2": "compatible",
+        "0.2.1-rc.3": "compatible"
       }
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-attachment": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-home-paths": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0-0",

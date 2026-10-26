@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
+import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 
@@ -12,19 +13,28 @@ export const DEFAULT_MEMORY_TURNS = 200;
  * spend a day, and how many recent turns her memory block carries. A world that already has a life line from before the switch existed is running; a new one waits
  * for its partner to press start.
  */
-export function createWorldSwitch(worldDir: string) {
+export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchiveScope = 'workspace') {
   const file = join(worldDir, 'world.json');
   const stored = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Partial<WorldSettings> : undefined;
   let settings: WorldSettings = {
     running: stored ? stored.running === true : existsSync(join(worldDir, 'life.json')),
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
+    ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
   };
+  const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
     durableWrite(file, JSON.stringify(next, null, 2));
     settings = next;
   }
   return {
+    archiveScope: () => activeScope,
+    selectedArchiveScope: () => settings.archiveScope ?? configuredScope,
+    restartRequired: () => (settings.archiveScope ?? configuredScope) !== activeScope,
+    setArchiveScope(scope: MemoryArchiveScope): void {
+      if (!validArchiveScope(scope)) throw new Error('归档范围只能为 home 或 workspace');
+      save({ ...settings, archiveScope: scope });
+    },
     running: () => settings.running,
     set: (running: boolean) => save({ ...settings, running }),
     /** CNY a day for her home; undefined is no limit. */

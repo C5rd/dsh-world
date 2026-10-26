@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { summarizeCall } from '../src/life/activity.ts';
+import { summarizeCall, summarizeSince } from '../src/life/activity.ts';
 
 const room = 'C:\\Users\\me\\.dsh\\worlds\\jingjing\\room';
 const outside = (tool: string, args: unknown) => summarizeCall(tool, JSON.stringify(args), room).outside;
@@ -36,4 +36,35 @@ test('clip does not split surrogate pairs', () => {
   const out = summarizeCall('pwsh', JSON.stringify({ command: 'x'.repeat(159) + '😀' + 'yyy' }), room).summary;
   assert.ok(out.endsWith('😀'));
   assert.doesNotMatch(out, /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+});
+
+const call = (time: string, tool: string, summary: string) => ({ time, sessionId: 's', callId: 'c', tool, summary, outside: false });
+const NOW = new Date('2026-10-26T10:00:00Z');
+test('the alarm says she did nothing when the window holds no calls', () => {
+  assert.equal(summarizeSince([], '2026-10-26T09:00:00Z', NOW), '这段时间我没动过手。');
+  // A call from before she set the alarm is not hers to answer for.
+  assert.equal(summarizeSince([call('2026-10-26T08:00:00Z', 'read', 'a.md')], '2026-10-26T09:00:00Z', NOW), '这段时间我没动过手。');
+});
+test('the alarm counts her calls, names the tools and quotes the last thing she touched', () => {
+  const records = [
+    call('2026-10-26T09:10:00.000Z', 'pwsh', 'node --test'),
+    call('2026-10-26T09:20:00.000Z', 'read', 'src/index.ts'),
+    call('2026-10-26T09:30:00.000Z', 'edit', 'src/life/activity.ts'),
+    // Recorded after the alarm rang: not part of what she did before it.
+    call('2026-10-26T11:00:00.000Z', 'edit', 'too late'),
+  ];
+  assert.equal(summarizeSince(records, '2026-10-26T09:00:00Z', NOW), '这段时间我动了 3 次手（pwsh、read、edit），最后一次是：src/life/activity.ts。');
+});
+test('more than three kinds of tool are counted instead of listed', () => {
+  const records = ['a', 'b', 'c', 'd'].map((tool, index) => call(`2026-10-26T09:0${index}:00.000Z`, tool, `x${index}`));
+  assert.equal(summarizeSince(records, '2026-10-26T09:00:00Z', NOW), '这段时间我动了 4 次手（a、b、c 等 4 种），最后一次是：x3。');
+});
+test('the quoted summary stays short, so the alarm line does not become a log', () => {
+  const long = '一'.repeat(100);
+  const line = summarizeSince([call('2026-10-26T09:30:00.000Z', 'pwsh', long)], '2026-10-26T09:00:00Z', NOW);
+  assert.ok(line.includes('一'.repeat(40) + '。'));
+  assert.ok(!line.includes('一'.repeat(41)));
+});
+test('an unreadable setAt is silence rather than a made-up claim', () => {
+  assert.equal(summarizeSince([call('2026-10-26T09:30:00.000Z', 'pwsh', 'x')], 'not a date', NOW), '');
 });

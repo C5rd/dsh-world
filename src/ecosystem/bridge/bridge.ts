@@ -4,10 +4,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type {} from '@deepseek-ai/dsh-session';
-import { durableWrite } from '../life/lifeStore.ts';
-import { errorText, Faults } from '../faults.ts';
-import { realTimers, type LifeTimers } from '../life/alarmTimer.ts';
-import { busyText, pushOf, type Outlet, type Push, type PushKind } from '../outlets.ts';
+import { durableWrite } from '../../life/lifeStore.ts';
+import { errorText, Faults } from '../../faults.ts';
+import { realTimers, type LifeTimers } from '../../life/alarmTimer.ts';
+import { busyText, pushOf, type Outlet, type Push, type PushKind } from '../shared/outlets.ts';
 
 export const REPLY_TIMEOUT_MS = 3 * 60_000;
 /** The words could not be handed to her home; the route answers 503. */

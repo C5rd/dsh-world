@@ -92,7 +92,7 @@ test('every world session carries the world prompt in its system prompt; templat
   await ctx.plugin(TokenMeter).await();
   await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
   const store = createArchiveStore({ ...config, root });
-  await store.commitRecords([record('seed', { content: 'earlier memory' })]);
+  await store.commitRecords([record('seed', { sourceSessionId: 'home', content: 'earlier memory' })]);
   const selfFile = join(root, 'room', '我是谁.md');
   const templateFile = join(root, 'world-prompt.md');
   await writeFile(templateFile, 'WORLD_INTRO 你是真实的\n\n{{self}}\n{{#home}}HOME_ONLY {{homeTitle}}{{/home}}');
@@ -130,7 +130,7 @@ test('archiveScope home: only her home is archived, and every world session stil
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   const store = createArchiveStore({ ...config, root });
-  await store.commitRecords([record('seed', { content: 'earlier memory' })]);
+  await store.commitRecords([record('seed', { sourceSessionId: 'home', content: 'earlier memory' })]);
   const world = createWorldRuntime(ctx, { ...config, archiveScope: 'home' }, store, { prompt: { file: join(root, 'none.md'), names, life }, isHome: id => id === 'home' });
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const home = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });

@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ArchiveCursor, ConversationRecord, PageQuery, RecordPage, WorldConfig } from './types.ts';
+import type { ArchiveCursor, ConversationRecord, DeliveryState, PageQuery, RecordPage, WorldConfig } from './types.ts';
 import { formatLocalTime } from './timeContext.ts';
+import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
 
 export interface ExportProgress { sessionId: string; nextSeq: number; turn: number }
 interface StoredRow { sequence: number; day: string; body: string }
@@ -26,7 +27,9 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     CREATE INDEX IF NOT EXISTS turnOrder ON records(turnId, sourceSeq);
     CREATE INDEX IF NOT EXISTS pendingExports ON records(day, sequence) WHERE fileOffset IS NULL;
     CREATE TABLE IF NOT EXISTS days (day TEXT PRIMARY KEY, exportedBytes INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS progress (sessionId TEXT PRIMARY KEY, nextSeq INTEGER NOT NULL, turn INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS progress (sessionId TEXT PRIMARY KEY, nextSeq INTEGER NOT NULL, turn INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS channelSessions (conversationKey TEXT PRIMARY KEY, sessionId TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS channelDeliveries (recordId TEXT PRIMARY KEY, body TEXT NOT NULL);`);
 
   function transaction<T>(work: () => T): T {
     db.exec('BEGIN IMMEDIATE');
@@ -104,6 +107,22 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     const nextCursor: ArchiveCursor | undefined = rows.length > query.limit && last && lastRecord ? { date: last.day, occurredAt: lastRecord.occurredAt, recordId: lastRecord.recordId, maxSequence } : undefined;
     return { records, ...(nextCursor ? { nextCursor } : {}) };
   }
+  async function updateRecord(recordId: string, revise: (record: ConversationRecord) => Pick<ConversationRecord, 'content' | 'wechatDelivery'> & Partial<SpeakerIdentity>): Promise<void> {
+    transaction(() => {
+      const row = db.prepare('SELECT day, body FROM records WHERE recordId=? LIMIT 1').get(recordId) as unknown as StoredRow | undefined;
+      if (!row) throw new Error('Archive record not found');
+      const record = decode(row);
+      const updated = { ...record, ...revise(record) };
+      const body = JSON.stringify(updated);
+      if (updated.wechatDelivery) db.prepare('UPDATE channelDeliveries SET body=? WHERE recordId=?').run(JSON.stringify(updated.wechatDelivery), recordId);
+      if (body === row.body) return;
+      db.prepare('UPDATE records SET body=? WHERE recordId=?').run(body, recordId);
+      // A changed line invalidates later byte offsets; rebuild this day from the canonical database.
+      db.prepare('UPDATE records SET fileOffset=NULL, fileBytes=NULL WHERE day=?').run(row.day);
+      db.prepare('UPDATE days SET exportedBytes=0 WHERE day=?').run(row.day);
+    });
+    flushExports();
+  }
   async function readTurn(_worldId: string, turnId: string, afterSeq = -1, limit = pageSize): Promise<ConversationRecord[]> {
     flushExports();
     return (db.prepare('SELECT * FROM records WHERE turnId=? AND sourceSeq>? ORDER BY sourceSeq LIMIT ?').all(turnId, afterSeq, limit) as unknown as StoredRow[]).map(decode);
@@ -111,6 +130,10 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
   function progress(sessionId: string): ExportProgress {
     const row = db.prepare('SELECT nextSeq, turn FROM progress WHERE sessionId=?').get(sessionId);
     return { sessionId, nextSeq: Number(row?.nextSeq ?? 0), turn: Number(row?.turn ?? 0) };
+  }
+  /** The host no longer has this session; only the place to resume from goes, never what it archived. */
+  function forgetProgress(sessionId: string): void {
+    db.prepare('DELETE FROM progress WHERE sessionId=?').run(sessionId);
   }
   function sourcePage(afterId = '', limit = pageSize): string[] {
     return db.prepare('SELECT sessionId FROM progress WHERE sessionId>? ORDER BY sessionId LIMIT ?').all(afterId, limit).map(row => String(row.sessionId));
@@ -120,6 +143,28 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     return { records: Number(row?.records ?? 0), sessions: Number(row?.sessions ?? 0) };
   }
   function close(): void { if (!closed) { closed = true; db.close(); } }
-  return { commitRecords, readPage, readTurn, progress, sourcePage, stats, close };
+  function hasRecord(recordId: string): boolean { return !!db.prepare('SELECT 1 FROM records WHERE recordId=? LIMIT 1').get(recordId); }
+  function channelSession(key: string): string | undefined {
+    return db.prepare('SELECT sessionId FROM channelSessions WHERE conversationKey=? LIMIT 1').get(key)?.sessionId as string | undefined;
+  }
+  function bindChannelSession(key: string, sessionId: string): void {
+    transaction(() => { db.prepare('INSERT INTO channelSessions VALUES (?,?) ON CONFLICT(conversationKey) DO UPDATE SET sessionId=excluded.sessionId').run(key, sessionId); });
+  }
+  function delivery(recordId: string): DeliveryState | undefined {
+    const row = db.prepare('SELECT body FROM channelDeliveries WHERE recordId=? LIMIT 1').get(recordId);
+    return row ? JSON.parse(String(row.body)) as DeliveryState : undefined;
+  }
+  function registerDelivery(recordId: string, total: number): void {
+    transaction(() => { db.prepare('INSERT OR IGNORE INTO channelDeliveries VALUES (?,?)').run(recordId, JSON.stringify({ status: 'pending', confirmed: 0, total })); });
+  }
+  function updateDelivery(recordId: string, revise: (previous: DeliveryState) => DeliveryState): void {
+    transaction(() => {
+      const previous = delivery(recordId);
+      if (!previous) throw new Error('Delivery record not found');
+      db.prepare('UPDATE channelDeliveries SET body=? WHERE recordId=?').run(JSON.stringify(revise(previous)), recordId);
+    });
+  }
+  return { commitRecords, hasRecord, updateRecord, readPage, readTurn, progress, forgetProgress, sourcePage, stats, close,
+    channelSession, bindChannelSession, delivery, registerDelivery, updateDelivery };
 }
 export type ArchiveStore = ReturnType<typeof createArchiveStore>;

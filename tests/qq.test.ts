@@ -18,13 +18,17 @@ async function call(route: ReturnType<typeof qqRoute>, req: never) {
 }
 function stub(overrides: Partial<QqBridge> = {}): QqBridge {
   const base: QqBridge = {
-    status: async () => ({ running: true, port: 3100, dir: 'D:/qq-bridge', dsh: true, sessions: [], faults: [] }),
+    status: async () => ({ running: true, port: 3100, dir: 'D:/qq-bridge', dsh: true, sessions: [], faults: [], intent: { desired: 'running', at: 0, by: 'test' } }),
     start: async () => ({ started: true }),
     stop: async () => ({ stopped: true }),
+    halt: async () => ({ stopped: true }),
+    intent: () => ({ desired: 'running', at: 0, by: 'test' }),
     bind: async (key, sessionId) => ({ started: true, key, sessionId }),
     unbind: async key => ({ started: true, key }),
     ensureRunning: async () => ({ started: true }),
     syncEndpoint: async () => ({ changed: false }),
+    proactive: async () => ({ enabled: false, dryRun: true, running: false }),
+    setProactive: async patch => ({ ok: true, config: patch }),
     faults: () => [],
   };
   return { ...base, ...overrides };
@@ -49,6 +53,18 @@ test('写操作必须带 x-dsh-world 头，跨站来的连读都不给', async (
   assert.equal((await call(route(stub()), request('POST', '/nope', { headers: { [WRITE_HEADER]: '1' } }))).status, 404);
 });
 
+test('停桥和真停是两扇门：/stop 会重启，/halt 不会', async () => {
+  const seen: string[] = [];
+  const bridge = stub({
+    stop: async () => { seen.push('stop'); return { stopped: true }; },
+    halt: async () => { seen.push('halt'); return { stopped: true }; },
+  });
+  const headers = { [WRITE_HEADER]: '1' };
+  assert.equal((await call(route(bridge), request('POST', '/halt', { headers }))).status, 200);
+  assert.equal((await call(route(bridge), request('POST', '/stop', { headers }))).status, 200);
+  assert.deepEqual(seen, ['halt', 'stop']);
+});
+
 test('绑定只接受 group:数字 和 private:数字，缺会话 id 直接拒', async () => {
   const seen: string[] = [];
   const bridge = stub({ bind: async (key, sessionId) => { seen.push(`${key}=${sessionId}`); return { started: false, key, sessionId }; } });
@@ -58,4 +74,48 @@ test('绑定只接受 group:数字 和 private:数字，缺会话 id 直接拒',
   const ok = await call(route(bridge), request('POST', '/bind', { headers, body: { key: 'group:681528723', sessionId: 'session-1' } }));
   assert.equal(ok.status, 200);
   assert.deepEqual(seen, ['group:681528723=session-1']);
+});
+test('主动联系的两个开关走 POST，只认布尔，多余字段不给桥', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const bridge = stub({ setProactive: async patch => { seen.push(patch); return { ok: true, config: patch }; } });
+  const headers = { [WRITE_HEADER]: '1' };
+  // 一个布尔都没给，就没得改
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: {} }))).status, 400);
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { enabled: 'yes' } }))).status, 400);
+  // 只带一个就只改那一个；policy 这种不是开关的东西不转发
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { enabled: true } }))).status, 200);
+  assert.equal((await call(route(bridge), request('POST', '/proactive', { headers, body: { dryRun: false, policy: { maxPerDay: 99 } } }))).status, 200);
+  assert.deepEqual(seen, [{ enabled: true }, { dryRun: false }]);
+});
+test('两个控制台的地址是读接口：一个来自桥的令牌文件，一个要用面板密码现换', async () => {
+  const doors = {
+    qq: () => ({ url: 'http://127.0.0.1:3100/?token=tok' }),
+    snowluma: async () => ({ needs: 'password' as const, url: 'http://127.0.0.1:5099' }),
+    remember: async () => ({ url: 'http://127.0.0.1:5099/?token=abc' }),
+    open: async () => ({ opened: true as const }),
+  };
+  const withDoors = await call(qqRoute(stub(), [], doors), request('GET', '/console'));
+  assert.equal(withDoors.status, 200);
+  assert.deepEqual(withDoors.body.qq, { url: 'http://127.0.0.1:3100/?token=tok' });
+  assert.deepEqual(withDoors.body.snowluma, { needs: 'password', url: 'http://127.0.0.1:5099' });
+  // 没接门的时候是老样子：说没有，不是 500。
+  assert.equal((await call(route(stub()), request('GET', '/console'))).status, 404);
+});
+
+test('面板密码只走 POST，还得带 x-dsh-world 头；密码要是空的就别往磁盘上写', async () => {
+  const seen: string[] = [];
+  const doors = {
+    qq: () => ({ url: 'http://127.0.0.1:3100/?token=tok' }),
+    snowluma: async () => ({ needs: 'password' as const }),
+    remember: async (username: string, password: string) => { seen.push(`${username || 'admin'}:${password}`); return { url: 'http://127.0.0.1:5099/?token=abc' }; },
+    open: async () => ({ opened: true as const }),
+  };
+  const route_ = qqRoute(stub(), [], doors);
+  const headers = { [WRITE_HEADER]: '1' };
+  assert.equal((await call(route_, request('POST', '/panel-password', { body: { password: 'x' } }))).status, 400);
+  assert.equal((await call(route_, request('POST', '/panel-password', { headers, body: { password: '' } }))).status, 400);
+  const ok = await call(route_, request('POST', '/panel-password', { headers, body: { username: '', password: 'hunter2' } }));
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.body.snowluma, { url: 'http://127.0.0.1:5099/?token=abc' });
+  assert.deepEqual(seen, ['admin:hunter2']);
 });

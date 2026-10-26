@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Notifier } from './notify.ts';
 import type { WorldNames } from '../worldPrompt.ts';
 import { exampleTime, fillMessage, readAlarmMessages } from './messages.ts';
-import { pushOf } from '../outlets.ts';
+import { pushOf } from '../ecosystem/shared/outlets.ts';
 
 export interface AlarmDescriptions { plan: string; check: string; cancel: string }
 export interface LifeToolHost {

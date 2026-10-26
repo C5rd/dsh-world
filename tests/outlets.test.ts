@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { busyText, createOutlet, outletUrl, plainMessage, pushOf, readBaseUrl } from '../src/outlets.ts';
+import { busyText, createOutlet, outletUrl, plainMessage, pushOf, readBaseUrl } from '../src/ecosystem/shared/outlets.ts';
 
 const BOM = String.fromCharCode(0xfeff);
 async function tempDir(t: test.TestContext) {

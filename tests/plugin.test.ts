@@ -257,6 +257,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   isolateHome(t, root);
+  ctx.provide('workspaceRegistry', { list: () => [{ path: join(root, 'worlds/default/room'), sessionIds: ['installed', 'installed-2'] }] });
   const systemOf = (request: GenerateOptions) => request.messages.filter(m => m.role === 'system').map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n');
   // A new world waits for its partner to press start: nothing is added and nothing is remembered.
   const fresh = ctx.plugin(worldPlugin, {}); await fresh.await();
@@ -294,10 +295,18 @@ function isolateHome(t: TestContext, root: string) {
 /** Fake desktop host services; `ctx.provide(name, value)` registers each on the root fiber in Cordis 4. */
 function provideLifeHost(ctx: Context) {
   const routes: { path: string }[] = []; const unregistered: string[] = []; let created = 0;
+  let workspace: { id: string; path: string; sessionIds: string[]; attachSession(id: string): Promise<void> } | undefined;
+  if (!ctx.get('workspaceRegistry')) ctx.provide('workspaceRegistry', {
+    archivedSessionIds: [], list: () => workspace ? [workspace] : [],
+    create: async (path: string) => workspace ??= { id: 'room', path, sessionIds: [], attachSession: async id => { workspace!.sessionIds.push(id); } },
+  });
   ctx.provide('webServer', { getOrigin: () => 'http://127.0.0.1:0', register: (route: { path: string }) => { routes.push(route); return () => { unregistered.push(route.path); routes.splice(routes.indexOf(route), 1); }; } });
   ctx.provide('permissionPresets', { set: () => {} });
   ctx.provide('sessionController', {
-    create: async ({ agentPreset }: { agentPreset: string }) => ({ sessionId: (await ctx.agents.create({ sessionId: SessionId(`life-home-${++created}`), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent.id }),
+    create: async ({ agentPreset }: { agentPreset: string }) => {
+      const { agent } = await ctx.agents.create({ sessionId: SessionId(`life-home-${++created}`), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } });
+      workspace?.sessionIds.push(agent.id); return { sessionId: agent.id };
+    },
     resolveAgent: async (id: string) => { const agent = ctx.agents.get(SessionId(id)); return agent ? { agent } : { error: { code: 'session/not-found', message: 'missing' } }; },
     rename: async () => ({}),
   });
@@ -376,7 +385,7 @@ test('her world waits for start in the console; start builds the home and greets
   assert.ok(!records.some(r => r.content === 'while stopped'), records.map(r => r.content).join('|'));
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
-test('a corrupt life.json leaves the life line off, the console showing why, and the memory plugin running', async t => {
+test('a corrupt life.json leaves the life line off and keeps workspace filtering on the running memory line', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   isolateHome(t, root);
@@ -402,10 +411,10 @@ test('a corrupt life.json leaves the life line off, the console showing why, and
   await plugin.dispose(); cleanup.push(() => handle.dispose());
   assert.equal(errors.length, 0);
   assert.equal(requests.length, 1);
-  assert.ok(requests[0].messages.find(m => m.source?.kind === 'dsh-world-history') && textOf(requests[0]).includes('earlier memory'));
+  assert.ok(!requests[0].messages.find(m => m.source?.kind === 'dsh-world-history'), 'unrelated archive cannot leak into an unresolved workspace');
   const archive = createArchiveStore({ ...config, root });
   const records = await archive.readPage({ worldId: 'fish', limit: 10 }).then(page => page.records).finally(() => archive.close());
-  assert.deepEqual(records.map(r => r.content).sort(), ['earlier memory', 'memory still works', 'reply']);
+  assert.deepEqual(records.map(r => r.content), ['earlier memory']);
 });
 test('an archived home is rebuilt, reading workspaceRegistry from another plugin without injecting it', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
@@ -414,7 +423,8 @@ test('an archived home is rebuilt, reading workspaceRegistry from another plugin
   await mkdir(join(root, 'worlds/fish'), { recursive: true });
   await writeFile(join(root, 'worlds/fish/life.json'), JSON.stringify({ version: 1, homeSessionId: 'life-home-old' }));
   // Like the desktop host, the registry comes from a sibling plugin, not from an ancestor of dsh-world.
-  await ctx.plugin({ name: 'workspace-registry', apply: (c: Context) => { c.provide('workspaceRegistry', { archivedSessionIds: ['life-home-old'] }); } }).await();
+  const room = { id: 'room', path: join(root, 'worlds/fish/room'), sessionIds: ['life-home-old', 'life-home-1'], attachSession: async () => {} };
+  await ctx.plugin({ name: 'workspace-registry', apply: (c: Context) => { c.provide('workspaceRegistry', { archivedSessionIds: ['life-home-old'], list: () => [room], create: async () => room }); } }).await();
   const logged = captureErrors(ctx);
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
@@ -477,9 +487,31 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content).sort(), ['桌宠上的话', '桌宠上的话，第二句'], 'her partner\'s own words, in memory');
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
+test('the independent WeChat module follows the world start/stop lifecycle', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes, unregistered } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 1, 'console');
+  const file = join(root, 'worlds/fish/wechat.json');
+  assert.equal(existsSync(file), false);
+  await consolePost(routes, '/dsh-world/console/start');
+  await firstWakeDone(ctx, root);
+  assert.ok(routes.some(route => route.path === '/dsh-world/wechat/ask'));
+  assert.ok(existsSync(file));
+  await consolePost(routes, '/dsh-world/console/stop');
+  assert.equal(existsSync(file), false);
+  assert.deepEqual(unregistered, ['/dsh-world/wechat/ask']);
+});
+
 test('the config takes outlets by name with the kinds they want; the bridge is off and the toast on unless set', () => {
   const parsed = worldPlugin.Config(config);
-  assert.deepEqual(parsed.outlets, []); assert.equal(parsed.bridge, false); assert.equal(parsed.toast, true);
+  assert.equal(parsed.archiveScope, 'workspace');
+  assert.equal(worldPlugin.Config({ ...config, archiveScope: 'world' } as never).archiveScope, 'workspace');
+  assert.throws(() => worldPlugin.Config({ ...config, archiveScope: 'all' } as never));
+  assert.equal(worldPlugin.Config.dict!.archiveScope.list!.filter(choice => !choice.meta.hidden).length, 2);
+  assert.deepEqual(parsed.outlets, []); assert.equal(parsed.bridge, false); assert.equal(parsed.wechat, false); assert.equal(parsed.toast, true);
   const outlets = [{ name: '桌面应用', urlFile: 'C:/app/running.json', path: '/hook', kinds: ['reply', 'reach'] }, { name: '网页', url: '{origin}/x' }];
   assert.deepEqual(worldPlugin.Config({ ...config, outlets } as never).outlets, [outlets[0], { ...outlets[1], kinds: [] }], 'no kinds is an empty list, read as every kind');
   assert.throws(() => worldPlugin.Config({ ...config, outlets: [{ url: 'http://x' }] } as never), /name/);
@@ -491,4 +523,58 @@ test('the config validates fallbackWakeTime as HH:MM and defaults to 09:00', () 
   assert.equal(worldPlugin.Config({ ...config, fallbackWakeTime: '23:59' }).fallbackWakeTime, '23:59');
   assert.equal(worldPlugin.Config(config).fallbackWakeTime, '09:00');
   assert.doesNotThrow(() => worldPlugin.Config({ ...config, fallbackWakeMinutes: 60 }));
+});
+
+test('a running world whose workspace service starts later still reads her sessions once it is up', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
+  isolateHome(t, root);
+  const handle = await ctx.agents.create({ sessionId: SessionId('earlier'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  handle.agent.followup(user('said before the plugin loaded')); await handle.agent.whenIdle();
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: true }));
+  const logged = captureErrors(ctx);
+  const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  await ctx.plugin({ name: 'workspace-registry', apply: (c: Context) => {
+    c.provide('workspaceRegistry', { list: () => [{ path: join(root, 'worlds/fish/room'), sessionIds: ['earlier'] }] });
+  } }).await();
+  await until(async () => {
+    const archive = createArchiveStore({ ...config, root });
+    try { return (await archive.readPage({ worldId: 'fish', limit: 10 })).records.some(r => r.content === 'said before the plugin loaded'); } finally { archive.close(); }
+  }, 'the earlier session to be archived');
+  assert.deepEqual(logged, []); assert.equal(errors.length, 0);
+});
+test('a session deleted from the host does not stop the world from starting, and what it archived stays', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
+  isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: true }));
+  const seed = createArchiveStore({ ...config, root });
+  await seed.commitRecords([record('kept', { sourceSessionId: 'deleted', content: 'archived before deletion' })], { sessionId: SessionId('deleted'), nextSeq: 5, turn: 1 });
+  seed.close();
+  ctx.provide('workspaceRegistry', { list: () => [{ path: join(root, 'worlds/fish/room'), sessionIds: ['deleted'] }] });
+  const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  assert.equal(errors.length, 0);
+  const archive = createArchiveStore({ ...config, root });
+  const records = await archive.readPage({ worldId: 'fish', limit: 10 }).then(page => page.records).finally(() => archive.close());
+  assert.deepEqual(records.map(r => r.content), ['archived before deletion']);
+  const after = createArchiveStore({ ...config, root });
+  try { assert.deepEqual(after.sourcePage(''), [], 'nothing left to resume for a deleted session'); } finally { after.close(); }
+});
+test('a session only archived in the host keeps its resume point', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
+  isolateHome(t, root);
+  const handle = await ctx.agents.create({ sessionId: SessionId('shelved'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  handle.agent.followup(user('still stored')); await handle.agent.whenIdle();
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: true }));
+  const seed = createArchiveStore({ ...config, root });
+  await seed.commitRecords([], { sessionId: SessionId('shelved'), nextSeq: 1, turn: 1 }); seed.close();
+  ctx.provide('workspaceRegistry', { archivedSessionIds: ['shelved'], list: () => [{ path: join(root, 'worlds/fish/room'), sessionIds: ['shelved'] }] });
+  const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  assert.equal(errors.length, 0);
+  const after = createArchiveStore({ ...config, root });
+  try { assert.deepEqual(after.sourcePage(''), ['shelved']); } finally { after.close(); }
 });

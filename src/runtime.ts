@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, isAgentLoopRequest, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
@@ -25,12 +25,17 @@ interface MemoryState { reload: boolean; injected: Map<string, SessionSeq>; pend
 /**
  * The memory line: her conversations are archived as they happen, and every world session gets a memory
  * block of the newest turns at its start and after each successful compaction, never in between, so it stays
- * inside the provider-cached prefix. `archiveScope: 'home'` archives her home alone; the memory block still
+ * inside the provider-cached prefix. `home` archives the current home; `workspace` uses host membership. The memory block still
  * goes to every world session. With a world prompt source, the world prompt joins every world session.
  * `memoryTurns` is read each time a block is built (default 200).
  */
 export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS) {
-  const archived = (sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId);
+  if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
+  const archivedByScope = world?.archiveSession ?? ((sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId));
+  /** False while some session's workspace was unknown (the host's workspace service was not up yet); `retryCatchUp` reads those later. */
+  let undecided = false;
+  /** Archiving never fails on unknown membership: the session waits, and what it said is read in order later. */
+  const archived = (sessionId: string) => { try { return archivedByScope(sessionId); } catch { undecided = true; return false; } };
   const archive = createSourceArchive(ctx, config, store, archived);
   const history = createHistory(store);
   const names = world?.prompt.names ?? worldNames(config);
@@ -41,12 +46,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
 
-  /** Reads the session once to learn where earlier memory blocks sit and whether a compaction came after the last one. */
+  /** Locate earlier memory blocks; every runtime start rebuilds from the active scope and real times. */
   async function readMemoryState(session: Session): Promise<MemoryState> {
     const injected = new Map<string, SessionSeq>();
     const surface = new Set(session.surface.nodes);
     const handle = await ctx.sessionPersistence.open(session.id, 'read');
-    let lastBlock = -1, lastCompaction = -1;
     try {
       for (let offset = 0; ; offset += 128) {
         const { events } = await handle.read(offset, 128);
@@ -54,13 +58,10 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         for (const event of events) {
           const block = event.type === 'user/message' && event.data.source.kind === memorySource;
           if (block && surface.has(event.seq)) injected.set(event.data.id, event.seq);
-          if (event.seq < session.inheritedEventCount) continue;
-          if (block) lastBlock = event.seq;
-          if (event.type === 'compaction/end' && event.data.error === undefined) lastCompaction = event.seq;
         }
       }
     } finally { await handle.close(); }
-    return { reload: lastBlock < 0 || lastCompaction > lastBlock, injected };
+    return { reload: true, injected };
   }
   async function attach(agent: Agent): Promise<void> {
     const { session } = agent;
@@ -76,25 +77,35 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     try { await job; } finally { attaching.delete(session); }
   }
   /** Retires the blocks still on the surface (they must be found, or the session would carry two) and builds a fresh one without the messages already present. */
-  async function freshBlock(session: Session, state: MemoryState, turn: number, step: number): Promise<UserMessage | undefined> {
+  async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const messages = session.deriveMessages();
-    const turns = await history.loadRecentTurns(config.worldId, memoryTurns());
+    const turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
     const present = new Set(messages.filter(message => message.role === 'assistant' || message.source.kind === 'user').map(message => message.id));
-    for (const message of messages.filter(message => message.source.kind === memorySource)) {
+    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
+    const oldBlocks = messages.filter(message => message.source.kind === memorySource);
+    for (const [index, message] of oldBlocks.entries()) {
       const seq = state.injected.get(message.id);
       if (seq === undefined || !session.surface.nodes.includes(seq)) throw new Error('dsh-world: cannot locate retained injected context in the host surface');
-      session.append('system/message', { turn, step, message: createSystemMessage('') }, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
+      const replacement = createUserMessage({ content: [{ type: 'text', text: index === 0 ? text : '' }], source: { kind: memorySource, form: 'recall' } });
+      session.append('user/message', replacement, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
       state.injected.delete(message.id);
     }
-    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
+    if (oldBlocks.length) return undefined;
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
+  }
+
+  /** Reads what the first catch-up had to leave, once the host can say which sessions belong to her. */
+  async function retryCatchUp(): Promise<void> {
+    if (!undecided) return;
+    undecided = false;
+    await archive.catchUp();
   }
 
   /** `fresh`: her world was just started from the console, so what was said while it was stopped is not archived. */
   async function start(options: { fresh?: boolean } = {}): Promise<void> {
     try {
       disposers.push(ctx.on('session/event', (session, event) => {
-        if (!belongsToWorld(session, config)) return;
+        if (session.header.origin === 'subagent' || (session.header.delegationDepth ?? 0) > 0 || (!config.archiveScope && !belongsToWorld(session, config))) return;
         const state = memory.get(session);
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.source.kind === memorySource) state.injected.set(event.data.id, event.seq);
@@ -113,7 +124,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         await attach(agent); await archive.schedule(agent.id); signal.throwIfAborted();
         const state = memory.get(agent.session)!;
         if (!state.reload) return decision;
-        const block = await freshBlock(agent.session, state, turn, step);
+        const block = await freshBlock(agent.session, state);
         if (!block) { state.reload = false; return decision; }
         state.pendingId = block.id;
         return { ...decision, messages: [block, ...decision.messages] };
@@ -140,5 +151,5 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       await archive.flush();
     })();
   }
-  return { start, flush: archive.flush, stop, faults: () => faults.list() };
+  return { start, retryCatchUp, flush: archive.flush, stop, faults: () => faults.list() };
 }

@@ -24,6 +24,7 @@ function fakeActions() {
     saveWorldPrompt: text => { calls.push(`world:${text}`); },
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
+    setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
   };
   return { actions, calls };
 }
@@ -37,6 +38,15 @@ test('console reads are JSON views', async () => {
   assert.equal((await get('/dsh-world/console/diary?date=../x')).status, 404);
   assert.equal(((await get('/dsh-world/console/prompts')).body as { worldPrompt: { text: string } }).worldPrompt.text, 'T');
   for (const url of ['/dsh-world/console/nope', '/dsh-worldX/console/snapshot', '/other']) assert.equal((await get(url)).status, 404, url);
+});
+
+test('archive scope exposes only home and workspace and returns restart status', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (scope: unknown) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/archive-scope', write: true, body: { scope } });
+  assert.deepEqual(await post('workspace'), { status: 200, body: { ok: true, restartRequired: true } });
+  assert.deepEqual(await post('home'), { status: 200, body: { ok: true, restartRequired: false } });
+  for (const scope of ['all', 'world', '', null, undefined]) assert.equal((await post(scope)).status, 400);
+  assert.deepEqual(calls, ['scope:workspace', 'scope:home']);
 });
 test('console writes need the write mark, and change only what they name', async () => {
   const { actions, calls } = fakeActions();
