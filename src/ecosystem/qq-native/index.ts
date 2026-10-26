@@ -38,6 +38,8 @@ interface QqIncoming {
   selfId: string;
   text: string;
   sender?: { nickname?: string; card?: string | null } | undefined;
+  /** 原始段数组（OneBot 的 message）。群里那句是不是在叫她，看的就是它。 */
+  segments?: Array<{ type?: string; data?: Record<string, unknown> }> | undefined;
 }
 
 export interface QqNativeConfig {
@@ -51,6 +53,10 @@ export interface QqNativeConfig {
   autoReply: boolean;
   /** How many earlier messages of the same conversation are shown to her with each new one. */
   contextMessages: number;
+  /** 群里什么时候接话：mention 只接被叫到的（被 @ / 被引用她的消息 / 命中关键词），all 每句都接。 */
+  groupTrigger: 'mention' | 'all';
+  /** 群里命中这些词也算在叫她。 */
+  groupKeywords: readonly string[];
   /** Who shares her home session: `owner` keeps it for the owner's private chat, `none` gives every
    *  conversation its own, empty follows whatever the bridge's own setting says. */
   bindHomeSession: 'owner' | 'all' | 'none' | '';
@@ -72,6 +78,8 @@ export interface QqNativeStatus {
   sent: number;
   failed: number;
   bindHomeSession: 'owner' | 'all' | 'none' | '';
+  /** 群里接话的规矩。 */
+  groupTrigger: 'mention' | 'all';
   /** 主动开口那块自己的账；没开就是 null。 */
   proactive: QqProactiveStatus | null;
 }
@@ -163,6 +171,35 @@ export function createQqNativeModule(deps: {
     return true;
   }
 
+  // 她说出去的消息 id。有人引用她的话，引用的就是这个 id。
+  const sentIds = new Set<string>();
+  function rememberSent(id: unknown): void {
+    const value = id == null ? '' : String(id);
+    if (value === '') return;
+    sentIds.add(value);
+    if (sentIds.size > SEEN_LIMIT) {
+      const oldest = sentIds.values().next().value;
+      if (oldest !== undefined) sentIds.delete(oldest);
+    }
+  }
+
+  /**
+   * 群里这句是不是在叫她。
+   *
+   * 量过：不做这个判断时，群里没被叫到的每一句都会让她跑完一整轮、还往群里冒一条——哪怕她自己在话里
+   * 写的是「这句不接」，钱和噪声都已经花了。所以只有被 @ 到、有人引用过她的话、或者命中配的关键词，
+   * 才把话递到她跟前；其余只记进那个群的上下文，等她真被叫到时知道刚才在说什么。
+   */
+  function directedAtHer(message: QqIncoming, config: QqNativeConfig): boolean {
+    if (config.groupTrigger === 'all') return true;
+    for (const segment of message.segments ?? []) {
+      const data = segment?.data ?? {};
+      if (segment?.type === 'at' && (data.qq === 'all' || String(data.qq ?? '') === message.selfId)) return true;
+      if (segment?.type === 'reply' && data.id != null && sentIds.has(String(data.id))) return true;
+    }
+    return config.groupKeywords.some(word => word !== '' && message.text.includes(word));
+  }
+
   function allowed(identity: SpeakerIdentity): boolean {
     const config = settings();
     return identity.conversationType === 'group'
@@ -214,6 +251,12 @@ export function createQqNativeModule(deps: {
     const key = conversationKey(identity);
     // 关掉自动回复的意思就是「别理它」：连问都不问。原来是先问完再决定发不发，
     // 于是开关关着每条还是照样花一轮（今晚拿假服务器实测：两条合成消息各烧了一轮）。
+    // 群里没叫她的消息只进上下文，不开口、不花一轮。私聊不受这条管。
+    if (isGroup && !directedAtHer(message, config)) {
+      pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
+      return;
+    }
+
     if (!config.autoReply || stopped) {
       pushContext(key, { id: messageId || `${Date.now()}`, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       return;
@@ -225,8 +268,8 @@ export function createQqNativeModule(deps: {
       pushContext(key, { id: answer.id, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       const reply = answer.text.trim();
       if (!reply) return;
-      if (isGroup) await client?.sendGroup(conversationId, reply);
-      else await client?.sendPrivate(conversationId, reply);
+      if (isGroup) rememberSent((await client?.sendGroup(conversationId, reply))?.messageId);
+      else rememberSent((await client?.sendPrivate(conversationId, reply))?.messageId);
       stats.sent += 1;
     } catch (error) {
       stats.failed += 1;
@@ -255,7 +298,7 @@ export function createQqNativeModule(deps: {
         deliver: async (text: string) => {
           const target = settings().allowPrivate[0] ?? '';
           if (!target) throw new Error('私聊白名单是空的，没处发');
-          await client?.sendPrivate(target, text);
+          rememberSent((await client?.sendPrivate(target, text))?.messageId);
         },
       });
       proactive.start();
@@ -289,6 +332,7 @@ export function createQqNativeModule(deps: {
         allowGroups: config.allowGroups.length,
         autoReply: config.autoReply,
         bindHomeSession: config.bindHomeSession,
+        groupTrigger: config.groupTrigger,
         conversations: contexts.size,
         answering: answering.size,
         lastEventAt: stats.lastEventAt,

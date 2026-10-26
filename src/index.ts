@@ -59,6 +59,10 @@ export const Config = z.object({
     allowGroups: z.array(z.string()).default([]),
     autoReply: z.boolean().default(true),
     contextMessages: z.number().default(6),
+    // 群里什么时候接话。量出来的事实是：不做这个判断的话，群里每句都会让她跑完一轮、还往群里冒一条
+    // （她自己会在话里写「这句不接」，但那句话本身也发到群里了）。默认只接被叫到的。
+    groupTrigger: z.union([z.const('mention').description('只接被叫到的（被 @ / 被引用她的话 / 命中关键词）'), z.const('all').description('每句都接')]).default('mention'),
+    groupKeywords: z.array(z.string()).default([]),
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
@@ -234,6 +238,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                     allowGroups: q.allowGroups ?? [],
                     autoReply: q.autoReply ?? true,
                     contextMessages: q.contextMessages ?? 6,
+                    groupTrigger: q.groupTrigger ?? 'mention',
+                    groupKeywords: q.groupKeywords ?? [],
                     bindHomeSession: q.bindHomeSession ?? 'owner',
                     proactive: { enabled: q.proactive?.enabled ?? false, dryRun: q.proactive?.dryRun ?? false, policy: q.proactive?.policy ?? {} },
                   };

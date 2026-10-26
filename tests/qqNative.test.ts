@@ -38,7 +38,7 @@ function fakeTransport() {
 }
 
 /** 传输层交出来的归一化形状。 */
-const incoming = (over: Partial<{ kind: 'group' | 'private'; groupId: string | null; userId: string; messageId: string; selfId: string; text: string }> = {}) => ({
+const incoming = (over: Partial<{ kind: 'group' | 'private'; groupId: string | null; userId: string; messageId: string; selfId: string; text: string; segments: Array<{ type?: string; data?: Record<string, unknown> }> }> = {}) => ({
   kind: 'private' as const, groupId: null, userId: '3475994805', messageId: '7999', selfId: '2039693365', text: '在吗',
   ...over,
 });
@@ -52,6 +52,8 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   autoReply: true,
   contextMessages: 3,
   bindHomeSession: 'none',
+  groupTrigger: 'mention',
+  groupKeywords: [],
   proactive: { enabled: false, dryRun: false, policy: {} },
   ...over,
 });
@@ -119,7 +121,11 @@ test('群里说话也走同一条线，回包发回群里', async t => {
   const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
   channel.start(); cleanup.push(channel.stop);
 
-  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9001', text: '大家好' }));
+  // 现在群里默认只接被叫到的：给个 @ 段，这条测的是「回包发回群里」而不是闸门。
+  wire.emitGroup(incoming({
+    kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9001', text: '@2039693365 大家好',
+    segments: [{ type: 'at', data: { qq: '2039693365' } }, { type: 'text', data: { text: ' 大家好' } }],
+  }));
   await settle(600);
 
   assert.equal(turns, 1);
@@ -152,4 +158,78 @@ test('面板上那两个开关：当场起停「先开口」的引擎，开关�
   // 关掉：引擎停掉，状态里就没了
   assert.equal(channel.setProactive({ enabled: false }).proactive, null);
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')).proactive, { enabled: false, dryRun: false });
+});
+
+test('群里没叫她就不接：只记上下文，不花一轮', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('不该被问到'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  // 一句普通群聊：没 @、没引用、没关键词
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9101', text: '中午吃什么' }));
+  await settle(600);
+
+  assert.equal(turns, 0, '没叫到她的群消息不该花一轮');
+  assert.equal(wire.sent.length, 0, '也不该往群里冒泡');
+  assert.ok(channel.status().lastEventAt, '但消息确实收到了');
+});
+
+test('群里被 @ 到、或者有人引用她刚说的话，才递给她', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('在'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  // 被 @：at 段指着她自己的号
+  wire.emitGroup(incoming({
+    kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9201', text: '@2039693365 在吗',
+    segments: [{ type: 'at', data: { qq: '2039693365' } }, { type: 'text', data: { text: ' 在吗' } }],
+  }));
+  await settle(600);
+  assert.equal(turns, 1, '@ 到她就该接');
+  assert.equal(wire.sent.length, 1);
+
+  // 引用她刚回的那句：她发出去的消息 id 是 g1（假传输层固定返回的）
+  wire.emitGroup(incoming({
+    kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9202', text: '[引用消息] 这句什么意思',
+    segments: [{ type: 'reply', data: { id: 'g1' } }, { type: 'text', data: { text: ' 这句什么意思' } }],
+  }));
+  await settle(600);
+  assert.equal(turns, 2, '有人引用她的话也是冲着她来的');
+});
+
+test('命中关键词也算在叫她；私聊不受这个闸门管', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('在'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ groupKeywords: ['大肥鱼'] }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9301', text: '大肥鱼呢' }));
+  await settle(600);
+  assert.equal(turns, 1, '关键词命中就该接');
+
+  // 私聊：不管关键词、不管 @，一律接
+  wire.emit(incoming({ messageId: '9302', text: '喂' }));
+  await settle(600);
+  assert.equal(turns, 2, '私聊照旧每句都接');
+});
+
+test('groupTrigger 拨成 all：群里每句都接（逃生口）', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('在'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ groupTrigger: 'all' }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9401', text: '随便说一句' }));
+  await settle(600);
+  assert.equal(turns, 1, 'all 就是老的「句句都接」');
 });
