@@ -80,7 +80,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const messages = session.deriveMessages();
     const turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
-    const present = new Set(messages.filter(message => message.role === 'assistant' || message.source.kind === 'user').map(message => message.id));
+    const present = new Set(messages.map(message => message.id));
     const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
     const oldBlocks = messages.filter(message => message.source.kind === memorySource);
     for (const [index, message] of oldBlocks.entries()) {
@@ -151,5 +151,5 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       await archive.flush();
     })();
   }
-  return { start, retryCatchUp, flush: archive.flush, stop, faults: () => faults.list() };
+  return { start, retryCatchUp, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }

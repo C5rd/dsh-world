@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { createUserMessage, ToolCallId, type StreamChunk } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { createWechatModule } from '../src/ecosystem/wechat/index.ts';
 import { createWechatRecorder } from '../src/ecosystem/wechat/archive.ts';
@@ -73,6 +73,44 @@ test('a desktop turn can send to either bound chat through persistent tools and 
   const confirmed = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(item => item.recordId === result.job.id)!;
   assert.equal(confirmed.wechatDelivery?.status, 'sent');
   assert.equal((await post({ outbox: { ...registration, accountId: 'other_bot' } })).status, 400);
+});
+
+test('restarting memory keeps retained WeChat words once and recalls the full words in another session', async t => {
+  const marker = '这句微信正文只出现一次';
+  const requests: GenerateOptions[] = [];
+  let calls = 0;
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => {
+    requests.push(request);
+    return calls++ === 0 ? call('wechat_send', { chatId: 'owner', messages: [{ type: 'text', text: marker }] }) : textResponse('留在家里的话');
+  });
+  const config = { worldId: 'test', agentPreset: 'test', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  let world = createWorldRuntime(ctx, config, store);
+  await world.start(); cleanup.push(() => world.stop());
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const sending = createWechatSending({ ctx, file: join(root, 'outbox.sqlite'), worldId: 'test', ...createWechatRecorder(store, 'test') });
+  cleanup.push(() => sending.stop());
+  for (const tool of sending.tools) cleanup.push(agent.ctx.tools.register(tool));
+  await sending.poll(registration);
+  const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
+  agent.followup(user('安排一条微信消息')); await agent.whenIdle(); await world.flush();
+  const job = await sending.poll(registration); assert.ok(job);
+  await world.stop();
+  await sending.receipt({ id: job.id, confirmed: 1, status: 'sent' });
+  world = createWorldRuntime(ctx, config, store); await world.start();
+  agent.followup(user('重载后的下一轮')); await agent.whenIdle(); await world.flush();
+  const messages = requests.at(-1)!.messages;
+  const content = messages.flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
+  const recalled = messages.filter(message => message.source?.kind === 'dsh-world-history').flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
+  assert.equal(content.split(marker).length - 1, 1, 'retained outgoing content must not be repeated in recalled memory');
+  assert.doesNotMatch(recalled, new RegExp(marker));
+  assert.match(recalled, /已确认发送 1\/1/);
+  const other = (await ctx.agents.create({ sessionId: SessionId('other'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  other.followup(user('在另一个会话继续')); await other.whenIdle();
+  const otherMemory = requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-history').flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
+  assert.match(otherMemory, new RegExp(marker));
+  assert.match(otherMemory, /已确认发送 1\/1/);
+  assert.deepEqual(errors, []);
 });
 
 test('an unconfigured target is rejected without queuing or archiving words as sent', async t => {
