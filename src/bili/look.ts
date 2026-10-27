@@ -13,6 +13,7 @@
  *   3. **不解释为什么少了**。被平台拦下就说「这一会儿看不见」，不教育她。
  */
 import { comments, humanCount, humanDuration, popular, precious, ranking, related, video, type Comment, type Video } from './client.ts';
+import { grabFrames } from './frames.ts';
 
 export interface LookInput {
   what?: string;
@@ -78,11 +79,27 @@ function renderComments(list: Comment[]): string {
 }
 
 /** 调一次「看」。永不抛出：看不见东西也是一种结果，不是故障。 */
-export async function biliLook(input: LookInput = {}): Promise<LookResult> {
+export async function biliLook(input: LookInput = {}, options: { framesDir?: string } = {}): Promise<LookResult> {
   const what = String(input.what ?? 'hot');
   const bvid = String(input.bvid ?? '').trim();
 
   try {
+    if (what === 'frames') {
+      if (!BV.test(bvid)) return { ok: false, text: '', note: '要看哪一条？给一个 BV 号。' };
+      if (!options.framesDir) return { ok: false, text: '', note: '这台机器没配拼图目录，看不了画面。' };
+      const grab = await grabFrames({ bvid, dir: options.framesDir });
+      if (!grab.ok) return { ok: false, text: '', note: grab.why };
+      const text = [
+        grab.title,
+        `${humanDuration(grab.duration)} ｜ 取了 ${grab.shots} 帧拼成一张图`,
+        '',
+        `用 read_image 读它：${grab.path}`,
+        '',
+        '这是采样，不是全片——看得见大致是什么样，听不见旁白。',
+      ].join('\n');
+      return { ok: true, text, note: '' };
+    }
+
     if (what === 'video' || what === 'comments') {
       if (!BV.test(bvid)) return { ok: false, text: '', note: '要看哪一条？给一个 BV 号。' };
       const detail = await video(bvid);

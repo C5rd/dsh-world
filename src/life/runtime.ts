@@ -247,7 +247,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   const tools = createToolRegistry({
     faults, logger: ctx.logger,
     isHome: agent => agent.id === state.homeSessionId,
-    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, framesDir: join(options.worldDir, 'frames'), descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
   });
   const attach = (agent: Agent) => { if (!stopped && belongsToWorld(agent.session, config)) tools.attach(agent); };
   const home = createHome({

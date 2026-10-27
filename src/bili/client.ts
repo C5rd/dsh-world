@@ -186,13 +186,13 @@ export async function precious(limit = 20): Promise<{ ok: boolean; message?: str
   return { ok: true, list };
 }
 
-export async function video(bvid: string): Promise<{ ok: boolean; message?: string; video?: Video; tags: string[] }> {
+export async function video(bvid: string): Promise<{ ok: boolean; message?: string; video?: Video; tags: string[]; cid: number }> {
   const reply = await request('/x/web-interface/view', { bvid });
-  if (!reply.ok) return { ok: false, message: describe(reply), tags: [] };
+  if (!reply.ok) return { ok: false, message: describe(reply), tags: [], cid: 0 };
   const item = toVideo(reply.data);
   const tagReply = await request('/x/tag/archive/tags', { bvid });
   const tags = Array.isArray(tagReply.data) ? tagReply.data.map((tag: any) => String(tag?.tag_name ?? '')).filter(Boolean) : [];
-  return { ok: true, video: item, tags };
+  return { ok: true, video: item, tags, cid: Number(reply.data?.cid ?? 0) };
 }
 
 export async function comments(aid: number, limit = 10): Promise<{ ok: boolean; message?: string; list: Comment[] }> {
@@ -222,6 +222,16 @@ function describe(reply: Reply): string {
 }
 
 /** 128.4万 / 3.2亿 —— 只做单位换算，不评价。 */
+/** 播放直链。匿名也能拿到，只是清晰度受平台给的档位限制。 */
+export async function playurl(bvid: string, cid: number): Promise<{ ok: boolean; message?: string; url: string; quality: number }> {
+  const reply = await request('/x/player/playurl', { bvid, cid, qn: 64, fnval: 16, fourk: 0 });
+  if (!reply.ok) return { ok: false, message: reply.message, url: '', quality: 0 };
+  const tracks = reply.data?.dash?.video ?? [];
+  const url = String(tracks[0]?.baseUrl ?? tracks[0]?.base_url ?? reply.data?.durl?.[0]?.url ?? '');
+  if (!url) return { ok: false, message: '这条没有可拉取的直链', url: '', quality: 0 };
+  return { ok: true, url, quality: Number(reply.data?.quality ?? 0) };
+}
+
 export function humanCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0';
   if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}亿`;

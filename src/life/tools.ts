@@ -15,6 +15,8 @@ export interface LifeToolHost {
   names?: WorldNames;
   /** The DSH origin, for sticker URLs in her words. */
   origin?(): string | undefined;
+  /** 拼图存哪儿；不配就少一个 frames 模式，文字那几个照常。 */
+  framesDir?: string;
   /** From the alarm template; the shipped wording otherwise. */
   descriptions?: AlarmDescriptions;
 }
@@ -57,11 +59,14 @@ export function lifeTools(host: LifeToolHost) {
   const { checkAlarm, cancelAlarm } = host;
   const look = defineTool({
     name: 'bili_look',
-    description: '想看看外面的时候用。what 取 hot（热门）、rank（全站排行）、video（某条的详情）、comments（某条的热评）、related（某条的相关推荐）；看详情、热评、相关推荐时给 bvid。只读：不带账号、不点赞、不留言，看什么都不会留下痕迹。这个工具只把东西取回来，不在里面下结论——要不要当真、要不要记住，是你的事。',
+    description: '想看看外面的时候用。what 取 hot（热门）、rank（全站排行）、video（某条的详情）、comments（某条的热评）、related（某条的相关推荐）、frames（某条的画面：取几帧拼成一张图，再用 read_image 读）；看详情、热评、相关推荐、画面时给 bvid。只读：不带账号、不点赞、不留言，看什么都不会留下痕迹。这个工具只把东西取回来，不在里面下结论——要不要当真、要不要记住，是你的事。',
     parameters: { what: { type: 'string' }, bvid: { type: 'string' } },
     output: text,
     execute: async ({ what, bvid }) => {
-      const result = await biliLook({ ...(what === undefined ? {} : { what }), ...(bvid === undefined ? {} : { bvid }) });
+      const result = await biliLook(
+        { ...(what === undefined ? {} : { what }), ...(bvid === undefined ? {} : { bvid }) },
+        { ...(host.framesDir === undefined ? {} : { framesDir: host.framesDir }) },
+      );
       if (!result.ok) throw new Error(result.note || '这一次什么都没看到。');
       return result.text;
     },
