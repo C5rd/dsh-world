@@ -1,31 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
-import type { ProactivePatch, QqBridge } from './bridge.ts';
 import type { ConsoleDoors } from './panel.ts';
 
 /**
  * The QQ module's few doors, on the same webServer as the console. The `/dsh-world/qq` prefix is never eaten
  * by the console's `/dsh-world` prefix (the host matches the longer one first).
  *
- * Read:  GET  /dsh-world/qq           is the bridge up, is it talking to DSH, which entries are bound
- *        GET  /dsh-world/qq/proactive  the proactive-chat numbers (calls, tokens, sent, suppressed)
- *        GET  /dsh-world/qq/console   the two consoles' addresses, tokens in hand: qq-bridge (its token is a
- *                                     file) and SnowLuma (a fresh session token traded for the panel password)
- * Write: POST /dsh-world/qq/start     bring it up if it is down
- *        POST /dsh-world/qq/stop      ask it to exit gracefully (flushes state first)
- *        POST /dsh-world/qq/halt      stop it and mean it: the bridge records intent=stopped and no handoff
- *                                     process is spawned, so the supervisor will not bring it back
- *        POST /dsh-world/qq/bind      { key, sessionId } points a QQ entry at a session
- *        POST /dsh-world/qq/unbind    { key }
- *        POST /dsh-world/qq/native    { autoReply?, proactive?: { enabled?, dryRun? } } her own OneBot channel's
- *                                     switches; the proactive pair starts or stops the asking engine on the spot
+ * Read:  GET  /dsh-world/qq/native    her own OneBot channel: is it connected, what has it seen, is it replying
+ *        GET  /dsh-world/qq/console   SnowLuma's console address, with a session token already traded for the
+ *                                     panel password
+ * Write: POST /dsh-world/qq/native    { autoReply?, proactive?: { enabled?, dryRun? } } the channel's switches;
+ *                                     the proactive pair starts or stops the asking engine on the spot
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
- *        POST /dsh-world/qq/proactive  { enabled?, dryRun?, probability? } flips the switches and the send chance;
- *                                     its own config.json and applies them on the spot, so nothing restarts
  *
  * Writes require the `x-dsh-world` header: a cross-site page cannot add it (that would trigger a preflight,
  * and no preflight is answered here).
+ *
+ * There used to be a second half here — start/stop/halt/bind/unbind for the standalone `qq-bridge` process.
+ * That process is gone (the channel now lives inside this plugin), so those doors went with it. The route is
+ * registered whether or not the channel is switched on: `/native` answers `null` when it is off, and the
+ * console door has nothing to do with it — which is why removing the bridge's config did not have to take
+ * this endpoint down with it.
  */
 
 export const QQ_PREFIX = '/dsh-world/qq';
@@ -39,11 +35,15 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
   return knownHost(req.headers.host, allowedHosts);
 }
 
-async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: (patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }) => unknown): Promise<JsonResult | undefined> {
+/** What the panel may change about her own channel: replying, and the asking engine behind it. */
+export interface NativePatch { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }
+type SetNative = (patch: NativePatch) => unknown;
+
+async function write(doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: SetNative): Promise<JsonResult | undefined> {
   switch (path) {
     case '/native': {
       if (!setNative) return bad('原生通道没有接上');
-      const patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } } = {};
+      const patch: NativePatch = {};
       if (typeof body?.autoReply === 'boolean') patch.autoReply = body.autoReply;
       const raw = body?.proactive;
       if (raw !== undefined) {
@@ -64,14 +64,11 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
       if (patch.autoReply === undefined && patch.proactive === undefined) return bad('autoReply 或 proactive 至少要给一个');
       return ok(setNative(patch));
     }
-    case '/start': return ok(await qq.start());
-    case '/stop': return ok(await qq.stop());
-    case '/halt': return ok(await qq.halt());
     case '/open': {
       if (!doors) return bad('控制台地址没有接上');
-      const kind = body?.kind === 'qq' ? 'qq' : body?.kind === 'snowluma' ? 'snowluma' : '';
-      if (kind === '') return bad('kind 只能是 qq 或 snowluma');
-      return ok(await doors.open(kind));
+      // 只剩一扇门了：桥的控制台随桥一起拆掉了。
+      if (body?.kind !== 'snowluma') return bad('kind 只能是 snowluma');
+      return ok(await doors.open('snowluma'));
     }
     case '/panel-password': {
       if (!doors) return bad('控制台地址没有接上');
@@ -80,39 +77,11 @@ async function write(qq: QqBridge, doors: ConsoleDoors | undefined, path: string
       if (password === '') return bad('密码不能为空');
       return ok({ snowluma: await doors.remember(username, password) });
     }
-    case '/proactive': {
-      const patch: ProactivePatch = {};
-      if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
-      if (typeof body?.dryRun === 'boolean') patch.dryRun = body.dryRun;
-      // 开口概率：面板上的滑块直接把这个数发下来。越界当场拒绝，
-      // 不要指望桥那边帮你收敛 —— 那是给配置文件兜底的，不是给接口兜底的。
-      if (body?.probability !== undefined) {
-        const p = Number(body.probability);
-        if (!Number.isFinite(p) || p < 0 || p > 1) return bad('probability 要是 0 到 1 之间的数字');
-        patch.policy = { sendProbability: p };
-      }
-      if (patch.enabled === undefined && patch.dryRun === undefined && patch.policy === undefined) {
-        return bad('enabled / dryRun / probability 至少要给一个');
-      }
-      return ok(await qq.setProactive(patch));
-    }
-    case '/bind': {
-      const key = typeof body?.key === 'string' ? body.key.trim() : '';
-      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
-      if (!key || !sessionId) return bad('key 和 sessionId 都必须是非空字符串');
-      if (!/^(group|private):\d+$/.test(key)) return bad('key 形如 group:123 或 private:123');
-      return ok(await qq.bind(key, sessionId));
-    }
-    case '/unbind': {
-      const key = typeof body?.key === 'string' ? body.key.trim() : '';
-      if (!key) return bad('key 必填');
-      return ok(await qq.unbind(key));
-    }
     default: return undefined;
   }
 }
 
-export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: (patch: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }) => unknown) {
+export function qqRoute(allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: SetNative) {
   return {
     kind: 'prefix' as const, path: QQ_PREFIX,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -123,19 +92,6 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
       const url = new URL(req.url ?? QQ_PREFIX, 'http://localhost');
       const path = url.pathname.slice(QQ_PREFIX.length) || '/';
       try {
-        if (req.method === 'GET' && (path === '/' || path === '')) {
-          sendJson(res, ok(await qq.status()));
-          return;
-        }
-        if (req.method === 'GET' && path === '/proactive') {
-          const data = await qq.proactive();
-          if (!data) {
-            sendJson(res, { status: 503, body: { error: '桥没在跑，统计读不到' } });
-            return;
-          }
-          sendJson(res, ok(data));
-          return;
-        }
         if (req.method === 'GET' && path === '/native') {
           // 她自己接的那条 OneBot 通道。没开就老实回 null，界面据此显示「没开」。
           sendJson(res, ok(native?.() ?? null));
@@ -146,8 +102,7 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
             sendJson(res, { status: 404, body: { error: '控制台地址没有接上' } });
             return;
           }
-          const qqDoor = doors.qq();
-          sendJson(res, ok({ qq: qqDoor, snowluma: await doors.snowluma() }));
+          sendJson(res, ok({ snowluma: await doors.snowluma() }));
           return;
         }
         if (req.method !== 'POST') {
@@ -159,7 +114,7 @@ export function qqRoute(qq: QqBridge, allowedHosts: readonly string[] = [], door
           return;
         }
         const body = jsonObject(await readBody(req, MAX_BODY_BYTES));
-        const result = await write(qq, doors, path, body, setNative);
+        const result = await write(doors, path, body, setNative);
         sendJson(res, result ?? { status: 404, body: { error: 'not found' } });
       } catch (error) {
         sendJson(res, { status: 500, body: { error: String(error instanceof Error ? error.message : error) } });

@@ -96,7 +96,7 @@ const filled = {
   },
 };
 
-const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Proactive', 'Modules', 'Wechat'] as const;
+const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Modules', 'Wechat'] as const;
 
 for (const name of components) {
   test(`${name} 在两帧之间不会换 hook 顺序`, () => {

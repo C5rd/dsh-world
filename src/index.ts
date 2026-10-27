@@ -15,8 +15,6 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { createQqBridge, syncBridgeSessionMode, type QqBridge } from './ecosystem/qq/bridge.ts';
-import { createQqSupervisor } from './ecosystem/qq/supervisor.ts';
 import { createQqNativeModule, type QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
 import { createConsoleDoors } from './ecosystem/qq/panel.ts';
@@ -37,7 +35,7 @@ export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor }
 export const name = 'dsh-world';
 export const inject = ['agents', 'sessions', 'sessionPersistence', 'llm'];
 /** What `apply` receives: the schema below fills these defaults. */
-export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts' | 'qqBridgeDir' | 'qqBridgePort' | 'qqBridgeAutoStart' | 'qqBridgeBindHomeSession'>>;
+export type Config = WorldConfig & Required<Pick<WorldConfig, 'life' | 'fallbackWakeTime' | 'outlets' | 'bridge' | 'toast' | 'allowedHosts'>>;
 // One companion per profile is the usual case, so it works as installed: the standard preset, a world named
 // default and the system time zone, with the life line on (it needs the desktop host's services and stays off without them).
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -63,6 +61,9 @@ export const Config = z.object({
     // （她自己会在话里写「这句不接」，但那句话本身也发到群里了）。默认只接被叫到的。
     groupTrigger: z.union([z.const('mention').description('只接被叫到的（被 @ / 被引用她的话 / 命中关键词）'), z.const('all').description('每句都接')]).default('mention'),
     groupKeywords: z.array(z.string()).default([]),
+    // SnowLuma 装在哪：控制台那扇门要去它的 config/runtime.json 拿地址与端口。空着就按 D:\SnowLuma、
+    // C:\SnowLuma、~/SnowLuma 挨个认（认「里面有 config/runtime.json」这一条）。
+    snowlumaHome: z.string().default(''),
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
@@ -89,13 +90,6 @@ export const Config = z.object({
   toast: z.boolean().default(true),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
-  // QQ: her home is reachable from outside DSH through a separate `qq-bridge` process. Empty qqBridgeDir leaves
-  // this whole module off; the bridge is started by hand from the console unless qqBridgeAutoStart says otherwise.
-  qqBridgeDir: z.string().default(''), qqBridgePort: z.number().default(3100), qqBridgeNode: z.string(),
-  qqBridgeAutoStart: z.boolean().default(false),
-  // 谁和谁共用一个会话。空着就不碰桥的 config.json（尊重人自己填的）；'owner' 让每个群各自一份会话、
-  // 只有主人私聊用她的家会话——这是装上之后最想要的那个，人在插件配置里说一次就够了。
-  qqBridgeBindHomeSession: z.union([z.const('owner').description('群各自独立，主人私聊用她的家会话'), z.const('all').description('所有入口都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default(''),
 });
 interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof qqRoute>): () => void }
 
@@ -151,40 +145,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
-    // QQ: one more door into her home, managed here rather than by a launcher script. The endpoint is aligned
-    // on every start whether or not the bridge runs — DSH picks a new port each restart, and a stale baseUrl
-    // looks exactly like a dead bridge (a dead event stream, no error, for hours). The console switch starts
-    // and stops this management at any time; it does not stop a bridge that is already running.
-    let qq: QqBridge | undefined;
-    let qqSupervisor: ReturnType<typeof createQqSupervisor> | undefined;
-    let unregisterQq: (() => void) | undefined;
-    function startQq(): void {
-      if (qq || !config.qqBridgeDir || !power.qqEnabled()) return;
-      const service = createQqBridge({ dir: config.qqBridgeDir, port: config.qqBridgePort, nodePath: config.qqBridgeNode || process.execPath, origin: () => host.origin(), logger: lifeCtx.logger });
-      qq = service;
-      // 会话绑定先写：桥是启动时才读 config.json 的，这条必须在 ensureRunning/syncEndpoint 之前。
-      syncBridgeSessionMode(config.qqBridgeDir, config.qqBridgeBindHomeSession, lifeCtx.logger);
-      // 两个控制台的门：qq-bridge 的令牌是文件，SnowLuma 的会话令牌得用面板密码现换。
-      const doors = createConsoleDoors({ worldDir, bridgeDir: config.qqBridgeDir, port: config.qqBridgePort });
-      unregisterQq = webServer.register(qqRoute(service, config.allowedHosts, doors, () => qqNative?.status(), patch => {
+    // QQ 的两扇门：她自己那条 OneBot 通道的状态与开关，以及 SnowLuma 的控制台。**无条件注册** —— 通道
+    // 关着的时候 /native 回 null，而 SnowLuma 那扇门跟通道没关系。（这里原来还有一半是给外面那个
+    // qq-bridge 进程用的，连 qqBridgeDir 一起在 2026-10-27 拆掉了。当时的教训：那条路由是注册在「有桥
+    // 目录」这个分支里的，配置一摘，整片 /dsh-world/qq/* 就全 404，界面也一起没了。所以现在它不再挂在
+    // 任何配置上 —— 端点先存在，功能再按需开关。）
+    const doors = createConsoleDoors({ worldDir, snowlumaHome: config.qqNative?.snowlumaHome ?? '' });
+    const unregisterQq = webServer.register(
+      qqRoute(config.allowedHosts, doors, () => qqNative?.status() ?? null, patch => {
         if (!qqNative) return null;
         if (patch.proactive) return qqNative.setProactive(patch.proactive);
         return qqNative.setAutoReply(patch.autoReply === true);
-      }));
-      void (config.qqBridgeAutoStart ? service.ensureRunning() : service.syncEndpoint()).catch(error => lifeCtx.logger.warn(error));
-      // QQ 巡检：桥是独立进程，崩了、被结束、连不上 DSH 都不会有人知道——上一版只有启动时那一次
-      // ensureRunning，之后再无人过问。2026-10-26 那条链路死了四个小时，就是这么来的。
-      // 这里只负责「什么时候该拉」，怎么拉仍然是 bridge.ts 的事。
-      qqSupervisor = createQqSupervisor({ dir: config.qqBridgeDir, port: config.qqBridgePort, bridge: service, logger: lifeCtx.logger });
-      qqSupervisor.start();
-    }
-    function stopQq(): void {
-      qqSupervisor?.stop(); qqSupervisor = undefined;
-      unregisterQq?.(); unregisterQq = undefined;
-      qq = undefined;
-    }
-    startQq();
-    lifeCtx.effect(() => () => stopQq(), 'dsh-world qq');
+      }),
+    );
+    lifeCtx.effect(() => () => unregisterQq(), 'dsh-world qq route');
     let life: LifeRuntime | undefined;
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
@@ -282,8 +256,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, native: () => qqNative?.status() ?? null, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
-      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqBridgeDir), enabled: power.qqEnabled(), running: qq !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, native: () => qqNative?.status() ?? null, 
+      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -305,13 +279,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
-        if (patch.qq !== undefined && !config.qqBridgeDir) return '没有配置 QQ 桥目录（配置里 qqBridgeDir）';
+        if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';
         power.setModules(patch);
         try {
           if (patch.wechat === false) await stopWechat();
           if (patch.wechat === true && life) await startWechat(life);
-          if (patch.qq === false) stopQq();
-          if (patch.qq === true) startQq();
+          if (patch.qq === false) stopQqNative();
+          if (patch.qq === true && life) await startQqNative(life);
         } catch (error) { faults.set('wechat', `微信模块没能切换：${errorText(error)}`); lifeCtx.logger.error(error); return `切换失败：${errorText(error)}`; }
         finally { sources.invalidate(); }
         faults.clear('wechat');

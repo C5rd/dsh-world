@@ -350,7 +350,7 @@ test('her world waits for start in the console; start builds the home and greets
   const { routes, unregistered } = provideLifeHost(ctx);
   const logged = captureErrors(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 1, 'the console route');
+  await until(async () => routes.length === 2, 'the console route');
   assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).running, false);
   assert.equal(await life(), false, 'no home before start'); assert.equal(ctx.agents.list().length, 0);
 
@@ -373,9 +373,9 @@ test('her world waits for start in the console; start builds the home and greets
   assert.ok(!kinds(requests.at(-1)!).includes('dsh-world-history') && !textOf(requests.at(-1)!).includes('# 我的世界'));
 
   // The stop outlasts a reload; start again resumes the same home, and the words said while stopped stay out of memory.
-  await plugin.dispose(); assert.deepEqual(unregistered, ['/dsh-world']);
+  await plugin.dispose(); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/qq']);
   const again = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => again.dispose()); await again.await();
-  await until(async () => routes.length === 1, 'the console route again');
+  await until(async () => routes.length === 2, 'the console route again');
   assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).running, false);
   await consolePost(routes, '/dsh-world/console/start');
   await until(async () => (await consoleGet(routes, '/dsh-world/console/snapshot')).life?.homeSessionId === homeSessionId, 'the same home');
@@ -397,7 +397,7 @@ test('a corrupt life.json leaves the life line off and keeps workspace filtering
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); await plugin.await();
   await until(async () => routes.length > 0, 'the console route');
-  assert.deepEqual(routes.map(route => route.path), ['/dsh-world']);
+  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world', '/dsh-world/qq'].sort());
   const snapshot = await consoleGet(routes, '/dsh-world/console/snapshot');
   assert.equal(snapshot.worldId, 'fish'); assert.equal(snapshot.life, null);
   assert.equal(snapshot.health.length, 1); assert.match(snapshot.health[0], /^生活线没能启动：.*life\.json/);
@@ -460,8 +460,8 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   const logged = captureErrors(ctx);
   const outlets = [{ name: '桌面桌宠', urlFile: runningFile, path: '/dsh-pet-7340/broadcast?pet=main&surface=any' }];
   const plugin = ctx.plugin(worldPlugin, { ...config, companionName: '小鱼', life: true, bridge: true, toast: false, outlets }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 2, 'the bridge and console routes');
-  assert.deepEqual(routes.map(route => route.path), ['/dsh-world/bridge/say', '/dsh-world']);
+  await until(async () => routes.length === 3, 'the bridge and console routes');
+  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/bridge/say', '/dsh-world/qq', '/dsh-world'].sort());
   assert.equal((await routeCall(routes, '/dsh-world/bridge/say', '/dsh-world/bridge/say', { 'x-dsh-world-token': 'any' }, '{}')).status, 503, 'no bridge before start');
   await consolePost(routes, '/dsh-world/console/start');
   const { homeSessionId } = await firstWakeDone(ctx, root);
@@ -481,7 +481,7 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   await until(async () => ctx.agents.list().every(agent => agent.status === 'idle'), 'the second reply'); await home.whenIdle(); await new Promise(resolve => setTimeout(resolve, 20));
   assert.match((await consoleGet(routes, '/dsh-world/console/snapshot')).health.join('|'), /桌面桌宠没收到小鱼的回复：.*baseUrl/);
   await plugin.dispose();
-  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/bridge/say']);
+  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/bridge/say', '/dsh-world/qq']);
   const archive = createArchiveStore({ ...config, root });
   const records = await archive.readPage({ worldId: 'fish', limit: 20 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content).sort(), ['桌宠上的话', '桌宠上的话，第二句'], 'her partner\'s own words, in memory');
@@ -493,7 +493,7 @@ test('the independent WeChat module follows the world start/stop lifecycle', asy
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 1, 'console');
+  await until(async () => routes.length === 2, 'console');
   const file = join(root, 'worlds/fish/wechat.json');
   assert.equal(existsSync(file), false);
   await consolePost(routes, '/dsh-world/console/start');
@@ -511,7 +511,7 @@ test('the console switch takes the WeChat module down and up again while the wor
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 1, 'console');
+  await until(async () => routes.length === 2, 'console');
   const file = join(root, 'worlds/fish/wechat.json');
   await consolePost(routes, '/dsh-world/console/start');
   await firstWakeDone(ctx, root);
@@ -533,7 +533,7 @@ test('a module the config does not provide cannot be switched on from the consol
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 1, 'console');
+  await until(async () => routes.length === 2, 'console');
   const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
   assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: true, running: false } });

@@ -40,6 +40,8 @@ export interface WorldConfig {
     groupTrigger?: 'mention' | 'all';
     /** 群里命中这些词也算在叫她。 */
     groupKeywords?: string[];
+    /** SnowLuma 装在哪；空着就靠猜（D:\SnowLuma、C:\SnowLuma、~/SnowLuma）。 */
+    snowlumaHome?: string;
     /** 她会不会自己先开口；policy 是给「明天敲细节」留的口子，字段都对得上 proactive.ts。 */
     proactive?: { enabled?: boolean; dryRun?: boolean; policy?: Partial<QqProactivePolicy> } };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
@@ -48,20 +50,8 @@ export interface WorldConfig {
   toast?: boolean;
   /** Names besides this machine the console and the bridge answer to (a LAN address or domain behind a reverse proxy). */
   allowedHosts?: string[];
-  /** The qq-bridge checkout, so QQ can reach her home too; empty leaves the module off. */
-  qqBridgeDir?: string;
-  /** The bridge's console port; 3100 by default. */
-  qqBridgePort?: number;
-  /** Node used to start the bridge; the current process by default. */
-  qqBridgeNode?: string;
-  /** Start the bridge together with her world; off by default, so it stays a manual start from the console. */
-  qqBridgeAutoStart?: boolean;
-  /**
-   * Who shares her home session. Empty leaves the bridge's own `socialV2.bindHomeSession` alone; `owner` keeps
-   * every group on its own session and binds only the owner's private chat to her home; `all` binds every entry;
-   * `none` removes the key so the bridge falls back to binding nothing.
-   */
-  qqBridgeBindHomeSession?: 'owner' | 'all' | 'none' | '';
+  // 外面那个 qq-bridge 进程在 2026-10-27 拆掉了，它的五个配置键（qqBridgeDir/Port/Node/AutoStart/
+  // BindHomeSession）一起没了：QQ 现在由 qqNative 自己直连 OneBot。
 }
 export interface DeliveryState { status: 'pending' | 'sent' | 'uncertain' | 'failed'; confirmed: number; total: number }
 export interface ConversationRecord extends Partial<SpeakerIdentity> {
