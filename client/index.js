@@ -361,13 +361,9 @@ window.__ModuleLoader__.load({
           return null
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
-      // autoReply 和主动开口的两个开关走同一个口：给什么就改什么。
-      function flipNative(autoReply, proactive) {
+      function flipNative(autoReply) {
         setBusy(true); setMsg('')
-        var body = {}
-        if (typeof autoReply === 'boolean') body.autoReply = autoReply
-        if (proactive) body.proactive = proactive
-        qqPost('native', body).then(function () {
+        qqPost('native', { autoReply: autoReply }).then(function () {
           setMsg('')
           if (props.onSaved) props.onSaved()
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
@@ -392,30 +388,6 @@ window.__ModuleLoader__.load({
             h('input', { key: 'c', type: 'checkbox', checked: n.autoReply === true, disabled: busy,
               onChange: function (e) { flipNative(e.target.checked) } }),
             h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
-          ])
-        })(props.native),
-        (function (n) {
-          if (!n) return null
-          var p = n.proactive
-          if (!p) return h('div', { key: 'np', className: 'dw-muted' }, '主动开口：没装（这条线的引擎没起来）')
-          var today = p.today || {}
-          var dec = p.lastDecision || null
-          var tone = p.enabled !== true ? 'dw-muted' : p.dryRun === true ? 'dw-muted' : 'dw-ok'
-          return h('div', { key: 'np' }, [
-            h('div', { key: 'l', className: 'dw-muted' },
-              h('span', { className: tone }, p.enabled === true ? (p.dryRun === true ? '● 主动开口：演练中' : '● 主动开口：开着') : '● 主动开口：关着'),
-              ' · 今天问 ' + (today.calls || 0) + ' 次、发 ' + (today.sent || 0) + ' 条',
-              dec ? ' · 上次判成「' + dec.kind + '」' + (dec.note ? '：' + dec.note : '') : ' · 还没判过'),
-            h('label', { key: 'e', className: 'dw-setting', style: { cursor: 'pointer' } }, [
-              h('input', { key: 'c', type: 'checkbox', checked: p.enabled === true, disabled: busy,
-                onChange: function (e) { flipNative(null, { enabled: e.target.checked }) } }),
-              h('span', { key: 't' }, p.enabled === true ? ' 让她自己想说话时说' : ' 不主动开口'),
-            ]),
-            h('label', { key: 'd', className: 'dw-setting', style: { cursor: 'pointer' } }, [
-              h('input', { key: 'c', type: 'checkbox', checked: p.dryRun === true, disabled: busy,
-                onChange: function (e) { flipNative(null, { dryRun: e.target.checked }) } }),
-              h('span', { key: 't' }, ' 演练模式（判而不做，不问她也不发）'),
-            ]),
           ])
         })(props.native),
         (function (n) {

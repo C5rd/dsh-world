@@ -8,7 +8,6 @@ import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
 import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
-import { createQqProactive, createQqProactiveState, noteActivityIn, DEFAULT_QQ_PROACTIVE_POLICY, type QqProactive, type QqProactivePolicy, type QqProactiveStatus, type QqProactiveStore } from './proactive.ts';
 
 /** The largest single message we accept from QQ; anything longer is cut before it reaches her. */
 const MAX_INCOMING = 2_000;
@@ -20,11 +19,6 @@ const SEEN_LIMIT = 500;
  * 她自己决定说什么 —— 想说的那句就是原话；不想说话，回 [SILENT] 就行（和旧桥一样的约定，
  * 但这边不再有候选表、分数和重试：一次问一句，说不说都算一次调用）。
  */
-const NUDGE_PROMPT = [
-  '现在没有人在跟你说话。',
-  '如果想对他说点什么，就直接写下来 —— 那就是要发出去的原话：不要解释、不要加引号、不要自称发了消息。',
-  '这一刻不想说话，就只回 [SILENT]。',
-].join('\n');
 
 /**
  * What we actually read off an incoming message.
@@ -62,8 +56,6 @@ export interface QqNativeConfig {
   /** Who shares her home session: `owner` keeps it for the owner's private chat, `none` gives every
    *  conversation its own, empty follows whatever the bridge's own setting says. */
   bindHomeSession: 'owner' | 'all' | 'none' | '';
-  /** 她会不会自己先开口。`enabled` 关着时 policy 里的数字都不看。 */
-  proactive: { enabled: boolean; dryRun: boolean; policy: Partial<QqProactivePolicy> };
   /** 阳台：让这台机器上别的程序能跟家里说话的那条线。`port` 为 0 就整块不开。 */
   bridge: { port: number; token: string; title: string; contextMessages: number };
 }
@@ -90,8 +82,6 @@ export interface QqNativeStatus {
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 群里接话的规矩。 */
   groupTrigger: 'mention' | 'all';
-  /** 主动开口那块自己的账；没开就是 null。 */
-  proactive: QqProactiveStatus | null;
 }
 
 /**
@@ -134,15 +124,8 @@ export function createQqNativeModule(deps: {
   const seen = new Set<string>();
   const contexts = new Map<string, ChannelContextMessage[]>();
   const answering = new Set<string>();
-  // 她自己的那条线：最后一次见到的账号，和「要不要先开口」的引擎。
+  // 她自己的那条线：最后一次见到的账号。
   let lastSelfId = '';
-  let proactive: QqProactive | undefined;
-  // 账本（「上一次有人说话是什么时候」）不归引擎管：引擎默认是关的，关着的时候也得记，
-  // 而且它得活过插件重载 —— 所以插件一加载就挂上，和引擎共用同一个状态文件。
-  // 单测里可能没给 stateFile，那就干脆不落盘（别往 cwd 里扔文件）。
-  const activityLedger: QqProactiveStore | undefined = deps.stateFile
-    ? createQqProactiveState(join(dirname(deps.stateFile), 'qq-proactive.json'))
-    : undefined;
   let client: QqTransport | undefined;
   let nativeBridge: NativeBridge | undefined;
   let stopped = false;
@@ -152,14 +135,14 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  let overrides: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean }; bridge?: { port?: number } } = {};
+  let overrides: { autoReply?: boolean; bridge?: { port?: number } } = {};
   let overridesRead = false;
   function readOverrides(): void {
     if (overridesRead) return;
     overridesRead = true;
     const file = deps.stateFile;
     if (!file) return;
-    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean }; bridge?: { port?: number } }; } catch { overrides = {}; }
+    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; bridge?: { port?: number } }; } catch { overrides = {}; }
   }
   function writeOverrides(): void {
     const file = deps.stateFile;
@@ -169,16 +152,11 @@ export function createQqNativeModule(deps: {
   const settings = (): QqNativeConfig => {
     readOverrides();
     const base = deps.config();
-    // 面板上拨过的主动开口开关优先于配置里的出厂值；两个字段各管各的。
-    const proactive = overrides.proactive
-      ? { ...base.proactive, ...(overrides.proactive.enabled === undefined ? {} : { enabled: overrides.proactive.enabled }), ...(overrides.proactive.dryRun === undefined ? {} : { dryRun: overrides.proactive.dryRun }) }
-      : base.proactive;
     // 面板上改过端口就以面板为准；其余字段还是配置里那套。
     const bridge = overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port };
     return {
       ...base,
       ...(overrides.autoReply === undefined ? {} : { autoReply: overrides.autoReply }),
-      proactive,
       bridge,
     };
   };
@@ -253,7 +231,6 @@ export function createQqNativeModule(deps: {
     // 有人说话了：房间安静了多久她得记得，顺带记住自己这个号是哪个。
     lastSelfId = selfId || lastSelfId;
     // 引擎开没开都得记 —— 不然开关一拨开，它以为「一直没人说过话」。
-    if (activityLedger) noteActivityIn(activityLedger, Date.now(), lastSelfId);
     const speakerName = message.sender?.card || message.sender?.nickname || '';
     let identity: SpeakerIdentity;
     try {
@@ -315,49 +292,7 @@ export function createQqNativeModule(deps: {
   }
 
     /**
-     * 她会不会先开口。
-     *
-     * 策略从配置来，剩下的交给 proactive.ts；这里只管两件它不会做的事：
-     * 问她要说什么（走同一条 home 线），以及把话发出去（走同一条传输）。
-     */
-    function startProactive(config: QqNativeConfig): void {
-      if (!deps.stateFile) return;
-      if (config.proactive.enabled !== true) return;
-      proactive = createQqProactive({
-        policy: { ...DEFAULT_QQ_PROACTIVE_POLICY, ...config.proactive.policy },
-        file: join(dirname(deps.stateFile), 'qq-proactive.json'),
-        log: (message: string) => deps.logger.info(`QQ 主动联系：${message}`),
-        target: () => settings().allowPrivate[0] ?? '',
-        selfId: () => lastSelfId,
-        dryRun: () => settings().proactive?.dryRun === true,
-        generate: (hint: string) => nudge(hint),
-        deliver: async (text: string) => {
-          const target = settings().allowPrivate[0] ?? '';
-          if (!target) throw new Error('私聊白名单是空的，没处发');
-          rememberSent((await client?.sendPrivate(target, text))?.messageId);
-        },
-      });
-      proactive.start();
-    }
 
-    /** 问她要说什么。走同一条 home 线，只是这条消息不是谁发来的。 */
-    async function nudge(hint: string): Promise<string> {
-      const target = settings().allowPrivate[0] ?? '';
-      if (!target) throw new Error('私聊白名单是空的，没处问');
-      if (settings().proactive?.dryRun === true) throw new Error('演练模式，不问她');
-      const account = lastSelfId || proactive?.knownSelfId() || '0';
-      const identity = speakerIdentity({
-        channel: 'qq',
-        accountId: account,
-        speakerId: `qq:${target}`,
-        conversationId: target,
-        conversationType: 'private',
-      });
-      // 带上那条会话最近的几句：不然她只能凭「安静了多久」即兴开口。
-      const context = contexts.get(conversationKey(identity)) ?? [];
-      const answer = await home.ask(`${NUDGE_PROMPT}${hint ? `\n（此刻的情况：${hint}）` : ''}`, identity, context, { nudge: true });
-      return answer.text;
-    }
 
 
   /**
@@ -404,36 +339,14 @@ export function createQqNativeModule(deps: {
         lastError: stats.lastError,
         sent: stats.sent,
         failed: stats.failed,
-        proactive: proactive ? proactive.status() : null,
       };
     },
-    /**
-     * 面板上那两个开关：会不会自己先开口、以及只演不做。
-     *
-     * 当场生效 —— 打开就地起引擎，关掉就地停，不指望谁去重载插件。
-     */
     /** 面板上改阳台的端口：当场关掉重开那条线（0 就是关）。 */
     setBridge(patch: { port?: number }): QqNativeStatus {
       if (patch.port !== undefined) { overrides.bridge = { port: patch.port }; writeOverrides(); }
       nativeBridge?.stop();
       nativeBridge = undefined;
       startBridge(settings());
-      return this.status();
-    },
-    setProactive(patch: { enabled?: boolean; dryRun?: boolean }): QqNativeStatus {
-      readOverrides();
-      const next = { ...(overrides.proactive ?? {}) };
-      if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled;
-      if (typeof patch.dryRun === 'boolean') next.dryRun = patch.dryRun;
-      overrides.proactive = next;
-      writeOverrides();
-      const config = settings();
-      if (config.proactive.enabled === true) {
-        if (!proactive) startProactive(config);
-      } else if (proactive) {
-        proactive.stop();
-        proactive = undefined;
-      }
       return this.status();
     },
     /** 面板上那个「会不会自己回」的开关。 */
@@ -470,7 +383,6 @@ export function createQqNativeModule(deps: {
         },
       });
       client = bridge;
-      startProactive(config);
       startBridge(config);
       bridge.start().catch((error: unknown) => {
         stats.lastError = error instanceof Error ? error.message : String(error);
@@ -481,9 +393,7 @@ export function createQqNativeModule(deps: {
       if (stopped) return;
       stopped = true;
       home.stop();
-      proactive?.stop();
       nativeBridge?.stop(); nativeBridge = undefined;
-      proactive = undefined;
       void client?.stop();
       client = undefined;
       contexts.clear();

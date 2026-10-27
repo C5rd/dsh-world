@@ -10,7 +10,6 @@ import { join } from 'node:path';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
-import { DEFAULT_QQ_PROACTIVE_POLICY } from '../src/ecosystem/qq-native/proactive.ts';
 import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
 import { createNativeBridge } from '../src/ecosystem/qq-native/native-bridge.ts';
 import { WebSocket } from 'ws';
@@ -58,7 +57,6 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   bindHomeSession: 'none',
   groupTrigger: 'mention',
   groupKeywords: [],
-  proactive: { enabled: false, dryRun: false, policy: {} },
   // 阳台默认关着（端口 0）：绝大多数用例不该顺手起一个服务器。
   bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 },
   ...over,
@@ -138,33 +136,6 @@ test('群里说话也走同一条线，回包发回群里', async t => {
   assert.deepEqual(wire.sent, [{ kind: 'group', to: '681528723', text: '群里回一句' }]);
 });
 
-test('面板上那两个开关：当场起停「先开口」的引擎，开关写进 stateFile', async t => {
-  const { ctx, cleanup } = await hostFixture(t, () => textResponse('不该被问到'));
-  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
-  const wire = fakeTransport();
-  const dir = mkdtempSync(join(tmpdir(), 'qq-native-switch-'));
-  const stateFile = join(dir, 'qq-native.json');
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory, stateFile });
-  channel.start(); cleanup.push(channel.stop);
-
-  assert.equal(channel.status().proactive, null, '出厂是关的：状态里连引擎都没有');
-
-  // 打开：引擎当场起来（演练模式一起开着，免得它真去问她 —— 这一条测的是开关，不是判定）
-  const on = channel.setProactive({ enabled: true, dryRun: true });
-  assert.equal(on.proactive?.enabled, true);
-  assert.equal(on.proactive?.dryRun, true, 'dryRun 要真的读穿到引擎里');
-  assert.equal(on.proactive?.policy.idleThresholdMs, DEFAULT_QQ_PROACTIVE_POLICY.idleThresholdMs, '策略没给就用默认那套');
-
-  // 只拨 dryRun：enabled 不受影响
-  const flipped = channel.setProactive({ dryRun: false });
-  assert.equal(flipped.proactive?.enabled, true);
-  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')).proactive, { enabled: true, dryRun: false });
-
-  // 关掉：引擎停掉，状态里就没了
-  assert.equal(channel.setProactive({ enabled: false }).proactive, null);
-  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')).proactive, { enabled: false, dryRun: false });
-});
 
 test('群里没叫她就不接：只记上下文，不花一轮', async t => {
   let turns = 0;
@@ -258,33 +229,6 @@ test('不在白名单的消息：到过、被挡下，状态里分得出来', as
   assert.ok(status.lastEventAt, 'lastEventAt 同时会动 —— 两个数一起看才知道是「送到了但被挡」');
 });
 
-test('她自己想说话时，会带上那条会话最近的几句 —— 私聊也带得过去', async t => {
-  const { ctx, cleanup } = await hostFixture(t, () => textResponse('在的。'));
-  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
-  const identity = speakerIdentity({
-    channel: 'qq', accountId: '2039693365', speakerId: 'qq:3475994805',
-    conversationId: '3475994805', conversationType: 'private',
-  });
-  const injected: string[] = [];
-  ctx.on('session/event', (_session, event) => {
-    if (event.type === 'user/message' && (event.data.source ?? {}).kind === 'dsh-world-channel-context') {
-      injected.push(String((event.data.content?.[0] as { text?: string } | undefined)?.text ?? ''));
-    }
-  });
-  const home = createQqHome({ ctx, home: async () => agent });
-  cleanup.push(home.stop);
-
-  const answer = await home.ask(
-    '【此刻没人跟你说话】这条不是谁发来的',
-    identity,
-    [{ id: '1', occurredAt: new Date().toISOString(), text: '在吗', identity }],
-    { nudge: true },
-  );
-
-  assert.equal(answer.text, '在的。', '私聊 + nudge 带上下文不再抛 Invalid group context');
-  assert.equal(injected.length, 1, '确实把上下文注进去了');
-  assert.match(injected[0], /在吗/);
-});
 
 test('她回过的话记成她自己说的：下一轮的上下文里那几句是 assistant', async t => {
   const { ctx, cleanup } = await hostFixture(t, () => textResponse('我在。'));

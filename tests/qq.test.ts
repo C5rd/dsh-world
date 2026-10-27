@@ -25,7 +25,7 @@ function doors(overrides: Partial<ConsoleDoors> = {}): ConsoleDoors {
     ...overrides,
   };
 }
-const native = () => ({ connected: true, url: 'ws://127.0.0.1:3003', autoReply: false, proactive: null });
+const native = () => ({ connected: true, url: 'ws://127.0.0.1:3003', autoReply: false });
 const WRITE = { [WRITE_HEADER]: '1' };
 
 test('QQ 前缀下：状态是 GET，认不出来的路径是 404', async () => {
@@ -37,7 +37,7 @@ test('QQ 前缀下：状态是 GET，认不出来的路径是 404', async () => 
   // 不认识的路径不该被当成 console：POST 落到写表里没有 → 404；GET 只有 /native 与 /console 两扇门 → 405。
   assert.equal((await call(route, request('POST', '/nope', { headers: WRITE }))).status, 404);
   assert.equal((await call(route, request('GET', '/nope'))).status, 405);
-  // 桥那几扇门（/start /stop /halt /bind /unbind /proactive）连同桥一起没了，别再留后门。
+  // 桥那几扇门（/start /stop /halt /bind /unbind）连同桥一起没了，别再留后门。
   for (const path of ['/start', '/stop', '/halt', '/bind', '/unbind', '/proactive']) {
     const gone = await call(route, request('POST', path, { headers: WRITE }));
     assert.ok(gone.status === 404 || gone.status === 405, `${path} 应该是 404 或 405，实际 ${gone.status}`);
@@ -91,28 +91,4 @@ test('面板密码只走 POST，还得带 x-dsh-world 头；密码要是空的�
   assert.equal(ok.status, 200);
   assert.deepEqual(ok.body.snowluma, { url: 'http://127.0.0.1:5099/?token=abc' });
   assert.deepEqual(seen, ['admin:hunter2']);
-});
-
-test('原生通道的两个主动开口开关：认布尔、别的一律拒、只转认识的字段', async () => {
-  const seen: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }[] = [];
-  const route = qqRoute([], doors(), native, patch => { seen.push(patch); return { ok: true }; });
-
-  // 什么都没给：拒（不然就是一个静默的空写）
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: {} }))).status, 400);
-  // proactive 的形状不对：全拒
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: {} } }))).status, 400);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: 'yes' } }))).status, 400);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: [] } }))).status, 400);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: { enabled: 'yes' } } }))).status, 400);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: { dryRun: 1 } } }))).status, 400);
-
-  // 好好给：转过去，多余的字段不透传
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { autoReply: true } }))).status, 200);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { proactive: { enabled: true, dryRun: true } } }))).status, 200);
-  assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { autoReply: false, proactive: { enabled: false }, 多余的: 1 } }))).status, 200);
-  assert.deepEqual(seen, [
-    { autoReply: true },
-    { proactive: { enabled: true, dryRun: true } },
-    { autoReply: false, proactive: { enabled: false } },
-  ]);
 });

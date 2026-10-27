@@ -29,16 +29,12 @@ export function createQqHome(deps: {
   let stopped = false;
   let queued = 0;
 
-  function ask(text: string, suppliedIdentity: SpeakerIdentity, suppliedContext?: ChannelContextMessage[], options?: { nudge?: boolean }): Promise<{ id: string; text: string }> {
+  function ask(text: string, suppliedIdentity: SpeakerIdentity, suppliedContext?: ChannelContextMessage[]): Promise<{ id: string; text: string }> {
     if (stopped) return Promise.reject(new Error('QQ module is stopped'));
     if (queued >= 16) return Promise.reject(new Error('QQ request queue is full'));
     const identity = speakerIdentity(suppliedIdentity);
     // 群聊的上下文要过 channelContext 校一遍（它只认群，私聊传进去必抛 Invalid group context）。
-    // 「她自己想说话」那条路不一样：她要主动找的人往往正在私聊里，所以那条路直接用调用方给的
-    // 那份记录 —— 它是进通道时按同一条规矩攒的（channelContext 的校验在这儿会把私聊挡掉）。
-    const context = options?.nudge
-      ? (suppliedContext ?? [])
-      : (identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : []);
+    const context = identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : [];
     queued++;
     const result = pending.then(async () => {
       if (stopped) throw new Error('QQ module is stopped');
@@ -56,11 +52,7 @@ export function createQqHome(deps: {
         const agent = await Promise.race([deps.home(identity), cancelled]);
         await Promise.race([agent.whenIdle(), cancelled]);
         if (stopped) throw new Error('QQ module is stopped');
-        // A nudge is not somebody speaking. No identity prefix (nobody said anything), and the
-        // source says what it is, so the "another person interrupted" rule above never fires on it.
-        const words = options?.nudge
-          ? createUserMessage({ source: { kind: 'dsh-world-proactive', form: 'nudge' }, content: [{ type: 'text', text: `【此刻没人跟你说话】这不是谁发来的消息，是你自己想说话了。\n${text}` }] })
-          : createUserMessage({ source: { kind: 'user', identity }, content: [{ type: 'text', text: identityPrefix(identity) + text }] });
+        const words = createUserMessage({ source: { kind: 'user', identity }, content: [{ type: 'text', text: identityPrefix(identity) + text }] });
         let reply = '';
         let turn: number | undefined;
         let ownTurn: number | undefined;

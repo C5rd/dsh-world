@@ -67,23 +67,6 @@ export const Config = z.object({
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
-    // 她会不会自己先开口。底子阶段只把开关和数字留出来，还没接上面板；这里的默认值就是引擎里那套，
-    // 面板和细节明天再敲（schemastery 没有 optional，一律用默认值表达「可省略」）。
-    proactive: z.object({
-      enabled: z.boolean().default(false),
-      // 演练：判而不做。开着也能看引擎每轮怎么判，只是她不会被问、QQ 上也不会多出消息。
-      dryRun: z.boolean().default(false),
-      policy: z.object({
-        checkIntervalMs: z.number().default(5 * 60_000),
-        idleThresholdMs: z.number().default(30 * 60_000),
-        minIntervalMs: z.number().default(3 * 3600_000),
-        maxPerDay: z.number().default(3),
-        maxCallsPerDay: z.number().default(12),
-        failureLimit: z.number().default(3),
-        sendProbability: z.number().default(1),
-        quietHours: z.object({ start: z.string().default('23:00'), end: z.string().default('08:00') }).default({ start: '23:00', end: '08:00' }),
-      }).default({ checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, failureLimit: 3, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } }),
-    }).default({ enabled: false, dryRun: false, policy: { checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, failureLimit: 3, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } } }),
     // 阳台：给这台机器上别的程序留的一条线。口令空着就由插件自己生成一条并存在世界目录里。
     bridge: z.object({
       port: z.number().default(3210),
@@ -162,7 +145,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       qqRoute(config.allowedHosts, doors, () => qqNative?.status() ?? null, patch => {
         if (!qqNative) return null;
         if (patch.bridge) return qqNative.setBridge(patch.bridge);
-        if (patch.proactive) return qqNative.setProactive(patch.proactive);
         return qqNative.setAutoReply(patch.autoReply === true);
       }),
     );
@@ -230,7 +212,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                       contextMessages: q.bridge?.contextMessages ?? 6,
                     },
                     bindHomeSession: q.bindHomeSession ?? 'owner',
-                    proactive: { enabled: q.proactive?.enabled ?? false, dryRun: q.proactive?.dryRun ?? false, policy: q.proactive?.policy ?? {} },
                   };
                 },
       });

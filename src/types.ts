@@ -2,7 +2,6 @@ import type { OutletConfig } from './ecosystem/shared/outlets.ts';
 import type { SessionHeader } from '@deepseek-ai/dsh-session';
 import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
 import type { MemoryArchiveScope } from './archiveSelection.ts';
-import type { QqProactivePolicy } from './ecosystem/qq-native/proactive.ts';
 
 export interface WorldConfig {
   worldId: string;
@@ -44,8 +43,7 @@ export interface WorldConfig {
     snowlumaHome?: string;
     /** 阳台：让这台机器上别的程序能跟家里说话（一行一条 JSON 的 WebSocket）。port 为 0 就不开。 */
     bridge?: { port?: number; token?: string; title?: string; contextMessages?: number };
-    /** 她会不会自己先开口；policy 是给「明天敲细节」留的口子，字段都对得上 proactive.ts。 */
-    proactive?: { enabled?: boolean; dryRun?: boolean; policy?: Partial<QqProactivePolicy> } };
+  };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */
   wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */

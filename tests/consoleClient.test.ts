@@ -58,7 +58,7 @@ test('the client registers the world console settings section under the bundle i
     assert.equal(tested.renderPersona(persona), renderPersona(persona), 'the console previews exactly what she reads');
   }
   // QQ 卡：外面那个 qq-bridge 拆掉以后，这张卡只剩她自己那条原生通道 —— 状态、两个勾、SnowLuma 的门。
-  const native = { connected: true, url: 'ws://127.0.0.1:3003', conversations: 2, sent: 3, failed: 0, blocked: 2, autoReply: true, lastError: null, proactive: null };
+  const native = { connected: true, url: 'ws://127.0.0.1:3003', conversations: 2, sent: 3, failed: 0, blocked: 2, autoReply: true, lastError: null };
   const card = text(react.createElement(tested.Qq, { native }));
   assert.match(card, /她自己连着 ws:\/\/127\.0\.0\.1:3003/);
   assert.match(card, /收 2 个会话 · 发 3 条 · 挡下 2 · 会自己回/);

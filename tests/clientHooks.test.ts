@@ -93,11 +93,6 @@ const filled = {
       line: 'DSH_QQ_BRIDGE_URL=ws://127.0.0.1:3210 DSH_QQ_BRIDGE_TOKEN=ab node qq-line.js 阳台 line-1',
       lines: 1, threads: ['line-1'], received: 2, relayed: 2, spoken: 0, lastAt: null, lastError: null, quiet: [],
     },
-    proactive: {
-      enabled: true, dryRun: true, policy: { idleThresholdMs: 1800000 },
-      today: { dayKey: '2026-10-26', sent: 0, calls: 1 }, lastActivityAt: 0, lastProactiveAt: 0,
-      lastDecision: { kind: 'go', note: '闲了 31 分钟' }, events: [],
-    },
   },
 };
 
