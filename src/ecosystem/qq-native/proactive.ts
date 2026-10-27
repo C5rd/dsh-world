@@ -56,6 +56,8 @@ export const DEFAULT_QQ_PROACTIVE_POLICY: QqProactivePolicy = {
 
 export type QqProactiveDecision =
   | { kind: 'go'; note: string }
+  /** 上一次 tick 还没跑完，这一次没排上 —— 「没轮到」，不是「不能发」。 */
+  | { kind: 'busy' }
   | { kind: 'quiet-hour'; until: string }
   | { kind: 'too-soon'; nextAt: number }
   | { kind: 'still-talking'; idleMs: number }
@@ -245,7 +247,11 @@ export function createQqProactive(deps: {
   const SILENT = /^\s*\[SILENT\]\s*$/i;
 
   async function tick(): Promise<QqProactiveDecision> {
-    if (running) return lastDecision ?? { kind: 'no-call-budget', callsToday: 0, maxCallsPerDay: 0 };
+    // 重入（上一轮还没跑完）时别再拿上一轮的决定冒充这一轮：`lastDecision` 是上一次问出来的答案，
+    // 而这里真正发生的事只有一件 —— 这一次没排上。旧写法两种情况都返回 lastDecision，兜底那句
+    // `no-call-budget` 更是编的（真实原因是「在忙」，不是「今天的额度用完了」）；谁以后拿这个返回值
+    // 做判断，就会把「没跑」读成「跑了但没资格」。想看上一轮判了什么，读 status().lastDecision。
+    if (running) return { kind: 'busy' };
     running = true;
     try {
       const at = now();

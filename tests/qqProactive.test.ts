@@ -254,6 +254,32 @@ test('tick：骰子没中就什么都不写 —— 不花调用、不落事件',
   }
 });
 
+test('tick：上一轮还没跑完时重入 → 老实报 busy，不拿上一轮的决定冒充这一轮', async () => {
+  const { file, dir } = tempFile();
+  try {
+    let release = () => {};
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    let asked = 0;
+    const engine = createQqProactive({
+      policy: POLICY, file, log: () => {},
+      generate: async () => { asked += 1; await parked; return '在忙吗'; },
+      deliver: async () => {},
+      target: () => '3475994805', selfId: () => '', now: () => at(12), roll: () => 0,
+    });
+    await engine.noteActivity(at(12) - 2 * HOUR);
+    const first = engine.tick();          // 第一轮停在 generate 里，还没回来
+    const second = await engine.tick();   // 这时候再叫它一次
+    assert.equal(second.kind, 'busy', '重入报 busy —— 别报上一轮的决定，更别编 no-call-budget');
+    assert.equal(asked, 1, '重入不许再问她一次');
+    assert.deepEqual([engine.status().today.sent, engine.status().today.calls], [0, 0], '这一轮还没落账');
+    release();
+    assert.equal((await first).kind, 'go', '被卡住的那一轮照样跑完');
+    assert.deepEqual([engine.status().today.sent, engine.status().today.calls], [1, 1]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('演练模式：该开口还是判得出来，但不问她、不发、调用也不算花', async () => {
   const { file, dir } = tempFile();
   try {
