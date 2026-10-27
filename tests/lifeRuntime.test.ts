@@ -386,6 +386,32 @@ test('her home\'s spending is counted per local day, and past the daily budget s
   assert.equal(textOf(s.requests.at(-1)!).split('过了伙伴给我定的每天').length - 1, 1, 'not told again that day');
   budget = undefined;
 });
+test('a step in another session of the same world is billed too, not only her home\'s', async t => {
+  const usage = { inputTokens: 4000, outputTokens: 1000 };
+  const s = await setup(t, () => (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' } as StreamChunk;
+    yield { type: 'text-delta', index: 0, text: '嗯' } as StreamChunk;
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '嗯' } } as StreamChunk;
+    yield { type: 'usage', usage } as StreamChunk;
+    yield { type: 'finish', reason: { kind: 'stop' } } as StreamChunk;
+  })(), { before: existingHome('看书') });
+  const step = stepCost(usage, 'test', new Date('2026-10-23T03:00:00Z'));
+  await createAgent(s.ctx, 'home-0');
+  await s.start(); await s.idle();
+  const homeOnly = s.store.read().spend!.yuan;
+  assert.ok(homeOnly > 0, 'her home has spent something');
+  // 同一世界里另一扇窗（不是家）：账要记在同一个数上——预算挡的是这个账号，不是那一间屋子。
+  const side = await createAgent(s.ctx, 'side-0');
+  side.followup(userMessage('干点活')); await side.whenIdle();
+  const after = s.store.read().spend!.yuan;
+  assert.ok(Math.abs(after - homeOnly - step) < 1e-9, `one side step counted: ${homeOnly} → ${after}, step ${step}`);
+  // 同一个数还要拆得开：两扇窗各有各的一份，加起来就是总数。
+  const per = s.store.read().spend!.sessions ?? {};
+  assert.equal(Object.keys(per).length, 2, `two windows billed: ${Object.keys(per).join(', ')}`);
+  const sum = Object.values(per).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(sum - after) < 1e-9, `shares add up: ${sum} vs ${after}`);
+  assert.ok(Math.abs((per[side.id] ?? 0) - step) < 1e-9, `the side window's own share is its own step: ${per[side.id]}`);
+});
 test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
   const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
     version: 1, homeSessionId: 'archived-home', alarm: { at: '2026-10-23T04:00:00.000Z', note: '歇着', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' },

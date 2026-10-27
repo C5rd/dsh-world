@@ -187,7 +187,7 @@ test('the snapshot is cached and shared between concurrent polls until invalidat
   running = false; src.invalidate();
   const stopped = await src.snapshot() as { running: boolean; life: unknown; memory: { windowTurns: number } };
   assert.equal(stopped.running, false); assert.equal(stopped.life, null); assert.equal(stopped.memory.windowTurns, 50);
-  assert.deepEqual((stopped as unknown as { budget: unknown }).budget, { daily: 3, today: null });
+  assert.deepEqual((stopped as unknown as { budget: unknown }).budget, { daily: 3, today: null, sessions: [] });
 });
 
 test('the memory window is kept in world.json, defaults to 200 and survives a restart', t => {

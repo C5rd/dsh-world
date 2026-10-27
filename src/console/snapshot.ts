@@ -4,6 +4,7 @@ import { createHistory, renderHistory } from '../history.ts';
 import { createDiaryReader } from '../life/diary.ts';
 import type { LifeStore } from '../life/lifeStore.ts';
 import type { LifeRuntime } from '../life/runtime.ts';
+import type { Spend } from '../life/types.ts';
 import type { ArchiveStore } from '../store.ts';
 import type { WorldConfig } from '../types.ts';
 import type { WorldNames } from '../worldPrompt.ts';
@@ -14,6 +15,13 @@ const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
   const cjk = (text.match(/[㐀-鿿豈-﫿　-〿＀-￯]/g) ?? []).length;
   return Math.round(cjk * 0.6 + (text.length - cjk) / 3.5);
+}
+/** Each window's slice of today's yuan: home first, then biggest first. */
+function spendShares(spend: Spend | undefined, home: string | undefined): { id: string; home: boolean; yuan: number }[] {
+  if (!spend?.sessions) return [];
+  return Object.entries(spend.sessions)
+    .map(([id, yuan]) => ({ id, home: id === home, yuan }))
+    .sort((a, b) => (a.home === b.home ? b.yuan - a.yuan : a.home ? -1 : 1));
 }
 export interface SnapshotDeps {
   ctx: Context;
@@ -58,7 +66,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const qq = deps.qq ? await deps.qq().catch(() => null) : null;
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
-      budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
+      budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null, sessions: spendShares(life?.spend, life?.homeSessionId) },
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },

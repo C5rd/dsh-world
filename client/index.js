@@ -241,6 +241,9 @@ window.__ModuleLoader__.load({
     function Budget(props) {
       var budget = props.budget || {}, daily = budget.daily, today = budget.today
       var spent = today ? today.yuan : 0
+      var shares = budget.sessions && budget.sessions.length ? budget.sessions : []
+      var sumShares = shares.reduce(function (a, r) { return a + Number(r.yuan || 0) }, 0)
+      var rest = Math.max(0, spent - sumShares)
       var draftState = useState(daily == null ? '' : String(daily)), draft = draftState[0], setDraft = draftState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       function save() {
@@ -252,7 +255,11 @@ window.__ModuleLoader__.load({
       return h(Card, { title: '今日花费', delay: 240 },
         h('div', null, h('span', { className: 'dw-big' + (over ? ' dw-bad' : '') }, '¥' + spent.toFixed(2)), h('span', { className: 'dw-muted' }, daily == null ? ' · 不限额' : ' / ¥' + Number(daily).toFixed(2) + ' 每天')),
         daily != null ? h('div', { className: 'dw-meter' }, h('i', { style: { width: Math.min(100, daily > 0 ? Math.round(spent / daily * 100) : 100) + '%' } })) : null,
-        h('div', { className: 'dw-muted', style: { marginTop: 4 } }, '只算家里；按 DeepSeek 官方价与峰谷时段估算。超过后提醒她一次。'),
+        shares.length ? h('div', { style: { marginTop: 6 } }, KV(shares.map(function (row, i) {
+          var name = row.home ? '家' : String(row.id || '').replace(/^session-/, '').slice(0, 8)
+          return [name, '¥' + Number(row.yuan || 0).toFixed(2)]
+        }).concat(rest > 0.005 ? [['此前没拆开', '¥' + rest.toFixed(2)]] : []))) : (spent > 0 ? h('div', { className: 'dw-muted', style: { marginTop: 6 } }, '从这个版本起按窗口分别记；今天此前的 ¥' + spent.toFixed(2) + ' 没拆开。') : null),
+        h('div', { className: 'dw-muted', style: { marginTop: 4 } }, '算整个世界的用量，不只家里；按 DeepSeek 官方价与峰谷时段估算。超过后提醒她一次。'),
         h('div', { className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'decimal', placeholder: '每天额度（元），留空不限', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),

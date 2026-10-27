@@ -217,11 +217,14 @@ export function createLifeRuntime(deps: LifeDeps) {
     void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
   }
 
-  // What her home spends: each model step priced as it lands; past the daily budget she is told once that day.
-  function spent(usage: Parameters<typeof stepCost>[0], model: string): void {
+  // What this world spends: each model step priced as it lands and filed under the window that spent it;
+  // past the daily budget she is told once that day.
+  function spent(usage: Parameters<typeof stepCost>[0], model: string, sessionId: string): void {
     const now = clock(); const day = formatLocalTime(now, timeZone).slice(0, 10);
     const spend = state.spend?.day === day ? state.spend : (state.spend = { day, yuan: 0 });
-    spend.yuan += stepCost(usage, model, now);
+    const cost = stepCost(usage, model, now);
+    spend.yuan += cost;
+    spend.sessions = { ...spend.sessions, [sessionId]: (spend.sessions?.[sessionId] ?? 0) + cost };
     const budget = deps.dailyBudget?.();
     const remind = budget !== undefined && spend.yuan >= budget && !spend.reminded;
     if (remind) spend.reminded = true;
@@ -276,9 +279,10 @@ export function createLifeRuntime(deps: LifeDeps) {
       ctx.on('session/event', (session, event) => {
         if (!belongsToWorld(session, config)) return;
         journal.world(session, event);
+        // Every session in this world bills one account, so every step is counted — not only her home's.
+        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model, session.id);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
-        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model);
         if (event.type === 'user/message' && event.data.source.kind === 'user') earlyStop.partnerSpoke();
         if (event.type !== 'turn/end') return;
         home.turnEnded(session.id);
