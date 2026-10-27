@@ -13,10 +13,12 @@ import {
   decide,
   inQuietHours,
   minuteOfDay,
+  noteActivityIn,
   quietUntil,
   rollDay,
   type QqProactivePolicy,
   type QqProactiveState,
+  type QqProactiveStore,
 } from '../src/ecosystem/qq-native/proactive.ts';
 
 const POLICY: QqProactivePolicy = { ...DEFAULT_QQ_PROACTIVE_POLICY };
@@ -275,6 +277,48 @@ test('tick：上一轮还没跑完时重入 → 老实报 busy，不拿上一轮
     release();
     assert.equal((await first).kind, 'go', '被卡住的那一轮照样跑完');
     assert.deepEqual([engine.status().today.sent, engine.status().today.calls], [1, 1]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── 账本：引擎开没开都得记 ────────────────────────────────────────────────────
+
+test('noteActivityIn：引擎没起也照记 —— 开关拨开第一跳不该以为「一直没人说过话」', () => {
+  const { file, dir } = tempFile();
+  try {
+    const store = createQqProactiveState(file);
+    assert.equal(store.read().lastActivityAt, 0, '还没人说话');
+    noteActivityIn(store, at(14, 30), '2039693365');
+    const onDisk = store.read();
+    assert.equal(onDisk.lastActivityAt, at(14, 30), '落进文件的是真时间，不是 0');
+    assert.equal(onDisk.selfId, '2039693365', '顺带记住自己这个号');
+    assert.equal(onDisk.dayKey, dayKeyOf(at(14, 30)), '该归零的也顺手归零');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('noteActivityIn：一分钟内不重写盘，换天和第一次学到 selfId 立刻落', () => {
+  const { file, dir } = tempFile();
+  try {
+    const store = createQqProactiveState(file);
+    let writes = 0;
+    const counted: QqProactiveStore = {
+      read: () => store.read(),
+      write: (state) => { writes += 1; store.write(state); },
+    };
+    noteActivityIn(counted, at(14, 30), '2039693365');
+    assert.equal(writes, 1, '第一条要落盘');
+    noteActivityIn(counted, at(14, 30) + 5_000, '2039693365');
+    assert.equal(writes, 1, '五秒后的第二句不重写（群里一热闹就是几十条）');
+    assert.equal(store.read().lastActivityAt, at(14, 30), '盘上最多落后一分钟，这是有意的');
+    noteActivityIn(counted, at(9, 0, 2), '2039693365');
+    assert.equal(writes, 2, '换天立刻落');
+    assert.equal(store.read().lastActivityAt, at(9, 0, 2));
+    noteActivityIn(counted, at(9, 5, 2), '3997750133');
+    assert.equal(writes, 3, '第一次学到 selfId 立刻落');
+    assert.equal(store.read().selfId, '3997750133');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

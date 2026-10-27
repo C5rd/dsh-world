@@ -8,7 +8,7 @@ import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
 import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
-import { createQqProactive, DEFAULT_QQ_PROACTIVE_POLICY, type QqProactive, type QqProactivePolicy, type QqProactiveStatus } from './proactive.ts';
+import { createQqProactive, createQqProactiveState, noteActivityIn, DEFAULT_QQ_PROACTIVE_POLICY, type QqProactive, type QqProactivePolicy, type QqProactiveStatus, type QqProactiveStore } from './proactive.ts';
 
 /** The largest single message we accept from QQ; anything longer is cut before it reaches her. */
 const MAX_INCOMING = 2_000;
@@ -137,6 +137,12 @@ export function createQqNativeModule(deps: {
   // 她自己的那条线：最后一次见到的账号，和「要不要先开口」的引擎。
   let lastSelfId = '';
   let proactive: QqProactive | undefined;
+  // 账本（「上一次有人说话是什么时候」）不归引擎管：引擎默认是关的，关着的时候也得记，
+  // 而且它得活过插件重载 —— 所以插件一加载就挂上，和引擎共用同一个状态文件。
+  // 单测里可能没给 stateFile，那就干脆不落盘（别往 cwd 里扔文件）。
+  const activityLedger: QqProactiveStore | undefined = deps.stateFile
+    ? createQqProactiveState(join(dirname(deps.stateFile), 'qq-proactive.json'))
+    : undefined;
   let client: QqTransport | undefined;
   let nativeBridge: NativeBridge | undefined;
   let stopped = false;
@@ -246,7 +252,8 @@ export function createQqNativeModule(deps: {
     stats.lastEventAt = new Date().toISOString();
     // 有人说话了：房间安静了多久她得记得，顺带记住自己这个号是哪个。
     lastSelfId = selfId || lastSelfId;
-    proactive?.noteActivity(Date.now(), lastSelfId);
+    // 引擎开没开都得记 —— 不然开关一拨开，它以为「一直没人说过话」。
+    if (activityLedger) noteActivityIn(activityLedger, Date.now(), lastSelfId);
     const speakerName = message.sender?.card || message.sender?.nickname || '';
     let identity: SpeakerIdentity;
     try {

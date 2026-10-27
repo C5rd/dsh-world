@@ -200,6 +200,29 @@ export function createQqProactiveState(file: string) {
   return { read, write };
 }
 
+export type QqProactiveStore = ReturnType<typeof createQqProactiveState>;
+
+/**
+ * 有人说话了 —— 账本记一笔。
+ *
+ * 这半截和引擎在不在没关系，所以它不挂在 `createQqProactive` 上：引擎默认是关的，
+ * 关着的时候也得记，不然开关一拨开它以为「一直没人说过话」，第一跳就往人正说话的
+ * 当口插嘴。插件一加载就该能记，重载也得记得住 —— 所以落的是这个文件，不是内存。
+ */
+export function noteActivityIn(store: QqProactiveStore, at: number, selfId = ''): void {
+  const state = store.read();
+  // 群里一热闹就是几十条消息，每条都重写一遍这个文件没必要。一分钟内只落一次；
+  // 换天（配额要归零）和第一次学到 selfId 要立刻落，时钟往回跳也照落不误。
+  const worthWriting = state.dayKey !== dayKeyOf(at)
+    || (selfId !== '' && selfId !== state.selfId)
+    || at < state.lastActivityAt
+    || at - state.lastActivityAt >= ACTIVITY_WRITE_MS;
+  state.lastActivityAt = at;
+  rollDay(state, at);
+  if (selfId) state.selfId = selfId;
+  if (worthWriting) store.write(state);
+}
+
 export interface QqProactiveStatus {
   enabled: boolean;
   /** 演练中：判而不做。 */
@@ -309,17 +332,7 @@ export function createQqProactive(deps: {
     tick,
     /** Anyone spoke — she now knows how long the room has been quiet. */
     noteActivity(at = now(), selfId = ''): void {
-      const state = store.read();
-      // 群里一热闹就是几十条消息，每条都重写一遍这个文件没必要。一分钟内只落一次；
-      // 换天（配额要归零）和第一次学到 selfId 要立刻落，时钟往回跳也照落不误。
-      const worthWriting = state.dayKey !== dayKeyOf(at)
-        || (selfId !== '' && selfId !== state.selfId)
-        || at < state.lastActivityAt
-        || at - state.lastActivityAt >= ACTIVITY_WRITE_MS;
-      state.lastActivityAt = at;
-      rollDay(state, at);
-      if (selfId) state.selfId = selfId;
-      if (worthWriting) store.write(state);
+      noteActivityIn(store, at, selfId);
     },
     /** 她这个号是哪个：从第一条消息学到，存进状态文件，重启也记得。 */
     knownSelfId(): string {
