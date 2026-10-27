@@ -1,6 +1,6 @@
 {
   "name": "dsh-world",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Cross-session companion memory and life routines for DSH, with a world console, tool-free compaction and an independent Windows WeChat bridge",
   "license": "MIT",
   "repository": {
@@ -66,6 +66,7 @@
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-attachment": ">=0.2.1-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-commands": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-home-paths": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0-0",

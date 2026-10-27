@@ -470,7 +470,8 @@ def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=repo
         try:
             database, send = connect(config, stateDir)
             try:
-                print(f"微信{'已重新连接' if waiting else '账号已绑定'}，PID {send.processId}；继续原聊天游标。", flush=True)
+                ready = send.probe()
+                print(f"微信{'已重新连接' if waiting else '账号已绑定'}，版本 {ready['version']}，PID {send.processId}；继续原聊天游标。", flush=True)
                 waiting = False
                 return watch(config, database, store, send, ask, report, poll)
             finally:
@@ -518,6 +519,7 @@ def run(args, config, stateDir):
             if not chat or not args.text or len(args.text) > 2000:
                 raise ValueError('请选择已配置的聊天，并提供 1–2000 字正文')
             store.checkPending()
+            send.probe()
             key = 'manual:' + str(time.time_ns())
             baselineChat(database, store, chat['id'], config.get('pageSize', 50))
             seq = store.cursor(chat['id'])

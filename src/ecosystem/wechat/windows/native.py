@@ -162,7 +162,11 @@ def connect(config, stateDir):
             time.sleep(0.5)
         raise RuntimeError('原生操作已提交但目标聊天尚未确认，需人工核对；不自动重发')
 
-    send.probe = lambda: getSender().send(config['chats'][0]['id'], 0)
+    def probe():
+        nativeSender = getSender()
+        return dict(version=nativeSender.profile['version'], **nativeSender.send(config['chats'][0]['id'], 0))
+
+    send.probe = probe
     send.close = close
     send.processId = config['processId']
     return database, send
