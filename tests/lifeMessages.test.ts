@@ -53,9 +53,9 @@ test('the example time carries the configured zone\'s offset, in descriptions an
 });
 test('check_alarm and cancel_alarm are offered when the host can answer them, with the template\'s descriptions', async () => {
   const notifier = { toast: async () => {}, outlets: [] };
-  assert.deepEqual(lifeTools({ planNext: () => '', notifier }).map(tool => tool.name), ['plan_next', 'reach_out']);
+  assert.deepEqual(lifeTools({ planNext: () => '', notifier }).map(tool => tool.name), ['plan_next', 'reach_out', 'bili_look']);
   const tools = lifeTools({ planNext: () => '', checkAlarm: () => 'CHECK', cancelAlarm: () => 'CANCEL', notifier, descriptions: { plan: 'P', check: 'C', cancel: 'X' } });
-  assert.deepEqual(tools.map(tool => [tool.name, tool.description]), [['plan_next', 'P'], ['reach_out', tools[1]!.description], ['check_alarm', 'C'], ['cancel_alarm', 'X']]);
+  assert.deepEqual(tools.map(tool => [tool.name, tool.description]), [['plan_next', 'P'], ['reach_out', tools[1]!.description], ['check_alarm', 'C'], ['cancel_alarm', 'X'], ['bili_look', tools[4]!.description]]);
   const ctx = {} as never;
   assert.equal(await tools[2]!.execute({}, ctx), 'CHECK'); assert.equal(await tools[3]!.execute({}, ctx), 'CANCEL');
 });

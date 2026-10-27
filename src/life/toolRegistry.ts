@@ -4,7 +4,7 @@ import { errorText, type Faults } from '../faults.ts';
 import type { lifeTools } from './tools.ts';
 
 type Registration = (() => void)[];
-const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
+const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm', 'bili_look'];
 const HOME_TOOLS = ['reach_out'];
 
 /** Disposes in reverse; a disposer whose agent scope is already gone may throw and is skipped. */
@@ -13,7 +13,8 @@ function undo(list: Registration): void {
 }
 
 /**
- * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home);
+ * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home),
+ * and so is bili_look — she can look outside from any window, not only the one she calls home;
  * reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
  * agent creation; it registers all of a group or none.
  */

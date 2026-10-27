@@ -3,6 +3,7 @@ import type { Notifier } from './notify.ts';
 import type { WorldNames } from '../worldPrompt.ts';
 import { exampleTime, fillMessage, readAlarmMessages } from './messages.ts';
 import { pushOf } from '../ecosystem/shared/outlets.ts';
+import { biliLook } from '../bili/look.ts';
 
 export interface AlarmDescriptions { plan: string; check: string; cancel: string }
 export interface LifeToolHost {
@@ -54,8 +55,19 @@ export function lifeTools(host: LifeToolHost) {
     },
   });
   const { checkAlarm, cancelAlarm } = host;
-  if (!checkAlarm || !cancelAlarm) return [planNext, reachOut] as const;
+  const look = defineTool({
+    name: 'bili_look',
+    description: '想看看外面的时候用。what 取 hot（热门）、rank（全站排行）、video（某条的详情）、comments（某条的热评）、related（某条的相关推荐）；看详情、热评、相关推荐时给 bvid。只读：不带账号、不点赞、不留言，看什么都不会留下痕迹。这个工具只把东西取回来，不在里面下结论——要不要当真、要不要记住，是你的事。',
+    parameters: { what: { type: 'string' }, bvid: { type: 'string' } },
+    output: text,
+    execute: async ({ what, bvid }) => {
+      const result = await biliLook({ ...(what === undefined ? {} : { what }), ...(bvid === undefined ? {} : { bvid }) });
+      if (!result.ok) throw new Error(result.note || '这一次什么都没看到。');
+      return result.text;
+    },
+  });
+  if (!checkAlarm || !cancelAlarm) return [planNext, reachOut, look];
   const check = defineTool({ name: 'check_alarm', description: descriptions.check, parameters: {}, output: text, execute: async () => checkAlarm.call(host) });
   const cancel = defineTool({ name: 'cancel_alarm', description: descriptions.cancel, parameters: {}, output: text, execute: async () => cancelAlarm.call(host) });
-  return [planNext, reachOut, check, cancel] as const;
+  return [planNext, reachOut, check, cancel, look];
 }
