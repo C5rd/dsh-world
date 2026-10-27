@@ -84,6 +84,13 @@ export const Config = z.object({
         quietHours: z.object({ start: z.string().default('23:00'), end: z.string().default('08:00') }).default({ start: '23:00', end: '08:00' }),
       }).default({ checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, failureLimit: 3, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } }),
     }).default({ enabled: false, dryRun: false, policy: { checkIntervalMs: 5 * 60_000, idleThresholdMs: 30 * 60_000, minIntervalMs: 3 * 3600_000, maxPerDay: 3, maxCallsPerDay: 12, failureLimit: 3, sendProbability: 1, quietHours: { start: '23:00', end: '08:00' } } }),
+    // 阳台：给这台机器上别的程序留的一条线。口令空着就由插件自己生成一条并存在世界目录里。
+    bridge: z.object({
+      port: z.number().default(3210),
+      token: z.string().default(''),
+      title: z.string().default('阳台'),
+      contextMessages: z.number().default(6),
+    }).default({ port: 3210, token: '', title: '阳台', contextMessages: 6 }),
   }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
@@ -154,6 +161,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const unregisterQq = webServer.register(
       qqRoute(config.allowedHosts, doors, () => qqNative?.status() ?? null, patch => {
         if (!qqNative) return null;
+        if (patch.bridge) return qqNative.setBridge(patch.bridge);
         if (patch.proactive) return qqNative.setProactive(patch.proactive);
         return qqNative.setAutoReply(patch.autoReply === true);
       }),
@@ -215,6 +223,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                     contextMessages: q.contextMessages ?? 6,
                     groupTrigger: q.groupTrigger ?? 'mention',
                     groupKeywords: q.groupKeywords ?? [],
+                    bridge: {
+                      port: q.bridge?.port ?? 3210,
+                      token: q.bridge?.token ?? '',
+                      title: q.bridge?.title ?? '阳台',
+                      contextMessages: q.bridge?.contextMessages ?? 6,
+                    },
                     bindHomeSession: q.bindHomeSession ?? 'owner',
                     proactive: { enabled: q.proactive?.enabled ?? false, dryRun: q.proactive?.dryRun ?? false, policy: q.proactive?.policy ?? {} },
                   };

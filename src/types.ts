@@ -42,6 +42,8 @@ export interface WorldConfig {
     groupKeywords?: string[];
     /** SnowLuma 装在哪；空着就靠猜（D:\SnowLuma、C:\SnowLuma、~/SnowLuma）。 */
     snowlumaHome?: string;
+    /** 阳台：让这台机器上别的程序能跟家里说话（一行一条 JSON 的 WebSocket）。port 为 0 就不开。 */
+    bridge?: { port?: number; token?: string; title?: string; contextMessages?: number };
     /** 她会不会自己先开口；policy 是给「明天敲细节」留的口子，字段都对得上 proactive.ts。 */
     proactive?: { enabled?: boolean; dryRun?: boolean; policy?: Partial<QqProactivePolicy> } };
   /** With `wechat`, run the Windows adapter for as long as the module runs; naming both here is the standing permission for it to send (`--allow-send`). */

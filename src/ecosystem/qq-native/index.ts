@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
@@ -6,6 +7,7 @@ import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../share
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
+import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
 import { createQqProactive, DEFAULT_QQ_PROACTIVE_POLICY, type QqProactive, type QqProactivePolicy, type QqProactiveStatus } from './proactive.ts';
 
 /** The largest single message we accept from QQ; anything longer is cut before it reaches her. */
@@ -62,6 +64,8 @@ export interface QqNativeConfig {
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 她会不会自己先开口。`enabled` 关着时 policy 里的数字都不看。 */
   proactive: { enabled: boolean; dryRun: boolean; policy: Partial<QqProactivePolicy> };
+  /** 阳台：让这台机器上别的程序能跟家里说话的那条线。`port` 为 0 就整块不开。 */
+  bridge: { port: number; token: string; title: string; contextMessages: number };
 }
 
 export interface QqNativeStatus {
@@ -77,6 +81,8 @@ export interface QqNativeStatus {
   lastError: string | null;
   sent: number;
   failed: number;
+  /** 阳台那条线现在什么样（没开就是 null）。 */
+  bridge: BridgeStatus | null;
   /** 到了通道、但不在白名单里被挡下的条数。 */
   blocked: number;
   /** 最近一次被白名单挡下的时刻。 */
@@ -132,6 +138,7 @@ export function createQqNativeModule(deps: {
   let lastSelfId = '';
   let proactive: QqProactive | undefined;
   let client: QqTransport | undefined;
+  let nativeBridge: NativeBridge | undefined;
   let stopped = false;
   // 面板要的那几个数自己记：传输层只交出一个 getState()，不带计数。
   const stats: { sent: number; failed: number; blocked: number; lastEventAt: string | null; lastBlockedAt: string | null; lastError: string | null } = {
@@ -139,14 +146,14 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  let overrides: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } } = {};
+  let overrides: { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean }; bridge?: { port?: number } } = {};
   let overridesRead = false;
   function readOverrides(): void {
     if (overridesRead) return;
     overridesRead = true;
     const file = deps.stateFile;
     if (!file) return;
-    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }; } catch { overrides = {}; }
+    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean }; bridge?: { port?: number } }; } catch { overrides = {}; }
   }
   function writeOverrides(): void {
     const file = deps.stateFile;
@@ -160,10 +167,13 @@ export function createQqNativeModule(deps: {
     const proactive = overrides.proactive
       ? { ...base.proactive, ...(overrides.proactive.enabled === undefined ? {} : { enabled: overrides.proactive.enabled }), ...(overrides.proactive.dryRun === undefined ? {} : { dryRun: overrides.proactive.dryRun }) }
       : base.proactive;
+    // 面板上改过端口就以面板为准；其余字段还是配置里那套。
+    const bridge = overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port };
     return {
       ...base,
       ...(overrides.autoReply === undefined ? {} : { autoReply: overrides.autoReply }),
       proactive,
+      bridge,
     };
   };
 
@@ -342,6 +352,30 @@ export function createQqNativeModule(deps: {
       return answer.text;
     }
 
+
+  /**
+   * 阳台：给机器上别的程序留的一条线。
+   *
+   * 和 QQ 那条完全分开 —— 它是外面递话进来，不是 QQ 消息。一条线一间屋子（会话键里带着
+   * `qq-bridge`），所以它跟她别的会话互不打扰。口令落在世界目录（qq-bridge.json），
+   * 重启 DSH 对面那份配置不用改。
+   */
+  function startBridge(config: QqNativeConfig): void {
+    if (nativeBridge || !config.bridge.port) return;
+    nativeBridge = createNativeBridge({
+      ctx: deps.ctx,
+      session: identity => deps.home(identity),
+      config: () => {
+        const live = settings().bridge;
+        return { port: live.port, token: live.token, title: live.title, contextMessages: live.contextMessages };
+      },
+      worldDir: deps.stateFile ? dirname(deps.stateFile) : process.cwd(),
+      script: join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'qq-line.js'),
+      log: (message: string) => deps.logger.info(message),
+    });
+    void nativeBridge.start().catch((error: unknown) => deps.logger.error('阳台没能开起来', error));
+  }
+
   return {
     status(): QqNativeStatus {
       const config = settings();
@@ -353,6 +387,7 @@ export function createQqNativeModule(deps: {
         allowGroups: config.allowGroups.length,
         autoReply: config.autoReply,
         bindHomeSession: config.bindHomeSession,
+        bridge: nativeBridge?.status() ?? null,
         groupTrigger: config.groupTrigger,
         conversations: contexts.size,
         answering: answering.size,
@@ -370,6 +405,14 @@ export function createQqNativeModule(deps: {
      *
      * 当场生效 —— 打开就地起引擎，关掉就地停，不指望谁去重载插件。
      */
+    /** 面板上改阳台的端口：当场关掉重开那条线（0 就是关）。 */
+    setBridge(patch: { port?: number }): QqNativeStatus {
+      if (patch.port !== undefined) { overrides.bridge = { port: patch.port }; writeOverrides(); }
+      nativeBridge?.stop();
+      nativeBridge = undefined;
+      startBridge(settings());
+      return this.status();
+    },
     setProactive(patch: { enabled?: boolean; dryRun?: boolean }): QqNativeStatus {
       readOverrides();
       const next = { ...(overrides.proactive ?? {}) };
@@ -421,6 +464,7 @@ export function createQqNativeModule(deps: {
       });
       client = bridge;
       startProactive(config);
+      startBridge(config);
       bridge.start().catch((error: unknown) => {
         stats.lastError = error instanceof Error ? error.message : String(error);
         deps.logger.warn('QQ 原生通道首次连接失败：', stats.lastError);
@@ -431,6 +475,7 @@ export function createQqNativeModule(deps: {
       stopped = true;
       home.stop();
       proactive?.stop();
+      nativeBridge?.stop(); nativeBridge = undefined;
       proactive = undefined;
       void client?.stop();
       client = undefined;

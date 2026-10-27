@@ -9,8 +9,9 @@ import type { ConsoleDoors } from './panel.ts';
  * Read:  GET  /dsh-world/qq/native    her own OneBot channel: is it connected, what has it seen, is it replying
  *        GET  /dsh-world/qq/console   SnowLuma's console address, with a session token already traded for the
  *                                     panel password
- * Write: POST /dsh-world/qq/native    { autoReply?, proactive?: { enabled?, dryRun? } } the channel's switches;
- *                                     the proactive pair starts or stops the asking engine on the spot
+ * Write: POST /dsh-world/qq/native    { autoReply?, proactive?: { enabled?, dryRun? }, bridge?: { port? } } the
+ *                                     channel's switches; the proactive pair starts or stops the asking engine on
+ *                                     the spot, and a new bridge port restarts the balcony on the spot
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
  *
@@ -36,7 +37,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
 }
 
 /** What the panel may change about her own channel: replying, and the asking engine behind it. */
-export interface NativePatch { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean } }
+export interface NativePatch { autoReply?: boolean; proactive?: { enabled?: boolean; dryRun?: boolean }; bridge?: { port?: number } }
 type SetNative = (patch: NativePatch) => unknown;
 
 async function write(doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: SetNative): Promise<JsonResult | undefined> {
@@ -61,7 +62,16 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (next.enabled === undefined && next.dryRun === undefined) return bad('proactive 里至少要给 enabled 或 dryRun');
         patch.proactive = next;
       }
-      if (patch.autoReply === undefined && patch.proactive === undefined) return bad('autoReply 或 proactive 至少要给一个');
+      // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
+      const rawBridge = body?.bridge;
+      if (rawBridge !== undefined) {
+        if (typeof rawBridge !== 'object' || rawBridge === null || Array.isArray(rawBridge)) return bad('bridge 要是一个对象');
+        const port = (rawBridge as Record<string, unknown>).port;
+        if (port === undefined) return bad('bridge 里要给 port');
+        if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
+        patch.bridge = { port };
+      }
+      if (patch.autoReply === undefined && patch.proactive === undefined && patch.bridge === undefined) return bad('autoReply、proactive、bridge 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {

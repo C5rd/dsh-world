@@ -12,6 +12,8 @@ import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
 import { DEFAULT_QQ_PROACTIVE_POLICY } from '../src/ecosystem/qq-native/proactive.ts';
 import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
+import { createNativeBridge } from '../src/ecosystem/qq-native/native-bridge.ts';
+import { WebSocket } from 'ws';
 import { speakerIdentity } from '../src/ecosystem/shared/identity.ts';
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
@@ -57,6 +59,8 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   groupTrigger: 'mention',
   groupKeywords: [],
   proactive: { enabled: false, dryRun: false, policy: {} },
+  // 阳台默认关着（端口 0）：绝大多数用例不该顺手起一个服务器。
+  bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 },
   ...over,
 });
 
@@ -305,4 +309,66 @@ test('她回过的话记成她自己说的：下一轮的上下文里那几句�
 
   assert.equal(injected.length, 1, '第二条进群消息带上了上下文');
   assert.match(injected[0], /"role":"assistant"/, '她说过的那句是 assistant，不是对方说的');
+});
+
+test('阳台：外面递一句话进来，她把原话吐回那条线；口令不对连不上', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('听见了，这条线是通的。'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('outside'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const dir = mkdtempSync(join(tmpdir(), 'qq-bridge-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const port = 13210 + Math.floor(Math.random() * 200);
+  const token = 'secret-token-0123456789';
+  const bridge = createNativeBridge({
+    ctx,
+    session: async () => agent,
+    config: () => ({ port, token, title: '阳台', contextMessages: 4 }),
+    worldDir: dir,
+    script: 'qq-line.js',
+    log: () => {},
+  });
+  await bridge.start();
+  cleanup.push(() => bridge.stop());
+
+  // 口令不对：hello 递上去也不该被留下。
+  const rejected = new WebSocket(`ws://127.0.0.1:${port}`);
+  const kicked = await new Promise<boolean>(resolve => {
+    rejected.on('open', () => rejected.send(JSON.stringify({ kind: 'hello', threadId: 'x', token: 'nope' })));
+    rejected.on('close', () => resolve(true));
+    setTimeout(() => resolve(false), 3_000);
+  });
+  assert.equal(kicked, true, '口令不对该被请出去');
+  assert.equal(turns, 0, '没进门就不该花一轮');
+
+  // 口令对：递一句话，她把这一轮的原话吐回来。
+  const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`);
+  const frames: Array<Record<string, unknown>> = [];
+  ws.on('message', data => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  await new Promise<void>(resolve => {
+    ws.on('open', () => { ws.send(JSON.stringify({ kind: 'message', threadId: 'line-1', text: '外面有人问，你在吗', from: '外面' })); resolve(); });
+  });
+  await settle(2_000);
+
+  assert.equal(turns, 1, '递进来的一句话该花一轮');
+  const reply = frames.find(frame => frame.kind === 'reply');
+  assert.ok(reply, `该收到一条 reply，实际收到 ${JSON.stringify(frames)}`);
+  assert.equal(reply.text, '听见了，这条线是通的。');
+  const status = bridge.status();
+  assert.equal(status.received, 1);
+  assert.equal(status.relayed, 1);
+  assert.equal(status.spoken, 1);
+
+  // kind 缺省也算一句话（只会写 {"text":"…"} 的程序太多）；重复 hello 不该有任何反应。
+  const before = turns;
+  ws.send(JSON.stringify({ threadId: 'line-1', text: '再说一句，这次没写 kind', from: '外面' }));
+  ws.send(JSON.stringify({ kind: 'hello', threadId: 'line-1', token }));
+  await settle(2_000);
+  assert.equal(turns, before + 1, 'kind 缺省也该被当成一句话');
+  assert.equal(frames.filter(frame => frame.kind === 'error').length, 0, 'hello 不该被当成一句话、退回"text 是空的"');
+  assert.equal(bridge.status().received, 2, '两句话都该记上账（hello 不算）');
+  assert.deepEqual(bridge.status().threads, ['line-1'], '线名该进上下文表');
+  assert.deepEqual(status.threads, ['line-1']);
+  assert.equal(status.serving, true);
+  assert.match(status.line, /DSH_QQ_BRIDGE_TOKEN=/);
+  ws.close();
 });

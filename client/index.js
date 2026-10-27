@@ -372,6 +372,11 @@ window.__ModuleLoader__.load({
           if (props.onSaved) props.onSaved()
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
+      function copyLine(text) {
+        if (!text) { setMsg('这条命令还没生出来'); return }
+        if (!navigator.clipboard) { setMsg('这个浏览器不给复制，自己选上面那行'); return }
+        navigator.clipboard.writeText(text).then(function () { setMsg('命令已复制') }, function () { setMsg('复制失败，自己选上面那行') })
+      }
       return h(Card, { title: 'QQ', delay: 240 }, [
         props.native ? (function (n) {
           if (!n) return h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开')
@@ -411,6 +416,21 @@ window.__ModuleLoader__.load({
                 onChange: function (e) { flipNative(null, { dryRun: e.target.checked }) } }),
               h('span', { key: 't' }, ' 演练模式（判而不做，不问她也不发）'),
             ]),
+          ])
+        })(props.native),
+        (function (n) {
+          if (!n) return null
+          var b = n.bridge
+          if (!b) return h('div', { key: 'nb', className: 'dw-muted' }, '阳台：没装（这条线没起来）')
+          return h('div', { key: 'nb' }, [
+            h('div', { key: 'l', className: 'dw-muted' },
+              h('span', { className: b.serving ? 'dw-ok' : 'dw-muted' }, b.serving ? '● 阳台开着 ' + (b.url || '') : '● 阳台关着'),
+              ' · ' + ((b.lines || 0) ? '连着 ' + b.lines + ' 条线' : '还没人敲门')
+                + ' · 收了 ' + (b.received || 0) + ' 句、回了 ' + (b.relayed || 0) + ' 句、她开口 ' + (b.spoken || 0) + ' 次'),
+            b.lastError ? h('div', { key: 'e', className: 'dw-bad' }, ' · ' + b.lastError) : null,
+            h('div', { key: 'c', className: 'dw-muted', style: { wordBreak: 'break-all', fontSize: 12 } }, b.line || ''),
+            h('div', { key: 'y', className: 'dw-setting' },
+              h('button', { className: 'dw-btn', disabled: busy, onClick: function () { copyLine(b.line) } }, '复制这条命令')),
           ])
         })(props.native),
         h('div', { key: 'k', className: 'dw-setting' },

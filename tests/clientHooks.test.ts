@@ -88,6 +88,11 @@ const filled = {
     enabled: true, connected: true, url: 'ws://127.0.0.1:3003', allowPrivate: 1, allowGroups: 1, autoReply: true,
     bindHomeSession: 'none', groupTrigger: 'mention', conversations: 2, answering: 0, sent: 3, failed: 0,
     blocked: 2, lastBlockedAt: '2026-10-26T10:05:00.000Z', lastEventAt: '2026-10-26T10:00:00.000Z', lastError: null,
+    bridge: {
+      serving: true, port: 3210, url: 'ws://127.0.0.1:3210', token: 'ab'.repeat(16),
+      line: 'DSH_QQ_BRIDGE_URL=ws://127.0.0.1:3210 DSH_QQ_BRIDGE_TOKEN=ab node qq-line.js 阳台 line-1',
+      lines: 1, threads: ['line-1'], received: 2, relayed: 2, spoken: 0, lastAt: null, lastError: null, quiet: [],
+    },
     proactive: {
       enabled: true, dryRun: true, policy: { idleThresholdMs: 1800000 },
       today: { dayKey: '2026-10-26', sent: 0, calls: 1 }, lastActivityAt: 0, lastProactiveAt: 0,
