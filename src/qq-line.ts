@@ -37,7 +37,9 @@ function log(message: string): void {
 }
 
 function toBridge(frame: Record<string, unknown>): void {
-  const line = JSON.stringify({ ...frame, threadId });
+  // 对面把 kind 缺省的帧也算一句话，但补上更省事：它那边的上下文表靠 kind==='message' 记账。
+  const shaped = frame.kind === undefined && typeof frame.text === 'string' ? { ...frame, kind: 'message' } : frame;
+  const line = JSON.stringify({ ...shaped, threadId });
   if (ready && socket?.readyState === WebSocket.OPEN) socket.send(line);
   else waiting.push(line);
 }

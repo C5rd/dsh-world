@@ -350,7 +350,10 @@ test('阳台：外面递一句话进来，她把原话吐回那条线；口令�
   await settle(2_000);
 
   assert.equal(turns, 1, '递进来的一句话该花一轮');
-  const reply = frames.find(frame => frame.kind === 'reply');
+  const replies = frames.filter(frame => frame.kind === 'reply');
+  assert.equal(replies[0]?.hold, true, '收下的那一刻该先回一条 hold，别让门外干等着');
+  assert.equal(replies[0]?.text, '');
+  const reply = replies.find(frame => frame.text !== '');
   assert.ok(reply, `该收到一条 reply，实际收到 ${JSON.stringify(frames)}`);
   assert.equal(reply.text, '听见了，这条线是通的。');
   const status = bridge.status();
@@ -371,4 +374,60 @@ test('阳台：外面递一句话进来，她把原话吐回那条线；口令�
   assert.equal(status.serving, true);
   assert.match(status.line, /DSH_QQ_BRIDGE_TOKEN=/);
   ws.close();
+});
+
+
+test('阳台：口令写在 URL 里时，对面再发 hello 也收得到 ready', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯。'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('outside2'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const dir = mkdtempSync(join(tmpdir(), 'qq-bridge-ready-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const port = 13460 + Math.floor(Math.random() * 200);
+  const token = 'secret-token-ready-0123';
+  const bridge = createNativeBridge({
+    ctx, session: async () => agent,
+    config: () => ({ port, token, title: '阳台', contextMessages: 4 }),
+    worldDir: dir, script: 'qq-line.js', log: () => {},
+  });
+  await bridge.start();
+  cleanup.push(() => bridge.stop());
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`);
+  const frames: Array<Record<string, unknown>> = [];
+  ws.on('message', data => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  await new Promise<void>(resolve => {
+    ws.on('open', () => { ws.send(JSON.stringify({ kind: 'hello', threadId: 'line-9', token, from: '外面' })); resolve(); });
+  });
+  await settle(1_200);
+  assert.ok(frames.some(frame => frame.kind === 'ready'), `该收到 ready，实际 ${JSON.stringify(frames)}`);
+  assert.equal(frames.filter(frame => frame.kind === 'error').length, 0, 'hello 不该被退回"text 是空的"');
+  assert.equal(bridge.status().received, 0, 'hello 不是一句话，不该记账');
+  ws.close();
+});
+
+test('阳台：线走了以后她说的话记成 dropped，不再混进 spoken', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('这句递不出去了。'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('outside3'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const dir = mkdtempSync(join(tmpdir(), 'qq-bridge-drop-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const port = 13660 + Math.floor(Math.random() * 200);
+  const token = 'secret-token-dropped-01';
+  const bridge = createNativeBridge({
+    ctx, session: async () => agent,
+    config: () => ({ port, token, title: '阳台', contextMessages: 4 }),
+    worldDir: dir, script: 'qq-line.js', log: () => {},
+  });
+  await bridge.start();
+  cleanup.push(() => bridge.stop());
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`);
+  await new Promise<void>(resolve => { ws.on('open', () => resolve()); });
+  ws.send(JSON.stringify({ kind: 'message', threadId: 'line-gone', text: '说完这句我就撤', from: '外面' }));
+  ws.close();
+  await settle(3_000);
+  const status = bridge.status();
+  assert.equal(status.received, 1);
+  assert.equal(status.relayed, 1);
+  assert.equal(status.spoken, 0, '线都走了，不该算"说出去了"');
+  assert.equal(status.dropped, 1, '没递到要单独记一笔');
 });

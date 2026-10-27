@@ -58,7 +58,9 @@ export interface BridgeStatus {
   threads: string[];
   received: number;
   relayed: number;
+  /** 她说出口、那条线却已经走了（socket 不是 OPEN），没递到的次数。 */
   spoken: number;
+  dropped: number;
   lastAt: string | null;
   lastError: string | null;
   quiet: { threadId: string; until: string }[];
@@ -94,6 +96,7 @@ export function createNativeBridge(deps: {
   let received = 0;
   let relayed = 0;
   let spoken = 0;
+  let dropped = 0;
   let lastAt: string | null = null;
   let lastError: string | null = null;
 
@@ -131,12 +134,14 @@ export function createNativeBridge(deps: {
     });
   }
 
-  function send(ws: WebSocket, frame: Record<string, unknown>): void {
-    if (ws.readyState !== WebSocket.OPEN) return;
+  function send(ws: WebSocket, frame: Record<string, unknown>): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false;
     try {
       ws.send(JSON.stringify(frame));
+      return true;
     } catch (error) {
       deps.log(`阳台往回递的时候没成：${String(error)}`);
+      return false;
     }
   }
 
@@ -248,13 +253,16 @@ export function createNativeBridge(deps: {
     // kind 缺省也算「一句话」：对面很可能只会写 {"text":"…"}，不该因为少一个字段就把它当空气。
     if (kind === '' || kind === 'message') remember(threadId, from, text);
     relayed += 1;
+    // 一条新线第一次说话，那间屋子要从零搭上下文（快照、人设、回忆），实测比 200 秒长。
+    // 先给对面一个「收下了、她在想」，否则门外分不出「她在想」和「她根本没收到」。
+    send(ws, { kind: 'reply', threadId, text: '', hold: true });
     enqueue(threadId, async () => {
       const said = await oneTrip(threadId, text || '（门外没写什么）', from, kind === 'ring');
       if (said.quiet) quietUntil.set(threadId, Date.now() + QUIET_AFTER_SILENCE_MS);
       if (said.words) {
         remember(threadId, '她', said.words);
-        spoken += 1;
-        send(ws, { kind: 'reply', threadId, text: said.words, ...(said.hold ? { hold: true } : {}) });
+        if (send(ws, { kind: 'reply', threadId, text: said.words, ...(said.hold ? { hold: true } : {}) })) spoken += 1;
+        else dropped += 1;
       } else {
         send(ws, { kind: 'reply', threadId, text: '', ...(said.hold || said.quiet ? { hold: true } : {}) });
       }
@@ -283,6 +291,12 @@ export function createNativeBridge(deps: {
           let frame: Frame;
           try { frame = JSON.parse(String(data)) as Frame; }
           catch { send(ws, { kind: 'error', message: '一行一条 JSON' }); return; }
+          // 口令写在 URL 里时 greeted 一上来就是 true，对面（qq-line.js 就是）还会再发一条 hello ——
+          // 那条不该落进 handle() 被当成空句子，而该照握手回一句 ready。
+          if (greeted && authorised && frame.kind === 'hello') {
+            send(ws, { kind: 'ready', threadId: typeof frame.threadId === 'string' ? frame.threadId : '', sessionId: '' });
+            return;
+          }
           if (!greeted) {
             const claimed = typeof frame.token === 'string' ? frame.token : '';
             if (frame.kind !== 'hello' || !claimed || !sameToken(claimed)) {
@@ -322,7 +336,7 @@ export function createNativeBridge(deps: {
         line: port ? bridgeLine(port, token, deps.script) : '',
         lines: lines.size,
         threads: [...contexts.keys()],
-        received, relayed, spoken, lastAt, lastError,
+        received, relayed, spoken, dropped, lastAt, lastError,
         quiet: [...quietUntil].map(([threadId, until]) => ({ threadId, until: new Date(until).toISOString() })),
       };
     },
