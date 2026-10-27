@@ -41,7 +41,7 @@ DSH 设置里的「世界控制台」：
 - **人设**：分层写她是谁：名字、她是谁、性格、说话方式、愿景、补充，旁边实时预览她读到的样子。
 - **世界提示词**：你想对她说的话，以及她的世界的说明。
 - **概览与记录**：她此刻在做什么、下个闹钟、近期记忆有多少轮、今天花了多少；还有活动记录、日记和压缩记录。
-- **接入开关**：配置里启用了微信（`wechat: true`）或 QQ（`qqBridgeDir`）后，概览里有一张「接入」卡片，各有一个开关，立即生效、无需重启，状态记在 `world.json`。微信开着才注册 `wechat_chats`、`wechat_send`、`wechat_delivery` 并拉起适配器（配了 `wechatAdapter` 时），关掉就撤掉；QQ 开着才由插件管理 qq-bridge（巡检、会话绑定、QQ 卡），关掉只停止管理，不会停掉已在运行的桥。默认都是开。
+- **接入开关**：配置里启用了微信（`wechat: true`）或 QQ（`qqNative.enabled: true`）后，概览里有一张「接入」卡片，各有一个开关，立即生效、无需重启，状态记在 `world.json`。微信开着才注册 `wechat_chats`、`wechat_send`、`wechat_delivery` 并拉起适配器（配了 `wechatAdapter` 时），关掉就撤掉；QQ 开着才连上那条 OneBot 通道、显示 QQ 卡，关掉就断开这条连接、把卡收起来。默认都是开。
 - **归档范围**：默认 `workspace`，归档家所在工作区的普通会话，包含独立微信群会话；`home` 仅当前家会话。保存范围后提示重启，重启前沿用原范围。启动时分页回扫所选范围内的会话日志，按消息实际时间重选最近配置轮数，下次请求前替换旧记忆块；没有时间过期。旧归档保留，范围外记录不再注入。旧配置 `world` 迁为 `workspace`。
 
 > **人设留空时的默认行为**：控制台人设全部留空时，默认沿用宿主或当前预设在系统提示词中配置的人设，插件不额外注入自定义人设。控制台不会自动读取并回填系统人设，因此界面留空不代表她原有的人设丢失。
@@ -78,24 +78,25 @@ dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你�
 
 > **微信首次接入与升级**：开启插件的微信开关本身不会启动 Windows 适配器；可手动启动，或在配置里写 `wechatAdapter` 让插件随微信模块启动和停止它（见适配器 README）。无论哪种，都需要配套适配器并完成账号及聊天目标注册后，微信工具才可使用。这套原生桥不依赖 `dsh-plugin-weixin` 或 iLink。升级插件和适配器后，两者均需重启，不能让旧适配器进程继续运行新版协议；保留原配置、游标和回执。
 
-> **QQ 目前只绑定 qq-bridge**：QQ 模块不是自己实现收发，而是管理外部的 [qq-bridge](https://github.com/Derpyu520/qq-bridge) 进程（配合 SnowLuma 登录 QQ），除它之外不支持别的 QQ 实现。插件依赖它的 HTTP 接口（`/api/status`、`/api/restart`、`/api/stop`、`/api/sessions`、`/api/socialV2/proactive`）和配置、状态文件（`config.json` 里的 `dsh.baseUrl`、`socialV2.bindHomeSession`，`state/` 下的令牌与运行意图）；桥改了这些，插件需要跟着改。真停桥（`/api/stop`）需要较新的桥版本，旧版只能重启，控制台会如实提示。桥的代码、许可和 SnowLuma 的使用条款（包括不得以自动化脚本部署 SnowLuma）都在对方仓库，不随本插件分发，装法见 [INSTALL.md](INSTALL.md)。
+> **QQ 走插件自己那条原生通道**：插件直接连 SnowLuma 提供的 OneBot WebSocket，自己收、自己发（代码在 [`src/ecosystem/qq-native/`](src/ecosystem/qq-native/index.ts)），中间没有第二个进程，也不需要别的 QQ 实现。SnowLuma 负责登录 QQ 并对外提供 OneBot 的 HTTP／WS 服务；它按自己的 EULA 不许被自动化脚本部署，装法与参数怎么拿见 [INSTALL.md](INSTALL.md)。这条通道的配置都在 profile 的 `cordis.patch.yml` 里（见下文「设置」），控制台上的临时开关存在世界目录的 `qq-native.json`，主动开口的账存在 `qq-proactive.json`。
 
-> **QQ 的记忆与开关**：QQ 消息由桥通过会话接口送进家里，插件没有为它做微信那样的渠道身份。按桥的 `bindHomeSession` 设置，主人的私聊用她的家会话，因此按普通家会话归档；每个群各用桥自己装的 `qq-chat` 预设会话，不属于本世界的预设，**不进归档，也不进记忆块**，归档里也分不出 QQ 与桌面。控制台「接入」里的 QQ 开关只决定插件是否管理桥（巡检、会话绑定、QQ 卡）：关闭后不会停掉已在运行的桥，要停桥请在 QQ 卡上按「真停」。微信开关则会立即注册或撤掉 `wechat_chats`、`wechat_send`、`wechat_delivery`，并拉起或停止适配器。两个开关默认开，没在配置里启用的模块不能从控制台打开。
+> **QQ 的记忆与开关**：QQ 消息由这条通道送进家里，插件没有为它做微信那样的渠道身份。按 `bindHomeSession`（默认 `owner`），主人的私聊用她的家会话，因此按普通家会话归档；每个群各挂一个独立会话（标题形如 `QQ · <群名>`），挂在她的房间工作区下、用同一个 `agentPreset`——所以在默认的 `archiveScope: workspace` 下，**群里的对话和微信群一样会进归档、进记忆块**，归档里只有会话、没有渠道标记。写 `none` 时私聊也另建一个这样的独立会话。群里的消息默认只有被叫到才接话，其余只进本轮上下文、不开口也不花额度。控制台「接入」里的 QQ 开关决定这条通道连不连。微信开关则会立即注册或撤掉 `wechat_chats`、`wechat_send`、`wechat_delivery`，并拉起或停止适配器。两个开关默认开，没在配置里启用的模块不能从控制台打开。
 
-外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
+外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`qq-native/` 是插件自己连 OneBot 的那条 QQ 通道（`qq/` 里是与它配套的控制台接口和 SnowLuma 控制台那扇门）；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
 
 微信原生发送引擎单独适用非商业许可，详见该模块的许可说明。
 
 ### QQ
 
-装了 [qq-bridge](https://github.com/Derpyu520/qq-bridge) 并配上 `qqBridgeDir` 之后，控制台里会多一张 QQ 卡片：桥在不在跑、DSH 有没有连上、QQ 号在不在线、哪几个入口（群或私聊）绑到了哪个会话，一眼看到；拉起桥、停桥也在那儿按。没配 `qqBridgeDir` 的时候这一块整个不出现，行为跟以前一样。
+QQ 走插件自己那条原生通道：直接连 SnowLuma 开出来的 OneBot WebSocket，收文本、发文本，中途没有别的进程。代码在 [`src/ecosystem/qq-native/`](src/ecosystem/qq-native/index.ts)。
 
-插件每次启动都会把 DSH 当前的地址写回桥的 `config.json`（`dsh.baseUrl`）。原因是 DSH 每次重启都换端口，而桥没有别的地方知道新端口——地址旧了不会报错，只会静静连不上，看起来和桥本身挂掉一模一样。
+在 profile 的 `cordis.patch.yml` 里打开 `qqNative`、填上 WS 地址与 token、加上白名单之后，控制台里会多一张 QQ 卡片：连着哪个地址、收过几个会话、发过几条、挡下几条、会自己回还是只看不回、群规则，一眼看到；卡上还能直接拨「会自己回话 / 只看不回」和主动开口的两个开关，也能刷新、打开 SnowLuma 控制台。没配 `qqNative.enabled` 的时候这一块整个不出现，行为跟以前一样。
 
-桥还是那个独立进程，代码不在这里：插件只负责探活、拉起、停掉、绑定和报告，不复制它的逻辑。
+参数不对不会崩，只会连不上：卡上会把原因写在 `lastError` 里（比如 `WS 错误: Unexpected server response: 401`，说明填的是 HTTP 那份 token，该换成 WebSocket 那份）。QQ 卡只在通道启用、世界已经开始时出现。
 
-<img src="assets/qq-card.png" width="700" alt="世界控制台里的 QQ 卡：桥在跑、DSH 已连上、QQ 在线，下面是绑定的入口和拉起／停桥">
+**群里默认只接被叫到的**（`groupTrigger: mention`）：被 @、引用她刚说过的话、或文本命中 `groupKeywords` 才算叫她，其余消息只进本轮上下文，不开口也不花额度；写 `all` 就是每句都接，代价是群里每一条都会让她跑完一轮。`bindHomeSession` 决定谁和她的家会话共用一个入口，默认 `owner`。**主动开口**（`proactive`，默认关）让她自己隔一阵子找时机给主人发一句；规则、演练模式与每日额度见 [INSTALL.md](INSTALL.md)。
 
+卡上那个「打开 SnowLuma 控制台」的按钮，读 `snowlumaHome` 下 `config/runtime.json` 里的地址与端口，带着一次性登录票据打开系统浏览器——第一次要先填一次 SnowLuma 的面板密码，之后记在世界目录的 `panel.json` 里（权限 600），不用再输。
 
 ## 安装
 
@@ -142,10 +143,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-tool-free-c
     wechat: false                # 打开独立微信接口，需另行启动 Windows 适配器
     outlets: []                  # 接收她的话的本地程序，见文末
     allowedHosts: []             # 通过反向代理从局域网访问控制台时，放行的域名或 IP
-    qqBridgeDir: ''             # qq-bridge 所在的目录；留空就是不接 QQ
-    qqBridgePort: 3100          # 桥的控制台端口
-    qqBridgeNode: ''            # 用哪个 node 拉起桥，默认用当前进程那个
-    qqBridgeAutoStart: false    # 世界开始时顺手拉起桥；默认关，只在控制台里手动拉
+    qqNative:                    # 插件自己连 OneBot（原生通道）；不写这一块就是不接 QQ
+      enabled: false             # 打开通道：连上、控制台里出 QQ 卡
+      wsUrl: ws://127.0.0.1:3003 # OneBot 的 WS 服务地址（不是 HTTP 那个）
+      accessToken: ''            # OneBot WS 服务端自己的 token，与 HTTP 那份不是一码事
+      allowPrivate: []           # 谁能私聊她；留空 = 谁都不理
+      allowGroups: []            # 群白名单
+      autoReply: true            # false = 只看不回
+      contextMessages: 6         # 每轮带上最近的几条
+      groupTrigger: mention      # mention：@ 她／引用她／命中关键词才接；all：每句都接
+      groupKeywords: []          # groupTrigger: mention 时算「在叫她」的词
+      bindHomeSession: owner     # owner：主人私聊用家会话、群各自独立；all：都用；none：各建一个
+      snowlumaHome: ''           # SnowLuma 安装目录，控制台那扇门用它找 config/runtime.json
+      # proactive: { enabled: false, dryRun: true }   # 主动开口，默认关，规则见 INSTALL.md
 ```
 
 **改她的措辞**：世界提示词可以直接在控制台里改。闹钟响时、提前停下时、每日回顾时她收到的话，在世界目录里放一份 `alarm.md` 就能按段覆盖，段落名和可用的占位符见 `templates/alarm.md`。插件写给她的话一律用第一人称「我」，读起来是她自己的念头。
@@ -166,6 +176,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-tool-free-c
 | `activity/` | 她在家里用过的工具，只记录，不进记忆 |
 | `wechat.json` | 本机微信模块的地址、令牌和协议版本，不应公开 |
 | `wechat-outbox.sqlite` | 微信工具安排的发送队列和确认状态 |
+| `qq-native.json` | 控制台上 QQ 卡那几个开关的临时覆盖（会不会自己回话、主动开口、演练模式），盖在 profile 默认之上 |
+| `qq-proactive.json` | 主动开口的账：今天发过几条、问过几次、连续失败几回 |
+| `panel.json` | SnowLuma 控制台那扇门的登录票据，权限 600，不应公开 |
 
 备份时整个目录一起备份即可，最好先停止 DSH。
 
