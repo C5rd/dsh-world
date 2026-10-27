@@ -39,7 +39,8 @@ test('SnowLuma 的家：配置里给了就只认它；没给才去几个常见�
   assert.equal(discoverSnowlumaHome('', [wrong, nothing]), '');
 });
 
-test('面板密码记在她世界目录旁边，只有本机用户能读；空密码不算记过', () => {
+// 「只有本机用户能读」在 Windows 上是 ACL，在 Linux 上是 mode 位 —— 断言写的是前者。
+test('面板密码记在她世界目录旁边，只有本机用户能读；空密码不算记过', { skip: process.platform !== 'win32' }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'world-panel-'));
   const secrets = createPanelSecrets(dir);
   assert.equal(secrets.read(), undefined);

@@ -6,7 +6,7 @@
 
 ```bash
 docker build -f docker/Dockerfile.test -t dsh-world-test .
-docker run --rm dsh-world-test
+docker run --rm dsh-world-test sh -lc 'cd /app && npm test -- $(ls tests/*.test.ts | grep -vE "qqNative\.test\.ts|qqSnowluma\.test\.ts|plugin\.test\.ts")'
 ```
 
 拉不动 docker hub 的地方，换基础镜像源就行，不用改文件：
@@ -17,18 +17,25 @@ docker build -f docker/Dockerfile.test \
   -t dsh-world-test .
 ```
 
-里面跑的是 `npm run typecheck && npm run build && npm test`（`npm test` = `node --experimental-strip-types --test`），宿主与会话都是假的，不需要 DSH，也不需要模型。
+里面跑的是 `npm run typecheck && npm run build`，然后**可移植的那部分测试**。宿主与会话都是假的，不需要 DSH，也不需要模型。
 
-### 已知在 Linux 上会失败的东西
+### 在 Linux 上跑什么、不跑什么
 
-| 失败 | 原因 | 性质 |
-| --- | --- | --- |
-| `tests/plugin.test.ts`、`tests/qqNative.test.ts`、`tests/qqSnowluma.test.ts` 整份 | `@snowluma/sdk@1.14.22` 的 `dist/index.js` 里 `import './client/api-client'` 在 Linux 上 `ERR_MODULE_NOT_FOUND`（大小写敏感） | **上游包的问题**，但它决定了「QQ 通道在 Linux 上载入不了」 |
-| `enable script changes only the compaction plugin…` | 镜像里没有 PowerShell，而那条测的是 `scripts/enable-tool-free-compaction.ps1` | Windows-only |
-| `file tools are outside only when a path leaves the room` 等 3 条 | 断言的是 Windows 路径语义（盘符、UNC、`..`、大小写） | Windows-only |
-| `面板密码记在她世界目录旁边，只有本机用户能读…` | 断言的是 Windows 的 ACL 语义「只有本机用户能读」 | Windows-only |
+**整份不跑的**（构建时按文件名排除）：
 
-结论：**这一版是 Windows 插件**。上面这些要么是命里注定（PowerShell、ACL），要么依赖一个只在 Windows 上装得好的上游包。
+| 文件 | 为什么 |
+| --- | --- |
+| `tests/plugin.test.ts`、`tests/qqNative.test.ts`、`tests/qqSnowluma.test.ts` | 它们 import 到 `src/...`，而那条链上有 `@snowluma/sdk`；那个包的 `dist/index.js` 里 `import './client/api-client'` 在大小写敏感的文件系统上 `ERR_MODULE_NOT_FOUND`。**上游包的问题，但它意味着 QQ 通道在 Linux 上载入不了** |
+
+**跑、但里面有几条标了 `process.platform !== 'win32'` 跳过**：
+
+| 断言 | 为什么只对 Windows 成立 |
+| --- | --- |
+| `enable script changes only the compaction plugin…` | 跑的是 `scripts/enable-tool-free-compaction.ps1`，要 PowerShell |
+| `file tools are outside only when a path leaves the room`、`path boundaries: the room itself, case, dot-dot names, UNC`、`nested and extra path keys are inspected` | 断言的是 Windows 路径语义：盘符、UNC、反斜杠分段、大小写不敏感 |
+| `面板密码记在她世界目录旁边，只有本机用户能读…` | 「只有本机用户能读」在 Windows 上是 ACL，在 Linux 上是 mode 位 |
+
+**结论：这一版是 Windows 插件。** 上面这些要么命里注定（PowerShell、ACL），要么依赖一个只在 Windows 上装得好的上游包；标出来是为了让容器里的红色只代表真回归。
 
 ## 二、带宿主的一体化冒烟（`Dockerfile.smoke`）
 
