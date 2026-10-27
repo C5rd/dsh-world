@@ -46,9 +46,21 @@ docker build -f docker/Dockerfile.smoke --build-arg BASE_IMAGE=node:22-slim -t d
 docker run --rm dsh-world-smoke
 ```
 
-它做的是：`npm pack` 出 `dsh-world-0.6.0.tgz` → `dsh plugin --profile qa add <tgz>` → 用 `docker/container.yml` 那一层覆盖把 `qqNative` 打开并指向容器里的假 OneBot → `dsh web --profile qa` 起一个**没有界面**的宿主 → `docker/smoke.mjs` 等端口、喂一条假群消息、断言 `/dsh-world/qq/native` 收到、`/dsh-world/console/snapshot` 里有 `native`、阳台能连上。
+它做的是：`npm pack` 出 `dsh-world-0.6.0.tgz` → `dsh plugin --profile web add <tgz>`（装进 `dsh web` 用的那个 profile）→ 用 `docker/container.yml` 那一层覆盖把 `qqNative` 打开并指向容器里的假 OneBot → `dsh web --patch … --port 3355 --no-open` 起一个没有界面的宿主 → `docker/smoke.mjs` 等端口、喂一条假群消息、断言 `/dsh-world/qq/native` 收到、`/dsh-world/console/snapshot` 里有 `native`、再把阳台开起来连一下。
 
-能证明的是「装上、起得来、收得到、开得出会话」；**证明不了「她回一句话」** —— 那要模型凭据。
+**它现在在 Linux 上跑出来的结果是**（这条结论比断言本身值钱）：
+
+```
+dsh-world (dsh-world): failed to import: Error [ERR_MODULE_NOT_FOUND]:
+  Cannot find module '/dsh-home/profiles/web/node_modules/@snowluma/sdk/dist/client/api-client'
+  imported from '…/@snowluma/sdk/dist/index.js'
+dsh: warning: 1 entry did not activate
+dsh web: http://127.0.0.1:3355/?token=…
+```
+
+也就是说：**装得上（pnpm 装进 profile 了）、宿主起得来（`dsh web` 在 3355 上应答）、插件载入就断**。后面那些「收得到、开得出会话」的断言在 Linux 上根本没机会跑到。等 `@snowluma/sdk` 修好那一天，这条流程会自己变成全绿 —— 它没有骗人，只是如实报告。
+
+**这条冒烟永远证明不了「她回一句话」** —— 那要模型凭据。
 
 ## 三、这台机器的两个坑（记下来省得再踩）
 
