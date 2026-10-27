@@ -69,11 +69,11 @@ export const Config = z.object({
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
     // 阳台：给这台机器上别的程序留的一条线。口令空着就由插件自己生成一条并存在世界目录里。
     bridge: z.object({
-      port: z.number().default(3210),
+      port: z.number().default(0),
       token: z.string().default(''),
       title: z.string().default('阳台'),
       contextMessages: z.number().default(6),
-    }).default({ port: 3210, token: '', title: '阳台', contextMessages: 6 }),
+    }).default({ port: 0, token: '', title: '阳台', contextMessages: 6 }),
   }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
@@ -206,7 +206,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                     groupTrigger: q.groupTrigger ?? 'mention',
                     groupKeywords: q.groupKeywords ?? [],
                     bridge: {
-                      port: q.bridge?.port ?? 3210,
+                      port: q.bridge?.port ?? 0,
                       token: q.bridge?.token ?? '',
                       title: q.bridge?.title ?? '阳台',
                       contextMessages: q.bridge?.contextMessages ?? 6,

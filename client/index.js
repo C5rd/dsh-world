@@ -361,6 +361,14 @@ window.__ModuleLoader__.load({
           return null
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
+      // 阳台：拨端口就是开关（0 是关）。
+      function flipBridge(port) {
+        setBusy(true); setMsg('')
+        qqPost('native', { bridge: { port: port } }).then(function () {
+          setMsg('')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
       function flipNative(autoReply) {
         setBusy(true); setMsg('')
         qqPost('native', { autoReply: autoReply }).then(function () {
@@ -393,7 +401,10 @@ window.__ModuleLoader__.load({
         (function (n) {
           if (!n) return null
           var b = n.bridge
-          if (!b) return h('div', { key: 'nb', className: 'dw-muted' }, '阳台：没装（这条线没起来）')
+          if (!b) return h('div', { key: 'nb', className: 'dw-setting' }, [
+            h('span', { key: 's', className: 'dw-muted' }, '阳台：关着（要用就在这儿打开）'),
+            h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: function () { flipBridge(3210) } }, '开这条线（3210）'),
+          ])
           return h('div', { key: 'nb' }, [
             h('div', { key: 'l', className: 'dw-muted' },
               h('span', { className: b.serving ? 'dw-ok' : 'dw-muted' }, b.serving ? '● 阳台开着 ' + (b.url || '') : '● 阳台关着'),
@@ -401,8 +412,10 @@ window.__ModuleLoader__.load({
                 + ' · 收了 ' + (b.received || 0) + ' 句、回了 ' + (b.relayed || 0) + ' 句、她开口 ' + (b.spoken || 0) + ' 次'),
             b.lastError ? h('div', { key: 'e', className: 'dw-bad' }, ' · ' + b.lastError) : null,
             h('div', { key: 'c', className: 'dw-muted', style: { wordBreak: 'break-all', fontSize: 12 } }, b.line || ''),
-            h('div', { key: 'y', className: 'dw-setting' },
-              h('button', { className: 'dw-btn', disabled: busy, onClick: function () { copyLine(b.line) } }, '复制这条命令')),
+            h('div', { key: 'y', className: 'dw-setting' }, [
+              h('button', { key: 'c', className: 'dw-btn', disabled: busy, onClick: function () { copyLine(b.line) } }, '复制这条命令'),
+              h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: function () { flipBridge(0) } }, '关掉这条线'),
+            ]),
           ])
         })(props.native),
         h('div', { key: 'k', className: 'dw-setting' },
