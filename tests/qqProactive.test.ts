@@ -26,7 +26,7 @@ const MINUTE = 60_000;
 /** 一个空状态；传进来的字段覆盖它。 */
 function stateAt(over: Partial<QqProactiveState> = {}): QqProactiveState {
   return {
-    dayKey: '', sentToday: 0, callsToday: 0,
+    dayKey: '', sentToday: 0, callsToday: 0, failures: 0,
     lastActivityAt: 0, lastProactiveAt: 0, selfId: '', events: [],
     ...over,
   };
@@ -381,6 +381,60 @@ test('noteActivity：一分钟内重复说话只落一次盘，换天或换账�
     const tomorrow = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, 9).getTime();
     engine.noteActivity(tomorrow, '999');
     assert.equal(read().dayKey, dayKeyOf(tomorrow), '换天立刻落');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('decide：连着失败够了就当天停，0 表示不管，跨天自动不算', () => {
+  const now = at(14);
+  const base = { policy: POLICY, now, target: '3475994805', roll: () => 0.5 };
+  const quietSince = { lastActivityAt: now - 2 * HOUR };
+  assert.equal(decide({ ...base, state: stateAt({ dayKey: dayKeyOf(now), ...quietSince }) }).kind, 'go', '平时该走');
+
+  const failed = stateAt({ dayKey: dayKeyOf(now), ...quietSince, failures: 3 });
+  const decision = decide({ ...base, state: failed });
+  assert.equal(decision.kind, 'failed-too-often');
+  assert.equal(decision.failures, 3, '告诉面板撞了几次');
+
+  assert.equal(decide({ ...base, policy: { ...POLICY, failureLimit: 0 }, state: failed }).kind, 'go', '0 = 不管');
+
+  // 跨天：昨天撞满的账不该今天还拦着（decide 自己按天算，不等 rollDay）
+  const stale = stateAt({ dayKey: dayKeyOf(now - 24 * HOUR), ...quietSince, failures: 3 });
+  assert.equal(decide({ ...base, state: stale }).kind, 'go', '跨天照常');
+});
+
+test('tick：失败累加、问通了清零、够了就停一整天、第二天复活', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'qq-proactive-fail-'));
+  try {
+    const file = path.join(dir, 's.json');
+    let asks = 0;
+    let broken = true;
+    let clock = at(14);
+    const engine = createQqProactive({
+      policy: { ...POLICY, failureLimit: 2, checkIntervalMs: HOUR },
+      file, log: () => {},
+      generate: async () => { asks += 1; if (broken) throw new Error('账户没钱'); return '[SILENT]'; },
+      deliver: async () => {},
+      target: () => '3475994805', selfId: () => '2039693365',
+      now: () => clock,
+    });
+
+    await engine.tick();
+    assert.equal(engine.status().today.failures, 1, '第一次失败记一笔');
+    await engine.tick();
+    assert.equal(engine.status().today.failures, 2, '第二次累加');
+    await engine.tick();
+    assert.equal(asks, 2, '到限了就不再问她');
+    assert.equal(engine.status().lastDecision?.kind, 'failed-too-often');
+    assert.equal(engine.status().today.calls, 2, '被拦住的那次不算调用');
+
+    // 第二天：照常问；这次问通了 → 失败清零
+    clock = at(14, 0, 2);
+    broken = false;
+    const decision = await engine.tick();
+    assert.equal(decision.kind, 'go', '第二天复活');
+    assert.equal(engine.status().today.failures, 0, '问通了就清零（她说 [SILENT] 也算通）');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

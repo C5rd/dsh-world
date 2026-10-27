@@ -36,6 +36,8 @@ export interface QqProactivePolicy {
   maxPerDay: number;
   /** At most this many times a day she is asked (a "no thanks" still costs a call). */
   maxCallsPerDay: number;
+  /** 连着失败到这个数，当天就不再问了（免得账户没钱时每 5 分钟撞一次）。0 表示不管。 */
+  failureLimit: number;
   quietHours: QqQuietHours;
   /** A coin flip between "she decided to speak" and actually asking her. 0 turns it off. */
   sendProbability: number;
@@ -47,6 +49,7 @@ export const DEFAULT_QQ_PROACTIVE_POLICY: QqProactivePolicy = {
   minIntervalMs: 3 * 3600_000,
   maxPerDay: 3,
   maxCallsPerDay: 12,
+  failureLimit: 3,
   quietHours: { start: '23:00', end: '08:00' },
   sendProbability: 1,
 };
@@ -58,6 +61,7 @@ export type QqProactiveDecision =
   | { kind: 'still-talking'; idleMs: number }
   | { kind: 'quota'; sentToday: number; maxPerDay: number }
   | { kind: 'no-call-budget'; callsToday: number; maxCallsPerDay: number }
+  | { kind: 'failed-too-often'; failures: number; limit: number }
   | { kind: 'dice'; roll: number }
   | { kind: 'no-target'; note: string };
 
@@ -66,6 +70,8 @@ export interface QqProactiveState {
   dayKey: string;
   sentToday: number;
   callsToday: number;
+  /** 连续问了没问通几次（她那边答不出来 / 发不出去）。同一天里累加，换天清零。 */
+  failures: number;
   lastActivityAt: number;
   lastProactiveAt: number;
   /** Which account she is. Learned from the first message that arrives, then remembered. */
@@ -75,7 +81,7 @@ export interface QqProactiveState {
 }
 
 const EMPTY_STATE: QqProactiveState = {
-  dayKey: '', sentToday: 0, callsToday: 0,
+  dayKey: '', sentToday: 0, callsToday: 0, failures: 0,
   lastActivityAt: 0, lastProactiveAt: 0, selfId: '', events: [],
 };
 const EVENT_LIMIT = 60;
@@ -126,6 +132,12 @@ export function decide(input: {
   const sentToday = state.dayKey === day ? state.sentToday : 0;
   const callsToday = state.dayKey === day ? state.callsToday : 0;
   if (sentToday >= policy.maxPerDay) return { kind: 'quota', sentToday, maxPerDay: policy.maxPerDay };
+  // 连着撞了几次墙就别再撞：白天剩下的时间里安静待着，第二天照常。
+  // 和 sent/calls 一样按天算 —— 不然跨过零点它还停着（rollDay 在 decide 之后才跑）。
+  const failures = state.dayKey === day ? (state.failures ?? 0) : 0;
+  if (policy.failureLimit > 0 && failures >= policy.failureLimit) {
+    return { kind: 'failed-too-often', failures, limit: policy.failureLimit };
+  }
   const lastActivity = state.lastActivityAt;
   if (lastActivity && now - lastActivity < policy.idleThresholdMs) {
     return { kind: 'still-talking', idleMs: now - lastActivity };
@@ -154,7 +166,7 @@ export function decide(input: {
 /** 新的一天，两个计数都从零开始；同一天里什么都不动。 */
 export function rollDay(state: QqProactiveState, at: number): void {
   const day = dayKeyOf(at);
-  if (state.dayKey !== day) { state.dayKey = day; state.sentToday = 0; state.callsToday = 0; }
+  if (state.dayKey !== day) { state.dayKey = day; state.sentToday = 0; state.callsToday = 0; state.failures = 0; }
 }
 
 export function createQqProactiveState(file: string) {
@@ -167,6 +179,7 @@ export function createQqProactiveState(file: string) {
         dayKey: typeof value.dayKey === 'string' ? value.dayKey : '',
         sentToday: Number(value.sentToday) || 0,
         callsToday: Number(value.callsToday) || 0,
+        failures: Number(value.failures) || 0,
         lastActivityAt: Number(value.lastActivityAt) || 0,
         lastProactiveAt: Number(value.lastProactiveAt) || 0,
         selfId: typeof value.selfId === 'string' ? value.selfId : '',
@@ -190,7 +203,7 @@ export interface QqProactiveStatus {
   /** 演练中：判而不做。 */
   dryRun: boolean;
   policy: QqProactivePolicy;
-  today: { dayKey: string; sent: number; calls: number };
+  today: { dayKey: string; sent: number; calls: number; failures: number };
   lastActivityAt: number;
   lastProactiveAt: number;
   lastDecision: QqProactiveDecision | null;
@@ -252,6 +265,7 @@ export function createQqProactive(deps: {
       state.callsToday += 1;
       try {
         const text = (await deps.generate(decision.note)).trim();
+        state.failures = 0;   // 问通了就算连上，哪怕她这轮选择不说
         if (!text || SILENT.test(text)) {
           state.events.unshift({ at, kind: 'silent', note: '她这轮选择不说' });
           deps.log('主动联系：她这轮选择不说');
@@ -263,6 +277,7 @@ export function createQqProactive(deps: {
           deps.log(`主动联系：发了 ${text.length} 个字`);
         }
       } catch (error) {
+        state.failures = (state.failures ?? 0) + 1;
         state.events.unshift({ at, kind: 'failed', note: String(error instanceof Error ? error.message : error).slice(0, 160) });
         deps.log(`主动联系失败：${error instanceof Error ? error.message : String(error)}`);
       }
@@ -311,7 +326,12 @@ export function createQqProactive(deps: {
         enabled,
         dryRun: deps.dryRun?.() === true,
         policy: deps.policy,
-        today: { dayKey: day, sent: state.dayKey === day ? state.sentToday : 0, calls: state.dayKey === day ? state.callsToday : 0 },
+        today: {
+          dayKey: day,
+          sent: state.dayKey === day ? state.sentToday : 0,
+          calls: state.dayKey === day ? state.callsToday : 0,
+          failures: state.dayKey === day ? (state.failures ?? 0) : 0,
+        },
         lastActivityAt: state.lastActivityAt,
         lastProactiveAt: state.lastProactiveAt,
         lastDecision,

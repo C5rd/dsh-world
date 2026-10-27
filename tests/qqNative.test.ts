@@ -11,6 +11,8 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
 import { DEFAULT_QQ_PROACTIVE_POLICY } from '../src/ecosystem/qq-native/proactive.ts';
+import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
+import { speakerIdentity } from '../src/ecosystem/shared/identity.ts';
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -250,4 +252,57 @@ test('不在白名单的消息：到过、被挡下，状态里分得出来', as
   assert.equal(status.blocked, 1, '但要记一笔：这条确实到过通道');
   assert.ok(status.lastBlockedAt, '时间戳也留着');
   assert.ok(status.lastEventAt, 'lastEventAt 同时会动 —— 两个数一起看才知道是「送到了但被挡」');
+});
+
+test('她自己想说话时，会带上那条会话最近的几句 —— 私聊也带得过去', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('在的。'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const identity = speakerIdentity({
+    channel: 'qq', accountId: '2039693365', speakerId: 'qq:3475994805',
+    conversationId: '3475994805', conversationType: 'private',
+  });
+  const injected: string[] = [];
+  ctx.on('session/event', (_session, event) => {
+    if (event.type === 'user/message' && (event.data.source ?? {}).kind === 'dsh-world-channel-context') {
+      injected.push(String((event.data.content?.[0] as { text?: string } | undefined)?.text ?? ''));
+    }
+  });
+  const home = createQqHome({ ctx, home: async () => agent });
+  cleanup.push(home.stop);
+
+  const answer = await home.ask(
+    '【此刻没人跟你说话】这条不是谁发来的',
+    identity,
+    [{ id: '1', occurredAt: new Date().toISOString(), text: '在吗', identity }],
+    { nudge: true },
+  );
+
+  assert.equal(answer.text, '在的。', '私聊 + nudge 带上下文不再抛 Invalid group context');
+  assert.equal(injected.length, 1, '确实把上下文注进去了');
+  assert.match(injected[0], /在吗/);
+});
+
+test('她回过的话记成她自己说的：下一轮的上下文里那几句是 assistant', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('我在。'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const injected: string[] = [];
+  ctx.on('session/event', (_session, event) => {
+    if (event.type === 'user/message' && (event.data.source ?? {}).kind === 'dsh-world-channel-context') {
+      injected.push(String((event.data.content?.[0] as { text?: string } | undefined)?.text ?? ''));
+    }
+  });
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  const at = { kind: 'group' as const, groupId: '681528723', segments: [{ type: 'at', data: { qq: '2039693365' } }] };
+  wire.emitGroup(incoming({ ...at, messageId: '8101', text: '@大肥鱼 在吗' }));
+  await settle(600);
+  assert.equal(wire.sent.length, 1, '叫到她了，她回了一句');
+
+  wire.emitGroup(incoming({ ...at, messageId: '8102', text: '@大肥鱼 刚才聊到哪了' }));
+  await settle(600);
+
+  assert.equal(injected.length, 1, '第二条进群消息带上了上下文');
+  assert.match(injected[0], /"role":"assistant"/, '她说过的那句是 assistant，不是对方说的');
 });

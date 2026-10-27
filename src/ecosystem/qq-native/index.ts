@@ -275,7 +275,16 @@ export function createQqNativeModule(deps: {
     answering.add(key);
     try {
       const answer = await home.ask(text, identity, context);
-      pushContext(key, { id: answer.id, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
+      // 她那句话记成她自己说的：不然后面拿这段上下文问她「刚才聊到哪了」时，
+      // 她说过的会被当成对方说的（home.ts 里按 speakerId 判 role 为 assistant）。
+      const herIdentity = speakerIdentity({
+        channel: 'qq',
+        accountId: identity.accountId,
+        speakerId: `qq:${identity.accountId}`,
+        conversationId: identity.conversationId,
+        conversationType: identity.conversationType,
+      });
+      pushContext(key, { id: answer.id, occurredAt: new Date().toISOString(), text: answer.text, identity: herIdentity }, config.contextMessages);
       const reply = answer.text.trim();
       if (!reply) return;
       if (isGroup) rememberSent((await client?.sendGroup(conversationId, reply))?.messageId);
@@ -327,7 +336,9 @@ export function createQqNativeModule(deps: {
         conversationId: target,
         conversationType: 'private',
       });
-      const answer = await home.ask(`${NUDGE_PROMPT}${hint ? `\n（此刻的情况：${hint}）` : ''}`, identity, [], { nudge: true });
+      // 带上那条会话最近的几句：不然她只能凭「安静了多久」即兴开口。
+      const context = contexts.get(conversationKey(identity)) ?? [];
+      const answer = await home.ask(`${NUDGE_PROMPT}${hint ? `\n（此刻的情况：${hint}）` : ''}`, identity, context, { nudge: true });
       return answer.text;
     }
 

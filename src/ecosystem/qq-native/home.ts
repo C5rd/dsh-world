@@ -33,9 +33,12 @@ export function createQqHome(deps: {
     if (stopped) return Promise.reject(new Error('QQ module is stopped'));
     if (queued >= 16) return Promise.reject(new Error('QQ request queue is full'));
     const identity = speakerIdentity(suppliedIdentity);
-    // 只有群聊才谈得上「上下文」：私聊进的是她自己的家会话，那边本来就有全部历史，
-    // 而 channelContext 只认群（私聊传进去必抛 Invalid group context）。
-    const context = !options?.nudge && identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : [];
+    // 群聊的上下文要过 channelContext 校一遍（它只认群，私聊传进去必抛 Invalid group context）。
+    // 「她自己想说话」那条路不一样：她要主动找的人往往正在私聊里，所以那条路直接用调用方给的
+    // 那份记录 —— 它是进通道时按同一条规矩攒的（channelContext 的校验在这儿会把私聊挡掉）。
+    const context = options?.nudge
+      ? (suppliedContext ?? [])
+      : (identity.conversationType === 'group' ? channelContext(suppliedContext, identity) : []);
     queued++;
     const result = pending.then(async () => {
       if (stopped) throw new Error('QQ module is stopped');
