@@ -57,24 +57,23 @@ test('the client registers the world console settings section under the bundle i
   for (const persona of [{ 名字: '小鱼', 她是谁: '一条鱼。', 性格: '嘴硬', 说话方式: '', 愿景: '自由', 补充: '别复述' }, { 名字: '', 她是谁: '', 性格: '', 说话方式: '短句', 愿景: '', 补充: '' }]) {
     assert.equal(tested.renderPersona(persona), renderPersona(persona), 'the console previews exactly what she reads');
   }
-  // QQ 卡：巡检状态要能看见，四种停/坏的情形说得明白。
-  const bridge = { running: true, port: 3100, dsh: true, connected: true, accountOnline: true, sessions: [], faults: [] };
-  const healthy = text(react.createElement(tested.Qq, { qq: { ...bridge, supervisor: { state: 'healthy', consecutiveFailures: 0, restartsInWindow: 0, backoffMs: 0, dshReady: true } } }));
-  assert.match(healthy, /巡检 正常/);
-  assert.match(healthy, /连续失败 0 次/);
-  assert.doesNotMatch(healthy, /退避/, '没在退避就别写退避时长');
-  assert.match(healthy, /停桥（不再自动拉起）/, '真停那扇门要在界面上');
-  const supDegraded = text(react.createElement(tested.Qq, { qq: { ...bridge, supervisor: { state: 'degraded', consecutiveFailures: 2, restartsInWindow: 1, backoffMs: 0, dshReady: false } } }));
-  assert.match(supDegraded, /巡检 探测失败/);
-  assert.match(supDegraded, /DSH 那边没就绪/);
-  const failed = text(react.createElement(tested.Qq, { qq: { ...bridge, running: false, supervisor: { state: 'failed', consecutiveFailures: 3, restartsInWindow: 5, backoffMs: 0, lastError: '10 分钟内已自动拉起 5 次，停止重试（修好再手动启动）' } } }));
-  assert.match(failed, /巡检 放弃自动恢复/);
-  assert.match(failed, /停止重试/);
-  assert.match(failed, /● 没在跑/);
-  const stopped = text(react.createElement(tested.Qq, { qq: { ...bridge, running: false, supervisor: { state: 'stopped', consecutiveFailures: 0, restartsInWindow: 0, backoffMs: 0 } } }));
-  assert.match(stopped, /巡检 已停（不会自动拉起）/);
-  const noSupervisor = text(react.createElement(tested.Qq, { qq: bridge }));
-  assert.doesNotMatch(noSupervisor, /巡检/, '没有巡检数据就不该凭空画一行');
+  // QQ 卡：外面那个 qq-bridge 拆掉以后，这张卡只剩她自己那条原生通道 —— 状态、两个勾、SnowLuma 的门。
+  const native = { connected: true, url: 'ws://127.0.0.1:3003', conversations: 2, sent: 3, failed: 0, blocked: 2, autoReply: true, lastError: null };
+  const card = text(react.createElement(tested.Qq, { native }));
+  assert.match(card, /她自己连着 ws:\/\/127\.0\.0\.1:3003/);
+  assert.match(card, /收 2 个会话 · 发 3 条 · 挡下 2 · 会自己回/);
+  assert.match(card, /打开 SnowLuma 控制台/);
+  assert.doesNotMatch(card, /QQ Bridge/, '那扇门跟着桥一起没了，界面上别再留一个点了就出错的按钮');
+  assert.doesNotMatch(card, /巡检|桥在跑|拉起桥|停桥/, '桥的那几行不该再出现');
+  const muted = text(react.createElement(tested.Qq, { native: { ...native, autoReply: false, blocked: 0 } }));
+  assert.match(muted, /只看不回/);
+  assert.doesNotMatch(muted, /挡下/, '没被挡过就别写这个数');
+  const offline = text(react.createElement(tested.Qq, { native: { ...native, connected: false, lastError: 'WS 错误：Unexpected server response: 401' } }));
+  assert.match(offline, /她自己的通道没连上/);
+  assert.match(offline, /401/);
+  const nothing = text(react.createElement(tested.Qq, { native: null }));
+  assert.match(nothing, /她自己的通道：没开/);
+  assert.doesNotMatch(nothing, /收 0 个会话/, '没开的时候不该画一行零');
 });
 
 test('the module switches say what is on, what is off and what the config does not provide', async () => {

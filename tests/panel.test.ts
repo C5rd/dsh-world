@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bridgeConsoleUrl, createConsoleDoors, createPanelSecrets, findSnowlumaConsole, loginSnowluma, readSnowlumaHome, PANEL_FILE } from '../src/ecosystem/qq/panel.ts';
+import { createConsoleDoors, createPanelSecrets, discoverSnowlumaHome, findSnowlumaConsole, loginSnowluma, openInBrowser, PANEL_FILE } from '../src/ecosystem/qq/panel.ts';
 
 function tempHome(runtime?: unknown): string {
   const home = mkdtempSync(join(tmpdir(), 'snowluma-home-'));
@@ -27,7 +27,20 @@ test('绑在所有网卡上的控制台仍然从本机按名字访问；没有�
   assert.equal(findSnowlumaConsole(empty), undefined);
 });
 
-test('面板密码记在她世界目录旁边，只有本机用户能读；空密码不算记过', () => {
+test('SnowLuma 的家：配置里给了就只认它；没给才去几个常见位置里找（桥的配置已经不在了）', () => {
+  const home = tempHome({ webuiPort: 5099 });
+  assert.equal(discoverSnowlumaHome(home), home);
+  // 配置指了一个空目录，就算别处真有也不换 —— 指哪儿是哪儿。
+  const wrong = mkdtempSync(join(tmpdir(), 'wrong-home-'));
+  assert.equal(discoverSnowlumaHome(wrong, [home]), '');
+  // 没配置时按候选表找，只认「里面有 config/runtime.json」的。
+  assert.equal(discoverSnowlumaHome('', [wrong, home]), home);
+  const nothing = mkdtempSync(join(tmpdir(), 'nothing-'));
+  assert.equal(discoverSnowlumaHome('', [wrong, nothing]), '');
+});
+
+// 「只有本机用户能读」在 Windows 上是 ACL，在 Linux 上是 mode 位 —— 断言写的是前者。
+test('面板密码记在她世界目录旁边，只有本机用户能读；空密码不算记过', { skip: process.platform !== 'win32' }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'world-panel-'));
   const secrets = createPanelSecrets(dir);
   assert.equal(secrets.read(), undefined);
@@ -53,33 +66,24 @@ test('密码错、被限流、连不上，三种都说得清', async () => {
   assert.match(dead.error, /连不上 SnowLuma 控制台/);
 });
 
-test('qq-bridge 的控制台令牌是文件，读得到就能开，读不到就说还没启动过', () => {
-  const bridge = mkdtempSync(join(tmpdir(), 'bridge-'));
-  assert.match((bridgeConsoleUrl(bridge, 3100) as { error: string }).error, /没有控制台令牌/);
-  mkdirSync(join(bridge, 'state'), { recursive: true });
-  writeFileSync(join(bridge, 'state', 'console-token'), 'tok-123\n');
-  assert.deepEqual(bridgeConsoleUrl(bridge, 3100), { url: 'http://127.0.0.1:3100/?token=tok-123' });
-});
-
-test('桥的配置里本来就写着 SnowLuma 在哪，不用再问一遍', () => {
-  const bridge = mkdtempSync(join(tmpdir(), 'bridge-cfg-'));
-  assert.equal(readSnowlumaHome(bridge), '');
-  writeFileSync(join(bridge, 'config.json'), JSON.stringify({ snowluma: { homeDir: 'D:\\SnowLuma' } }));
-  assert.equal(readSnowlumaHome(bridge), 'D:\\SnowLuma');
-  // 老位置的写法也认。
-  writeFileSync(join(bridge, 'config.json'), JSON.stringify({ dsh: { snowluma: { homeDir: 'E:\\SnowLuma' } } }));
-  assert.equal(readSnowlumaHome(bridge), 'E:\\SnowLuma');
-});
-
-test('两扇门：SnowLuma 没密码时先要密码，记住之后才开门；密码错了不留下', async () => {
+test('只剩一扇门：SnowLuma 没密码时先要密码，记住之后才开门；指不到家也说清楚', async () => {
   const world = mkdtempSync(join(tmpdir(), 'world-doors-'));
-  const bridge = mkdtempSync(join(tmpdir(), 'bridge-doors-'));
-  mkdirSync(join(bridge, 'state'), { recursive: true });
-  writeFileSync(join(bridge, 'state', 'console-token'), 'tok-9');
   const home = tempHome({ webuiPort: 5099, webuiHost: '127.0.0.1' });
-  const doors = createConsoleDoors({ worldDir: world, bridgeDir: bridge, port: 3100, snowlumaHome: home });
-  assert.deepEqual(doors.qq(), { url: 'http://127.0.0.1:3100/?token=tok-9' });
+  const doors = createConsoleDoors({ worldDir: world, snowlumaHome: home });
   assert.equal((await doors.snowluma() as { needs?: string }).needs, 'password');
   const secrets = createPanelSecrets(world);
   assert.equal(secrets.read(), undefined);
+  const nowhere = createConsoleDoors({ worldDir: world, snowlumaHome: mkdtempSync(join(tmpdir(), 'empty-home-')) });
+  const missing = await nowhere.snowluma() as { error?: string };
+  assert.match(String(missing.error), /没找到 SnowLuma 的控制台配置/);
+  assert.match(String((await nowhere.open('snowluma') as { error: string }).error), /没找到 SnowLuma/);
+});
+
+test('打开用的是桌面自己的浏览器（两个控制台都不许被框；现在只剩 SnowLuma 那个）', () => {
+  const seen: string[] = [];
+  const fake = ((command: string, args: string[]) => { seen.push(`${command} ${args.join(' ')}`); return { unref() {} }; }) as unknown as typeof import('node:child_process').spawn;
+  const opened = openInBrowser('http://127.0.0.1:5099/?token=abc', fake);
+  assert.deepEqual(opened, { opened: true });
+  assert.equal(seen.length, 1);
+  assert.match(seen[0] ?? '', /127\.0\.0\.1:5099/);
 });

@@ -339,34 +339,14 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是私聊图片等待后续图片或文字的秒数。与共享记忆的 200 轮无关。'),
         msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
     }
-    /** QQ：外面的 qq-bridge 进程，在这里看状态、拉起、停掉；入口绑到哪个会话也在这里看。 */
-    // 巡检的状态词和颜色。键是 src/ecosystem/qq/supervisor.ts 的 SupervisorState。
-    var SUP_TONES = {
-      healthy: ['dw-ok', '正常'],
-      degraded: ['dw-bad', '探测失败'],
-      recovering: ['dw-bad', '正在拉起'],
-      starting: ['dw-muted', '启动中'],
-      stopped: ['dw-muted', '已停（不会自动拉起）'],
-      failed: ['dw-bad', '放弃自动恢复'],
-    }
-    function supTone(state) { return (SUP_TONES[state] || ['dw-muted', '未知'])[0] }
-    function supLabel(state) { return (SUP_TONES[state] || ['dw-muted', state || '未知'])[1] }
+    /** QQ：她自己那条 OneBot 通道（原生），以及 SnowLuma 控制台的入口。 */
     function Qq(props) {
-      var qq = props.qq || {}
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
-      var rows = list(qq.sessions)
-      function run(path) {
-        setBusy(true); setMsg('')
-        qqPost(path).then(function () {
-          setMsg('')
-          if (props.onSaved) props.onSaved()
-        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
-      }
       // 两个控制台都带 X-Frame-Options: DENY，塞不进 iframe，所以交给系统浏览器开。
       // 地址和令牌由宿主半侧现给（/dsh-world/qq/console），所以打开就是登录态。
       function openDoor(kind) {
-        var label = kind === 'snowluma' ? 'SnowLuma' : 'QQ Bridge'
+        var label = 'SnowLuma'
         setBusy(true); setMsg('')
         qqGet('console').then(function (res) {
           var door = res && res[kind]
@@ -381,33 +361,68 @@ window.__ModuleLoader__.load({
           return null
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
-      var faults = list(qq.faults)
-      var sup = qq.supervisor || null
+      // 阳台：拨端口就是开关（0 是关）。
+      function flipBridge(port) {
+        setBusy(true); setMsg('')
+        qqPost('native', { bridge: { port: port } }).then(function () {
+          setMsg('')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
+      function flipNative(autoReply) {
+        setBusy(true); setMsg('')
+        qqPost('native', { autoReply: autoReply }).then(function () {
+          setMsg('')
+          if (props.onSaved) props.onSaved()
+        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      }
+      function copyLine(text) {
+        if (!text) { setMsg('这条命令还没生出来'); return }
+        if (!navigator.clipboard) { setMsg('这个浏览器不给复制，自己选上面那行'); return }
+        navigator.clipboard.writeText(text).then(function () { setMsg('命令已复制') }, function () { setMsg('复制失败，自己选上面那行') })
+      }
       return h(Card, { title: 'QQ', delay: 240 }, [
-        h('div', { key: 's' }, h('span', { className: qq.running ? 'dw-ok' : 'dw-muted' }, qq.running ? '● 桥在跑' : '● 没在跑'),
-          h('span', { className: 'dw-muted' }, ' · 端口 ' + qq.port + (qq.mode ? ' · ' + qq.mode : ''))),
-        qq.running ? h('div', { key: 'c', className: 'dw-muted' },
-          'DSH ' + (qq.dsh ? '已连上' : '没连上') + ' · QQ ' + (qq.connected ? (qq.accountOnline ? '在线' : '已连接、号没上线') : '没连上') + (qq.lastPacketAgoMs === null || qq.lastPacketAgoMs === undefined ? '' : ' · 上次收包 ' + Math.round(qq.lastPacketAgoMs / 1000) + ' 秒前')) : null,
-        sup ? h('div', { key: 'p', className: 'dw-muted' },
-          h('span', { className: supTone(sup.state) }, '● 巡检 ' + supLabel(sup.state)),
-          ' · 连续失败 ' + (sup.consecutiveFailures || 0) + ' 次 · 10 分钟内已拉起 ' + (sup.restartsInWindow || 0) + ' 次',
-          sup.backoffMs ? ' · 退避 ' + Math.round(sup.backoffMs / 1000) + ' 秒' : '',
-          sup.dshReady === false ? ' · DSH 那边没就绪' : '') : null,
-        sup && sup.lastError ? h('div', { key: 'pe', className: 'dw-bad' }, '● ' + sup.lastError) : null,
-        h('div', { key: 'e', className: 'dw-trail' }, rows.length ? rows.map(function (r, i) {
-          return h('span', { key: i }, r.key + ' → ' + String(r.sessionId || '').replace(/^session-/, '').slice(0, 8))
-        }) : h('span', { className: 'dw-muted' }, '还没有入口绑到会话')),
+        props.native ? (function (n) {
+          if (!n) return h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开')
+          return h('div', { key: 'n' }, [
+            h('span', { key: 'a', className: n.connected ? 'dw-ok' : 'dw-muted' }, n.connected ? '● 她自己连着 ' + n.url : '● 她自己的通道没连上'),
+            h('span', { key: 'b', className: 'dw-muted' }, ' · 收 ' + (n.conversations || 0) + ' 个会话 · 发 ' + (n.sent || 0) + ' 条' + (n.failed ? ' · 失败 ' + n.failed : '') + (n.blocked ? ' · 挡下 ' + n.blocked : '') + (n.autoReply ? ' · 会自己回' : ' · 只看不回')),
+            n.lastError ? h('span', { key: 'c', className: 'dw-bad' }, ' · ' + n.lastError) : null,
+          ])
+        })(props.native) : h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开（配置里 qqNative.enabled）'),
+        (function (n) {
+          if (!n) return null
+          return h('label', { key: 'nt', className: 'dw-setting', style: { cursor: 'pointer' } }, [
+            h('input', { key: 'c', type: 'checkbox', checked: n.autoReply === true, disabled: busy,
+              onChange: function (e) { flipNative(e.target.checked) } }),
+            h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
+          ])
+        })(props.native),
+        (function (n) {
+          if (!n) return null
+          var b = n.bridge
+          if (!b) return h('div', { key: 'nb', className: 'dw-setting' }, [
+            h('span', { key: 's', className: 'dw-muted' }, '阳台：关着（要用就在这儿打开）'),
+            h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: function () { flipBridge(3210) } }, '开这条线（3210）'),
+          ])
+          return h('div', { key: 'nb' }, [
+            h('div', { key: 'l', className: 'dw-muted' },
+              h('span', { className: b.serving ? 'dw-ok' : 'dw-muted' }, b.serving ? '● 阳台开着 ' + (b.url || '') : '● 阳台关着'),
+              ' · ' + ((b.lines || 0) ? '连着 ' + b.lines + ' 条线' : '还没人敲门')
+                + ' · 收了 ' + (b.received || 0) + ' 句、回了 ' + (b.relayed || 0) + ' 句、她开口 ' + (b.spoken || 0) + ' 次'),
+            b.lastError ? h('div', { key: 'e', className: 'dw-bad' }, ' · ' + b.lastError) : null,
+            h('div', { key: 'c', className: 'dw-muted', style: { wordBreak: 'break-all', fontSize: 12 } }, b.line || ''),
+            h('div', { key: 'y', className: 'dw-setting' }, [
+              h('button', { key: 'c', className: 'dw-btn', disabled: busy, onClick: function () { copyLine(b.line) } }, '复制这条命令'),
+              h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: function () { flipBridge(0) } }, '关掉这条线'),
+            ]),
+          ])
+        })(props.native),
         h('div', { key: 'k', className: 'dw-setting' },
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台'),
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('qq') } }, '打开 QQ Bridge 控制台')),
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台')),
         h('div', { key: 'b', className: 'dw-setting' },
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('start') } }, busy ? '……' : '拉起桥'),
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('stop') } }, '重启'),
-          // 真停：桥记下 intent=stopped 且不拉接力进程，巡检看到 stopped 就不会再拉它起来。
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run('halt') } }, '停桥（不再自动拉起）'),
           h('button', { className: 'dw-btn', disabled: busy, onClick: function () { if (props.onSaved) props.onSaved() } }, '刷新')),
         msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
-        faults.length ? faults.map(function (f, i) { return h('div', { key: 'f' + i, className: 'dw-bad' }, '● ' + f) }) : null,
       ])
     }
     /**
@@ -460,7 +475,7 @@ window.__ModuleLoader__.load({
       }
       return h(Card, { title: '接入', delay: 270 },
         row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_send、wechat_delivery，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。'),
-        row('qq', 'QQ', m.qq, '由插件管理 qq-bridge：巡检、会话绑定、控制台 QQ 卡。关闭只停止管理，不会停掉已在运行的桥。', '插件不管理 QQ 桥，QQ 卡隐藏。开启后立即恢复。'),
+        row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和两个开关在 QQ 那张卡上。关闭就断开这条通道。', '插件不跑 QQ 通道，QQ 卡隐藏。开启后立即恢复。'),
         msg ? h('div', { className: 'dw-bad' }, msg) : null)
     }
     function Overview(props) {
@@ -491,7 +506,7 @@ window.__ModuleLoader__.load({
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null,
           snap.wechat ? h(Wechat, { wechat: snap.wechat, zone: zone, onSaved: props.refresh }) : null,
-          snap.qq ? h(Qq, { qq: snap.qq, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
+          snap.native ? h(Qq, { native: snap.native, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)
@@ -507,115 +522,8 @@ window.__ModuleLoader__.load({
     var num = function (v) { return typeof v === 'number' && isFinite(v) ? String(Math.round(v)) : '—' }
     var pct = function (a, b) { return b > 0 ? Math.round((a / b) * 100) + '%' : '—' }
 
-    /**
-     * 主动联系：她自己想说话的时候，花了多少钱、说成了几条、被规则拦下几条。
-     *
-     * 数据全部来自桥的 /api/socialV2/proactive（经 /dsh-world/qq/proactive 透出来），
-     * 这一页只读：开关在桥那边（config.json 的 socialV2.proactiveEngine）。
-     */
-    function Proactive() {
-      var s = useState(null), data = s[0], setData = s[1]
-      var e = useState(null), error = e[0], setError = e[1]
-      var s2 = useState(false), saving = s2[0], setSaving = s2[1]
-      var s3 = useState(null), saveError = s3[0], setSaveError = s3[1]
-      useEffect(function () {
-        var alive = true
-        function load() {
-          qqGet('proactive').then(function (d) {
-            if (!alive) return
-            setData(d); setError(null)
-          }, function (err) {
-            if (!alive) return
-            setData(null); setError(String((err && err.message) || err))
-          })
-        }
-        load()
-        var timer = setInterval(function () { if (document.visibilityState === 'visible') load() }, 15000)
-        return function () { alive = false; clearInterval(timer) }
-      }, [])
-      if (error) return h('div', { className: 'dw' }, h('div', { className: 'dw-muted' }, '读不到主动联系的统计：' + error))
-      if (!data) return h('div', { className: 'dw' }, h('div', { className: 'dw-muted' }, '读取中…'))
-      var today = data.today || {}, usage = data.usage || {}, policy = data.policy || {}
-      var series = Array.isArray(data.usageSeries) ? data.usageSeries : []
-      var reports = Array.isArray(data.reports) ? data.reports : []
-      var cap = policy.maxCallsPerDay
-      // 改开关：写进去以后立刻按新值画，不等 15 秒那一轮轮询。
-      function flip(patch) {
-        setSaving(true); setSaveError(null)
-        qqPost('proactive', patch).then(function () {
-          setData(Object.assign({}, data, patch)); setSaving(false)
-        }, function (err) {
-          setSaveError(String((err && err.message) || err)); setSaving(false)
-        })
-      }
-      function toggleRow(label, hint, on, key) {
-        return h('label', { style: { display: 'flex', alignItems: 'center', gap: 6, marginRight: 18, cursor: saving ? 'default' : 'pointer' } },
-          h('input', {
-            type: 'checkbox', checked: on === true, disabled: saving,
-            onChange: function (e) { var patch = {}; patch[key] = e.target.checked; flip(patch) }
-          }),
-          h('span', null, label),
-          h('span', { className: 'dw-muted', style: { fontSize: 12 } }, hint))
-      }
-      var flags = []
-      if (data.enabled !== true) flags.push('未启用')
-      if (data.dryRun !== false) flags.push('演练模式（不真的发）')
-      if (data.running !== true) flags.push('调度器没在跑')
-      return h('div', { className: 'dw' },
-        h('div', { className: 'dw-title' },
-          h('h2', null, '主动联系'),
-          h('div', { className: 'dw-state' },
-            h('i', { className: 'dw-dot' }),
-            data.enabled === true ? '开着' : '关着',
-            flags.length ? h('span', { className: 'dw-bad' }, ' · ' + flags.join(' · ')) : null)),
-        h('div', null,
-          h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 } },
-          toggleRow('主动联系', '关掉就不再自己开口', data.enabled, 'enabled'),
-          toggleRow('演练模式', '只判断、不真的发出去', data.dryRun, 'dryRun'),
-          saving ? h('span', { className: 'dw-muted' }, '保存中…') : null,
-          saveError ? h('span', { className: 'dw-bad' }, '没存上：' + saveError) : null),
-        h('div', { style: { marginBottom: 6 } }, '今天（' + (today.dayKey || '—') + '）'),
-          h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
-            h('tbody', null,
-              h('tr', null,
-                h('td', { style: cell }, '调用 AI'),
-                h('td', { style: cell }, num(today.calls) + (typeof cap === 'number' && cap > 0 ? ' / ' + cap : '')),
-                h('td', { style: cell }, typeof cap === 'number' && cap > 0 ? '用了 ' + pct(today.calls, cap) : '不限')),
-              h('tr', null,
-                h('td', { style: cell }, '主动消息'),
-                h('td', { style: cell }, num(today.messages)),
-                h('td', { style: cell }, '送出 ' + num(today.sent) + ' 条')),
-              h('tr', null,
-                h('td', { style: cell }, '被规则拦下'),
-                h('td', { style: cell }, num(today.suppressed)),
-                h('td', { style: cell }, '待处理 ' + num(today.pending))),
-              h('tr', null,
-                h('td', { style: cell }, '平均 token'),
-                h('td', { style: cell }, usage.sampled > 0 ? '入 ' + num(usage.avgInputTokens) + ' / 出 ' + num(usage.avgOutputTokens) : '未上报'),
-                h('td', { style: cell }, usage.sampled > 0 ? '样本 ' + usage.sampled + ' / ' + num(usage.calls) + ' 次' : 'provider 没给用量')))),
-        h('div', { style: { marginBottom: 6 } }, '近 7 天'),
-        h('table', { style: { borderCollapse: 'collapse', marginBottom: 14 } },
-          h('thead', null, h('tr', null,
-            ['日期', '调用', '平均入', '平均出', '主动消息'].map(function (t) { return h('th', { key: t, style: Object.assign({}, cell, { textAlign: 'left', color: 'inherit', opacity: 0.6 }) }, t) }))),
-          h('tbody', null, series.map(function (d) {
-            return h('tr', { key: d.dayKey },
-              h('td', { style: cell }, d.dayKey),
-              h('td', { style: cell }, num(d.calls)),
-              h('td', { style: cell }, d.sampled > 0 ? num(d.avgInputTokens) : '—'),
-              h('td', { style: cell }, d.sampled > 0 ? num(d.avgOutputTokens) : '—'),
-              h('td', { style: cell }, num(d.messages)))
-          }))),
-        h('div', { style: { marginBottom: 6 } }, '最近几次判断'),
-        reports.length === 0
-          ? h('div', { className: 'dw-muted' }, '还没有记录')
-          : h('div', null, reports.slice(0, 8).map(function (r, i) {
-            var blocked = Array.isArray(r.blocked) ? r.blocked.join(' / ') : ''
-            return h('div', { key: i, style: { padding: '3px 0', opacity: 0.85 } },
-              (r.decision || '—') + (blocked ? '（' + blocked + '）' : '') + (r.text ? '：' + r.text : ''))
-          }))))
-    }
 
-    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['proactive', '主动联系']]
+    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录']]
     /** 一份快照的画面；life 为 null（停着，或生活线没能启动）或缺了哪一块都不会崩。 */
     function View(props) {
       var snap = props.snap, error = props.error
@@ -644,8 +552,7 @@ window.__ModuleLoader__.load({
         tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : null,
         tab === 'prompt' ? h(PromptEditor) : null,
         tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
-        tab === 'proactive' ? h(Proactive, null) : null,
-        panel ? h(Panel, { kind: panel, onClose: function () { setPanel(null) } }) : null)
+          panel ? h(Panel, { kind: panel, onClose: function () { setPanel(null) } }) : null)
     }
 
     function Console() {
@@ -689,7 +596,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

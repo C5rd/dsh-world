@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.6.0 — 2026-10-27
+
+QQ 这条线整条换了：不再需要外部的 `qq-bridge` 进程，插件自己连 OneBot。
+
+- **原生 QQ 通道**（`src/ecosystem/qq-native/`）：插件直接用 WebSocket 连 SnowLuma，收群/私聊、问她、把回复原路发回去；一条会话一份上下文，群与私聊互不串。
+- **群里被叫到才接**：默认 `groupTrigger: 'mention'` —— 被 @、被引用她说过的消息、或命中 `groupKeywords` 才开口，其余只记上下文不烧一轮；`'all'` 是逃生口。
+- **状态能看清**：通道状态里分得开「消息根本没到」（`lastEventAt` 不动）和「到了但被白名单挡下」（`blocked` / `lastBlockedAt`），控制台 QQ 卡片上也有「· 挡下 N」。
+- **阳台**：本机别的程序可以从一条 WebSocket 跟她说上话（一条线一间屋子，口令落在世界目录的 `qq-bridge.json`）。`lib/qq-line.js` 是给对面用的小命令行程序。
+- **拆掉的东西**：`qq-bridge` 的拉起/停止/巡检/会话绑定/控制台入口与「主动开口」引擎全部移除，`qqBridgeDir` 等四个配置项不再存在；`/dsh-world/qq` 只剩 `/native`、`/console`、`/open`、`/panel-password` 四扇门，并且无条件注册（通道关着时 `/native` 回 `null`）。
+- 运行期依赖新增 `ws`。
+
 ## 0.5.7 — 2026-10-27
 
 本版增加 Windows x64 微信 4.1.15.56 的指定构建适配，保留 4.1.15.13，并补齐源码构建需要的直接依赖声明。

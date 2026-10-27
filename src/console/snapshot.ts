@@ -38,6 +38,8 @@ export interface SnapshotDeps {
   faults(): string[];
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
+  /** The OneBot channel she runs herself; null while it is off. */
+  native?(): unknown;
   /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
   qq?: () => Promise<unknown>;
 }
@@ -56,6 +58,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
     // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
     const qq = deps.qq ? await deps.qq().catch(() => null) : null;
+    const native = deps.native?.() ?? null;
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
@@ -66,6 +69,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
       qq: deps.qq ? qq : null,
+      native,
       modules: deps.modules?.() ?? null,
     };
   }

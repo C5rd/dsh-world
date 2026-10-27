@@ -83,9 +83,20 @@ const filled = {
   dates: ['2026-10-26'],
   modules: { wechat: { available: true, enabled: true, running: true }, qq: { available: true, enabled: true, running: true } },
   wechat: { accountId: 'wxid_bot', chats: 2, pending: 0, uncertain: 0, lastContactAt: '2026-10-26T10:00:00.000Z', account: 'online', contextMessages: 8, bufferSeconds: 3, adapter: { running: true, pid: 1, restarts: 0, lastExit: null, error: null, needsHuman: false } },
+  // 原生通道那张卡：不带上它，QQ 卡片里新加的「主动开口」两个勾选框永远走不到渲染那一步。
+  native: {
+    enabled: true, connected: true, url: 'ws://127.0.0.1:3003', allowPrivate: 1, allowGroups: 1, autoReply: true,
+    bindHomeSession: 'none', groupTrigger: 'mention', conversations: 2, answering: 0, sent: 3, failed: 0,
+    blocked: 2, lastBlockedAt: '2026-10-26T10:05:00.000Z', lastEventAt: '2026-10-26T10:00:00.000Z', lastError: null,
+    bridge: {
+      serving: true, port: 3210, url: 'ws://127.0.0.1:3210', token: 'ab'.repeat(16),
+      line: 'DSH_QQ_BRIDGE_URL=ws://127.0.0.1:3210 DSH_QQ_BRIDGE_TOKEN=ab node qq-line.js 阳台 line-1',
+      lines: 1, threads: ['line-1'], received: 2, relayed: 2, spoken: 0, lastAt: null, lastError: null, quiet: [],
+    },
+  },
 };
 
-const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Proactive', 'Modules', 'Wechat'] as const;
+const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Modules', 'Wechat'] as const;
 
 for (const name of components) {
   test(`${name} 在两帧之间不会换 hook 顺序`, () => {
