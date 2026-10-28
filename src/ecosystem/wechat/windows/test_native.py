@@ -28,7 +28,7 @@ class ConfirmationTest(unittest.TestCase):
         modules = {
             'wechatauto.db': SimpleNamespace(WeChatDB=Database),
             'wechatauto.param': SimpleNamespace(WxParam=SimpleNamespace(ENABLE_FILE_LOGGER=False)),
-            'incoming': SimpleNamespace(IncomingImages=lambda *_: SimpleNamespace(read=None, readSticker=None)),
+            'incoming': SimpleNamespace(IncomingImages=lambda *_: SimpleNamespace(read=None, readSticker=None, readReference=None)),
         }
         config = dict(dbDir='unused', account='bot-account', selfId='wxid_bot')
         with patch.dict(sys.modules, modules), patch('native.findAccountProcess', return_value=process), \

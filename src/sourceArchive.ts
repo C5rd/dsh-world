@@ -93,10 +93,11 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
     const pending = jobs.get(sessionId);
     if (pending) return pending;
     const job = tail.then(async () => {
-      while (dirty.delete(sessionId)) await replay(sessionId);
+      try { while (dirty.delete(sessionId)) await replay(sessionId); }
+      finally { jobs.delete(sessionId); }
     });
     jobs.set(sessionId, job);
-    tail = job.catch(error => { ctx.logger.error(error); }).finally(() => { jobs.delete(sessionId); });
+    tail = job.catch(error => { ctx.logger.error(error); });
     return job;
   }
   return {

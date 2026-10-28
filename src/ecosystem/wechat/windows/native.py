@@ -110,6 +110,7 @@ def connect(config, stateDir):
     images = IncomingImages(database, config, checkProcess)
     database.readImage = images.read
     database.readSticker = images.readSticker
+    database.readReference = images.readReference
 
     sender = None
     def getSender():

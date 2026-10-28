@@ -1,7 +1,7 @@
 {
   "name": "dsh-world",
   "version": "0.6.0",
-  "description": "Cross-session companion memory and life routines for DSH, with a world console, tool-free compaction and an independent Windows WeChat bridge",
+  "description": "Cross-session memory, persona and life routines for DSH, with a world console, tool-free compaction, native QQ and Windows WeChat messaging, group history and quoted replies",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,7 +34,8 @@
     "CONTRIBUTING.md",
     "CHANGELOG.md",
     "assets",
-    "scripts/enable-tool-free-compaction.ps1"
+    "scripts/enable-tool-free-compaction.ps1",
+    "scripts/patch-snowluma.mjs"
   ],
   "engines": {
     "node": ">=22.16.0"
@@ -43,6 +44,8 @@
     "build": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test",
+    "test:package": "node scripts/check-package.mjs",
+    "postinstall": "node scripts/patch-snowluma.mjs",
     "prepack": "npm run typecheck && npm run build"
   },
   "dsh": {

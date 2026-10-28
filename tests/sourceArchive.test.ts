@@ -35,6 +35,27 @@ function fixture(open: (id: string) => Promise<unknown>, stored: (id: string) =>
 }
 const emptyLog = { header: {}, inheritedEventCount: 0, read: async () => ({ events: [] }), close: async () => {} };
 
+test('a replay scheduled immediately after awaiting the previous one archives new words before flush succeeds', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-source-race-'));
+  const options = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...options, root });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const events: SessionEvent[] = [];
+  const header: SessionHeader = { id: SessionId('one'), version: 4, createdAt: 0, isSeeded: false, agentPreset: 'companion' };
+  const ctx = { sessions: { get: () => undefined }, logger: { warn() {}, error() {} }, sessionPersistence: {
+    open: async () => ({ header, inheritedEventCount: 0, close: async () => {},
+      read: async (offset: number, limit: number) => ({ events: events.filter(event => event.seq >= offset).slice(0, limit) }) }),
+  } } as unknown as Context;
+  const archive = createSourceArchive(ctx, options, store);
+  await archive.schedule('one');
+  events.push({ type: 'turn/start', seq: SessionSeq(0), time: Date.now(), data: { turn: 1 } } as SessionEvent,
+    { type: 'user/message', seq: SessionSeq(1), time: Date.now(), surfaceOp: 'append', data: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'after the first replay' }] }) });
+  await archive.schedule('one'); await archive.flush();
+  assert.equal(store.stats().records, 1);
+  assert.equal(store.progress('one').nextSeq, 2);
+  assert.deepEqual(archive.faults(), []);
+});
+
 test('a session whose log vanished is skipped with a warning and does not count as a failure', async () => {
   const { archive, warned, forgotten } = fixture(async id => { if (id === 'a') throw new SessionPersistenceNotFoundError('a'); return emptyLog; });
   await archive.catchUp();

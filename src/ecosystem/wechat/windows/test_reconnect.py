@@ -35,7 +35,7 @@ class ReconnectTest(unittest.TestCase):
             report, sleep, status = Mock(), Mock(), Mock()
             try:
                 with patch('builtins.print') as logs, patch('adapter.time.sleep',side_effect=PollComplete), self.assertRaises(PollComplete):
-                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _: jobs.pop(0) if jobs else None,sleep=sleep,status=status)
+                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _: dict(job=jobs.pop(0) if jobs else None),sleep=sleep,status=status)
                 self.assertEqual([call.args[1] for call in status.call_args_list],['offline','offline'], 'the console is told while waiting for the account')
                 self.assertEqual(connector.call_count,3)
                 self.assertEqual(sleep.call_count,2)
@@ -64,12 +64,12 @@ class ReconnectTest(unittest.TestCase):
             connector,sleep=Mock(),Mock()
             try:
                 with self.assertRaisesRegex(RuntimeError,'尚未确认'):
-                    watchConnected({},root,store,connector,poll=lambda _: None,sleep=sleep)
+                    watchConnected({},root,store,connector,poll=lambda _: {},sleep=sleep)
                 connector.assert_not_called();sleep.assert_not_called()
                 store.acknowledge('private','m.db:11')
                 connector.side_effect=RuntimeError('账号不唯一')
                 with self.assertRaisesRegex(RuntimeError,'账号不唯一'):
-                    watchConnected({},root,store,connector,poll=lambda _: None,sleep=sleep)
+                    watchConnected({},root,store,connector,poll=lambda _: {},sleep=sleep)
                 connector.assert_called_once();sleep.assert_not_called()
             finally:store.close()
 
@@ -112,7 +112,7 @@ class ReconnectTest(unittest.TestCase):
             oldSend.probe.return_value = dict(version='4.1.15.13', stage=1, status=0)
             newSend.probe.side_effect = newSend.side_effect = ValueError('不支持当前微信构建')
             connector = Mock(side_effect=[(oldDatabase, oldSend), (newDatabase, newSend)])
-            poll, ask = Mock(side_effect=[None, job]), Mock()
+            poll, ask = Mock(side_effect=[{}, dict(job=job)]), Mock()
             try:
                 with self.assertRaisesRegex((ValueError, RuntimeError), '不支持当前微信构建'):
                     watchConnected(config, root, store, connector, ask=ask, report=Mock(), poll=poll, sleep=Mock(), status=Mock())
@@ -177,7 +177,7 @@ class ReconnectTest(unittest.TestCase):
             report,sleep=Mock(),Mock()
             try:
                 with self.assertRaisesRegex(RuntimeError,'发送未确认'):
-                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _:jobs.pop(0) if jobs else None,sleep=sleep)
+                    watchConnected(config,root,store,connector,ask=ask,report=report,poll=lambda _:dict(job=jobs.pop(0) if jobs else None),sleep=sleep)
                 connector.assert_called_once();send.assert_called_once();ask.assert_called_once();sleep.assert_not_called()
                 send.close.assert_called_once()
                 with self.assertRaisesRegex(RuntimeError,'尚未确认'):store.checkPending()

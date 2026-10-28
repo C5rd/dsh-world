@@ -7,7 +7,7 @@ import './hostContract.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
-import { belongsToWorld, createSourceArchive } from './sourceArchive.ts';
+import { belongsToWorld, createSourceArchive, isCorruptSessionLog } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
@@ -68,11 +68,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (!belongsToWorld(session, config) || memory.has(session)) return;
     const pending = attaching.get(session);
     if (pending) return pending;
-    const job = (async () => {
+    const job = faults.track(`memory:${session.id}`, `会话 ${session.id} 记忆初始化失败`, async () => {
       if (archived(session.id)) await store.commitRecords([], store.progress(session.id));
       await archive.schedule(session.id);
       memory.set(session, await readMemoryState(session));
-    })();
+    });
     attaching.set(session, job);
     try { await job; } finally { attaching.delete(session); }
   }
@@ -141,7 +141,14 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       }));
       await archive.catchUp(options.fresh);
       if (options.fresh) for (const agent of ctx.agents.list()) if (belongsToWorld(agent.session, config)) await archive.skip(agent.id);
-      for (const agent of ctx.agents.list()) { prompts?.add(agent); await attach(agent); }
+      for (const agent of ctx.agents.list()) {
+        prompts?.add(agent);
+        try { await attach(agent); }
+        catch (error) {
+          if (!isCorruptSessionLog(error)) throw error;
+          ctx.logger.warn(`dsh-world: 会话 ${agent.id} 记忆初始化失败，已隔离：`, error);
+        }
+      }
     } catch (error) { await stop(); throw error; }
   }
   function stop(): Promise<void> {
