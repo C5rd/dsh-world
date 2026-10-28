@@ -28,9 +28,18 @@ test('nested and extra path keys are inspected', { skip: process.platform !== 'w
   assert.equal(outside('glob', { root: 'D:\\work' }), true);
   assert.equal(outside('glob', { folder: 'D:\\work' }), true);
 });
-test('tools without paths and unparsable arguments stay inside with a clipped summary', () => {
-  assert.deepEqual(summarizeCall('send_sticker', '{"action":"list"}', room), { summary: '{"action":"list"}', outside: false });
-  assert.equal(summarizeCall('web_fetch', 'x'.repeat(500), room).summary.length, 160);
+test('tools with a spoken form are summarised in words instead of JSON', () => {
+  assert.deepEqual(summarizeCall('send_sticker', '{"action":"list"}', room), { summary: '发了个表情', outside: false });
+  assert.deepEqual(summarizeCall('plan_next', '{"note":"写测试"}', room), { summary: '定了个闹钟', outside: false });
+  assert.equal(summarizeCall('web_search', JSON.stringify({ queries: ['甲', '乙', '丙'] }), room).summary, '搜了 甲、乙');
+  assert.equal(summarizeCall('read_image', JSON.stringify({ file_path: 'C:\\a\\b\\c.png' }), room).summary, '看了 c.png');
+  assert.equal(summarizeCall('web_fetch', JSON.stringify({ url: 'https://www.pnas.org/doi/1' }), room).summary, '读了 www.pnas.org');
+  // An unparsable URL still says something a reader can follow, rather than dumping the argument.
+  assert.equal(summarizeCall('web_fetch', JSON.stringify({ url: 'not a url' }), room).summary, '读了一个网页');
+});
+test('a tool with neither a spoken form nor a path keeps the old clipped fallback', () => {
+  assert.equal(summarizeCall('mystery_tool', 'x'.repeat(500), room).summary.length, 160);
+  assert.deepEqual(summarizeCall('mystery_tool', '{"a":1}', room), { summary: '{"a":1}', outside: false });
 });
 test('clip does not split surrogate pairs', () => {
   const out = summarizeCall('pwsh', JSON.stringify({ command: 'x'.repeat(159) + '😀' + 'yyy' }), room).summary;
