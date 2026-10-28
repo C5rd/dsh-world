@@ -121,6 +121,8 @@ npm pack
 
 也可从 [CI](.github/workflows/ci.yml) 对应运行的 Artifacts 下载检查通过的编译安装包；Windows 和 Linux 分别提供产物。本机复现检查的命令见 [贡献协议](CONTRIBUTING.md#ci-与安装包验证)。
 
+**已有 world 更新**：正常退出 DSH 后，用 [`scripts/update-world.mjs`](scripts/update-world.mjs) 指定原 profile、下载的 `.tgz` 和 DSH 自带 pnpm。脚本先备份完整 profile、世界及会话，再更新并校验；失败恢复旧 profile，保留她已有文件。安装成品无需 Git、npm 或 TypeScript，完整命令与恢复说明见 [已有 world 升级](INSTALL.md#已有-world用编译包更新)。
+
 **换用只留对话的压缩方式**（可选）：
 
 ```powershell

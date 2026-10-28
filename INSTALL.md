@@ -23,6 +23,31 @@
 
 ---
 
+## 已有 world：用编译包更新
+
+已经装过 `dsh-world` 时，保留原 profile 和世界目录，从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载 `.tgz`，不要另建 world。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
+
+1. 从应用菜单正常退出 DSH，等待微信适配器一并退出。脚本会拒绝在 DSH 或适配器仍运行时更新，不强制结束进程。
+2. 使用仓库的 `scripts/update-world.mjs`，或已安装包的 `node_modules/dsh-world/scripts/update-world.mjs`。老版本尚无此文件时，可从仓库单独下载这个脚本，无需克隆或安装源码依赖。
+3. 执行以下命令，将三个路径替换为实际值。`--pnpm` 指向桌面版启动日志中显示的 `pnpm.cjs` 或 `pnpm.mjs`；常见位置是 `<DSH 安装目录>/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`，旧安装也可能多一层 `x64`。
+
+```powershell
+node .\scripts\update-world.mjs `
+  --profile '<DSH_HOME>/profiles/desktop' `
+  --package '<下载目录>/dsh-world-0.6.0.tgz' `
+  --pnpm '<DSH 自带 pnpm 的入口文件>'
+```
+
+`node` 可以使用本机 Node 或 DSH 提供的 Node 命令。macOS / Linux 使用同一脚本和参数，将换行符换成相应 shell 的写法即可。
+
+脚本先检查包名和编译入口，再把整个 profile（含依赖）、`worlds` 和 `sessions` 备份到 `<DSH_HOME>/backups/dsh-world-<profile>-<随机后缀>/`。符号链接保留为链接，不复制链接指向的外部目录。安装包也保存到备份目录，profile 长期引用这份副本，下载文件随后移动或删除不影响启动。**不要删除当前 profile 仍在引用的备份目录。** 完整备份所需空间约为上述目录总大小；首次复制可能较慢。
+
+更新只调用 pnpm 替换插件包，并单独执行已知的 SDK 修补；其他依赖安装脚本禁用。随后核对编译入口、更新脚本、profile 配置、其他插件和世界／会话文件摘要。她的人设、日记、提示词、原会话及原模块配置保持原样，不自动迁移旧 QQ 配置，也不解锁微信待核对消息。外置微信状态不在该备份内，更新脚本不操作它。
+
+失败会恢复整个旧 profile，保留 `failed-profile` 和备份供排查。若恢复也失败，保持 DSH 关闭，按报错给出的备份路径人工恢复；世界与会话备份不自动覆盖当前目录。检查覆盖包内容、文件摘要和入口语法；桌面版依赖宿主自己的模块加载器，脚本不尝试在普通 Node 中加载宿主人设或会话服务。正常完成后再启动 DSH，检查世界控制台健康状态。脚本不会自动启动 DSH、发消息或改她的自定义提示词。更新过程中请保持 DSH 关闭；若更新进程异常终止后遗留锁文件，先确认没有更新进程，再按报错路径处理锁文件及备份。
+
+---
+
 ## 第一步：把 dsh-world 装进 profile
 
 ```bash

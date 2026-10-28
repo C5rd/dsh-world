@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
 import { dirname, join, sep } from 'node:path';
@@ -15,6 +16,8 @@ for (const name of ['dsh-world', '@snowluma/sdk']) {
 }
 assert.equal(typeof plugin.apply, 'function');
 assert.equal(typeof sdk.SnowLumaWebSocketClient, 'function');
+const updaterHelp = execFileSync(process.execPath, [join(directory, 'node_modules/dsh-world/scripts/update-world.mjs'), '--help'], { encoding: 'utf8' });
+assert.match(updaterHelp, /--profile/);
 const { createBridge } = await import(new URL('./node_modules/dsh-world/lib/ecosystem/qq-native/snowluma.js', import.meta.url));
 const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
 await once(server, 'listening');

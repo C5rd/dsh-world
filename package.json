@@ -35,6 +35,7 @@
     "CHANGELOG.md",
     "assets",
     "scripts/enable-tool-free-compaction.ps1",
+    "scripts/update-world.mjs",
     "scripts/patch-snowluma.mjs"
   ],
   "engines": {
