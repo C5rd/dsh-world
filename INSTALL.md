@@ -34,7 +34,7 @@
 ```powershell
 node .\scripts\update-world.mjs `
   --profile '<DSH_HOME>/profiles/desktop' `
-  --package '<下载目录>/dsh-world-0.6.0.tgz' `
+  --package '<下载目录>/dsh-world-0.6.2.tgz' `
   --pnpm '<DSH 自带 pnpm 的入口文件>'
 ```
 
@@ -60,7 +60,7 @@ npm pack      # 会先 typecheck + build，产出 dsh-world-<版本>.tgz
 
 安装会自动执行 `scripts/patch-snowluma.mjs`，为固定的 SnowLuma SDK 1.x 补齐相对 ESM 导入的 `.js` 后缀，保留 Node 22 支持；不需要升级 DSH 的 Node。QQ 只在启用时加载，加载失败只显示 QQ 自身故障。
 
-拿到 `dsh-world-0.6.0.tgz` 的**绝对路径**，然后：
+拿到 `dsh-world-0.6.2.tgz` 的**绝对路径**，然后：
 
 ```bash
 cd <DSH_HOME>/profiles/<你的 profile>

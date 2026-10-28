@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import { consoleSources, estimateTokens } from '../src/console/snapshot.ts';
 import { consoleRoute, handleConsole, type ConsoleActions, type ConsoleSources } from '../src/console/routes.ts';
 import { PERSONA_LAYERS, type Persona } from '../src/persona.ts';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorldSwitch, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
@@ -25,6 +25,7 @@ function fakeActions() {
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
+    setWorkspacePermission: permission => { calls.push(`permission:${permission}`); },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
@@ -50,6 +51,58 @@ test('archive scope exposes only home and workspace and returns restart status',
   assert.deepEqual(await post('home'), { status: 200, body: { ok: true, restartRequired: false } });
   for (const scope of ['all', 'world', '', null, undefined]) assert.equal((await post(scope)).status, 400);
   assert.deepEqual(calls, ['scope:workspace', 'scope:home']);
+});
+
+test('workspace permission writes accept the host catalog and reject invalid or unauthorized requests without changing settings', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-permission-route-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  power.setWorkspacePermission('danger-full-access');
+  let attempted = 0;
+  const actions = { ...fakeActions().actions, setWorkspacePermission(permission: string) {
+    attempted++;
+    if (!['danger-full-access', 'custom-read-only'].includes(permission)) throw new Error(`未知工作区权限：${permission}`);
+    power.setWorkspacePermission(permission);
+  } };
+  const request = { method: 'POST', url: '/dsh-world/console/workspace-permission', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: JSON.stringify({ permission: 'custom-read-only' }) };
+  for (const headers of [{ 'content-type': 'application/json' }, { ...request.headers, 'content-type': 'text/plain' }, { ...request.headers, 'sec-fetch-site': 'cross-site' }, { ...request.headers, host: 'rebind.example' }]) {
+    assert.equal((await run(sources, { ...request, headers }, actions)).status, 403);
+  }
+  assert.equal(attempted, 0);
+  for (const permission of [null, undefined, false, 1, {}, [], '', '  ']) {
+    assert.equal((await run(sources, { ...request, body: JSON.stringify({ permission }) }, actions)).status, 400);
+  }
+  assert.equal(attempted, 0, 'malformed permissions never reach the host action');
+  const unknown = await run(sources, { ...request, body: JSON.stringify({ permission: 'unknown' }) }, actions);
+  assert.equal(unknown.status, 400);
+  assert.deepEqual(JSON.parse(unknown.body!), { error: '未知工作区权限：unknown' });
+  assert.equal(createWorldSwitch(dir).workspacePermission(), 'danger-full-access');
+  const saved = await run(sources, request, actions);
+  assert.equal(saved.status, 200); assert.deepEqual(JSON.parse(saved.body!), { ok: true });
+  assert.equal(createWorldSwitch(dir).workspacePermission(), 'custom-read-only');
+});
+
+test('workspace permission defaults to the existing home permission, persists and preserves state when the atomic write fails', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-permission-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.equal(power.workspacePermission(), 'danger-full-access');
+  power.setMemoryTurns(60);
+  power.setWorkspacePermission('custom-read-only');
+  assert.equal(power.workspacePermission(), 'custom-read-only');
+  assert.equal(createWorldSwitch(dir).workspacePermission(), 'custom-read-only');
+  assert.equal(createWorldSwitch(dir).memoryTurns(), 60);
+  const file = join(dir, 'world.json'), before = readFileSync(file, 'utf8');
+  for (const permission of [undefined, null, 1, {}, '', '  ']) {
+    assert.throws(() => power.setWorkspacePermission(permission as never), /非空字符串/);
+    assert.equal(readFileSync(file, 'utf8'), before);
+  }
+  mkdirSync(`${file}.${process.pid}.tmp`);
+  assert.throws(() => power.setWorkspacePermission('workspace-write'));
+  assert.equal(power.workspacePermission(), 'custom-read-only');
+  assert.equal(readFileSync(file, 'utf8'), before, 'the prior settings survive an unsuccessful replacement');
+  for (const permission of [null, 3, '', '  ']) {
+    writeFileSync(file, JSON.stringify({ running: false, workspacePermission: permission }));
+    assert.equal(createWorldSwitch(dir).workspacePermission(), 'danger-full-access');
+  }
 });
 test('the console can restart the plugin-managed adapter, and says so when there is none', async () => {
   const { actions, calls } = fakeActions();
@@ -188,6 +241,21 @@ test('the snapshot is cached and shared between concurrent polls until invalidat
   const stopped = await src.snapshot() as { running: boolean; life: unknown; memory: { windowTurns: number } };
   assert.equal(stopped.running, false); assert.equal(stopped.life, null); assert.equal(stopped.memory.windowTurns, 50);
   assert.deepEqual((stopped as unknown as { budget: unknown }).budget, { daily: 3, today: null });
+  assert.equal((stopped as unknown as { workspace: unknown }).workspace, null);
+});
+
+test('snapshot workspace permissions follow the host catalog and refresh after invalidation', async () => {
+  let defaultPermission = 'custom-read-only';
+  const src = consoleSources({
+    ctx: { agents: { get: () => undefined } } as never, config: { worldId: 'w', timeZone: 'UTC' } as never,
+    archive: { readPage: async () => ({ records: [], nextCursor: undefined }), readTurn: async () => [], stats: () => ({ records: 0, sessions: 0 }) } as never,
+    names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => undefined, diaryDir: 'Z:/no/such/dir', running: () => false,
+    dailyBudget: () => undefined, memoryTurns: () => 200, faults: () => [],
+    workspacePermissions: () => ({ defaultPermission, options: [{ value: 'custom-read-only', name: '自定义只读', description: '读取项目' }, { value: 'workspace-write', name: '工作区写入' }] }),
+  });
+  assert.deepEqual((await src.snapshot() as { workspace: unknown }).workspace, { defaultPermission: 'custom-read-only', options: [{ value: 'custom-read-only', name: '自定义只读', description: '读取项目' }, { value: 'workspace-write', name: '工作区写入' }] });
+  defaultPermission = 'workspace-write'; src.invalidate();
+  assert.equal((await src.snapshot() as { workspace: { defaultPermission: string } }).workspace.defaultPermission, 'workspace-write');
 });
 
 test('the memory window is kept in world.json, defaults to 200 and survives a restart', t => {

@@ -4,18 +4,25 @@ import type {} from '@deepseek-ai/dsh-system-prompt';
 import { errorText, type Faults } from './faults.ts';
 import { readPersona, renderPersona } from './persona.ts';
 import { renderSelf } from './self.ts';
-import { belongsToWorld } from './sourceArchive.ts';
+import { belongsToWorld, inWorld } from './sourceArchive.ts';
 import type { WorldConfig } from './types.ts';
 import { readTemplate, renderWorldPrompt, type WorldPrompt } from './worldPrompt.ts';
+import { reassembleOnChange } from './worldScope.ts';
 
-export interface WorldPromptSource { prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean }
+export interface WorldPromptSource {
+  prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean;
+  /** Her room's workspace; her world (all but the persona) reaches only its sessions. Absent, every session of hers. */
+  inWorkspace?(sessionId: string): boolean;
+}
 interface PromptText { template: string; self?: { file: string; text: string }; persona: string }
-interface Entry { text: PromptText; world: () => void; persona?: () => void }
+/** `active`: the world prompt is placed (the session is in her workspace); the persona is placed either way. */
+interface Entry { text: PromptText; active: boolean; dispose: () => void; persona?: () => void }
 /** The host's persona section; a preset may also register it for its own agents. */
 const HOST_PERSONA = 'deployment:persona-prefix';
 
 /**
- * Her persona and the world prompt, sections of every world session's system prompt so she sees them on every
+ * Her persona follows the configured preset; the world prompt is limited to the world's workspace.
+ * Both are sections of the session's system prompt so she sees them on every
  * request. They are read when the session opens and again after each successful compaction (the host assembles
  * the system prompt before pre-step, so the refresh happens on compaction/end), never in between, so the prompt
  * stays in the provider-cached prefix. Whether the session is her home is asked per request.
@@ -27,13 +34,15 @@ const HOST_PERSONA = 'deployment:persona-prefix';
 export function createPromptSections(config: WorldConfig, world: WorldPromptSource, deps: { faults: Faults; logger: { warn(...args: unknown[]): void } }) {
   const entries = new Map<Agent, Entry>();
   const agents = new WeakMap<Session, Agent>();
-  function read(): PromptText {
+  function read(includeWorld: boolean): PromptText {
+    const persona = world.prompt.persona ? renderPersona(readPersona(world.prompt.persona)) : '';
+    if (!includeWorld) return { template: '', persona };
     const template = readTemplate(world.prompt.file);
     if (template.error) deps.logger.warn(`dsh-world: ${template.error}`);
     return {
       template: template.text,
       ...(config.selfFile ? { self: { file: config.selfFile, text: renderSelf(config.selfFile) } } : {}),
-      persona: world.prompt.persona ? renderPersona(readPersona(world.prompt.persona)) : '',
+      persona,
     };
   }
   /** Registers her persona when she has one and drops it when she has none. */
@@ -52,19 +61,35 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
   return {
     add(agent: Agent): void {
       if (entries.has(agent) || !belongsToWorld(agent.session, config)) return;
-      const text = read();
-      const entry: Entry = { text, world: agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt(world.prompt, entry.text.template, entry.text.self, world.isHome(agent.id)) }) };
+      let disposeWorld: (() => void) | undefined;
+      /** Places or removes the world prompt as the session enters or leaves her workspace; true when it did. */
+      const sync = (): boolean => {
+        if (inWorld(agent.session, config, world.inWorkspace) === entry.active) return false;
+        entry.active = !entry.active;
+        if (!entry.active) { disposeWorld?.(); disposeWorld = undefined; return true; }
+        entry.text = read(true);
+        disposeWorld = agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt(world.prompt, entry.text.template, entry.text.self, world.isHome(agent.id)) });
+        placePersona(agent, entry);
+        return true;
+      };
+      const disposeSync = reassembleOnChange(agent.ctx, sync);
+      const entry: Entry = { text: read(false), active: false, dispose: () => { disposeSync(); disposeWorld?.(); } };
       entries.set(agent, entry); agents.set(agent.session, agent);
+      sync();
       placePersona(agent, entry);
+    },
+    active(session: Session): boolean {
+      const agent = agents.get(session);
+      return !!(agent && entries.get(agent)?.active);
     },
     refresh(session: Session): void {
       const agent = agents.get(session); const entry = agent && entries.get(agent);
       if (!agent || !entry) return;
-      entry.text = read();
+      entry.text = read(entry.active);
       placePersona(agent, entry);
     },
     clear(): void {
-      for (const entry of entries.values()) for (const dispose of [entry.world, entry.persona]) { try { dispose?.(); } catch { /* agent scope already gone */ } }
+      for (const entry of entries.values()) for (const dispose of [entry.dispose, entry.persona]) { try { dispose?.(); } catch { /* agent scope already gone */ } }
       entries.clear();
     },
   };

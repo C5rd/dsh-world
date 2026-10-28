@@ -44,6 +44,9 @@ test('the client registers the world console settings section under the bundle i
   respond(200, async () => degraded); assert.equal(((await load()) as { life: unknown }).life, null);
   const shown = text(react.createElement(tested.View, { snap: degraded, error: null, tick: 0, refresh: () => {} }));
   assert.match(shown, /生活线没能启动：life\.json is not valid JSON/); assert.match(shown, /1 条/); assert.doesNotMatch(shown, /生活线未开启/);
+  assert.doesNotMatch(shown, /工作区权限/, 'old snapshots omit the workspace permission card');
+  const permissions = text(react.createElement(tested.View, { snap: { ...degraded, workspace: { defaultPermission: 'custom-read-only', options: [{ value: 'custom-read-only', name: '我的只读权限' }] } }, error: null, tick: 0, refresh: () => {} }));
+  assert.match(permissions, /工作区权限/); assert.match(permissions, /我的只读权限/);
   assert.doesNotThrow(() => text(react.createElement(tested.View, { snap: { worldId: 'fish', timeZone: 'UTC', life: null }, error: null, tick: 0, refresh: () => {} })), 'missing sections never crash the view');
   const fresh = text(react.createElement(tested.View, { snap: { ...degraded, health: [], running: false, name: 'TA' }, error: null, tick: 0, refresh: () => {} }));
   assert.match(fresh, /她的世界/); assert.match(fresh, /她还没有住进来/); assert.match(fresh, /开始/);
@@ -74,6 +77,88 @@ test('the client registers the world console settings section under the bundle i
   const nothing = text(react.createElement(tested.Qq, { native: null }));
   assert.match(nothing, /她自己的通道：没开/);
   assert.doesNotMatch(nothing, /收 0 个会话/, '没开的时候不该画一行零');
+});
+
+test('workspace permissions render host options, preserve dirty drafts on polls and save the selected value with errors shown', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [], effectDeps: unknown[][] = [];
+  let at = 0, effectAt = 0, changed = false;
+  let pending: (() => void)[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) {
+      const index = at++;
+      if (!(index in states)) states[index] = typeof init === 'function' ? (init as () => unknown)() : init;
+      return [states[index], (value: unknown) => {
+        const next = typeof value === 'function' ? (value as (old: unknown) => unknown)(states[index]) : value;
+        if (!Object.is(next, states[index])) { states[index] = next; changed = true; }
+      }];
+    },
+    useEffect(effect: () => void, deps: unknown[]) {
+      const index = effectAt++, previous = effectDeps[index];
+      if (!previous || deps.some((value, i) => !Object.is(value, previous[i]))) { effectDeps[index] = deps; pending.push(effect); }
+    },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { WorkspacePermission: (props: unknown) => unknown } } } | undefined;
+  const requests: { url: string; options: any }[] = [];
+  let error: string | undefined, refreshed = 0;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+  });
+  const component = loaded!.factory(() => react).__test.WorkspacePermission;
+  assert.equal(typeof component, 'function');
+  const options = [{ value: 'custom-read-only', name: '我的只读', description: '可读取工作区' }, { value: 'workspace-write', name: '工作区写入' }, { value: 'danger-full-access', name: '全部权限' }];
+  let workspace: { defaultPermission: string; options: typeof options } | null = { defaultPermission: 'custom-read-only', options };
+  const expand = (value: unknown): El[] => {
+    if (value == null || typeof value !== 'object') return [];
+    if (Array.isArray(value)) return value.flatMap(expand);
+    const el = value as El;
+    if (typeof el.type === 'function') return expand(el.type({ ...el.props, children: el.children }));
+    return [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => {
+    if (value == null || typeof value === 'boolean') return '';
+    if (Array.isArray(value)) return value.map(text).join('');
+    if (typeof value !== 'object') return String(value);
+    return text((value as El).children);
+  };
+  let tree: El[] = [];
+  const render = () => {
+    do {
+      changed = false; at = 0; effectAt = 0; pending = [];
+      tree = expand(component({ workspace, onSaved: () => { refreshed++; } }));
+      for (const effect of pending) effect();
+    } while (changed);
+    return tree;
+  };
+  const select = () => tree.find(el => el.type === 'select')!;
+  const button = () => tree.find(el => el.type === 'button')!;
+  render();
+  assert.match(text(tree), /仅用于此工作区新建的会话；已有会话保留各自的权限。/);
+  assert.equal(select().props!['aria-label'], '新建会话默认权限');
+  assert.equal(select().props!.value, 'custom-read-only');
+  assert.deepEqual(tree.filter(el => el.type === 'option').map(el => [el.props!.value, text(el)]), [['custom-read-only', '我的只读'], ['workspace-write', '工作区写入'], ['danger-full-access', '全部权限']]);
+  assert.match(text(tree), /可读取工作区/);
+  workspace = { ...workspace!, defaultPermission: 'danger-full-access' }; render();
+  assert.equal(select().props!.value, 'danger-full-access', 'a clean draft follows updated snapshot props');
+  select().props!.onChange({ target: { value: 'workspace-write' } }); render();
+  workspace = { ...workspace, defaultPermission: 'custom-read-only' }; render();
+  assert.equal(select().props!.value, 'workspace-write', 'polls do not overwrite an unsaved selection');
+  button().props!.onClick(); await new Promise(setImmediate); render();
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/console/workspace-permission');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(requests[0].options.headers['x-dsh-world'], '1');
+  assert.equal(requests[0].options.headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { permission: 'workspace-write' });
+  assert.equal(refreshed, 1); assert.match(text(tree), /已保存/); assert.doesNotMatch(text(tree), /重启/);
+  workspace = { ...workspace, defaultPermission: 'workspace-write' }; render();
+  select().props!.onChange({ target: { value: 'custom-read-only' } }); render();
+  error = '未知工作区权限：custom-read-only';
+  button().props!.onClick(); await new Promise(setImmediate); render();
+  assert.match(text(tree), /保存失败：未知工作区权限：custom-read-only/);
+  assert.equal(refreshed, 1); assert.equal(select().props!.value, 'custom-read-only');
+  workspace = null; render(); assert.deepEqual(tree, []);
 });
 
 test('the module switches say what is on, what is off and what the config does not provide', async () => {

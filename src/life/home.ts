@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { errorText, type Faults } from '../faults.ts';
+import { admit, type InWorld } from '../worldScope.ts';
 import type { HostWorkspace, LifeHost } from './host.ts';
 
 export interface HomeDeps {
@@ -19,13 +20,14 @@ export interface HomeDeps {
   /** Called with the home every time it is opened. */
   opened(agent: Agent): void;
   stopped(): boolean;
+  /** Her world; a home outside it is never opened. */
+  inWorld?: InWorld;
 }
 
 /**
- * Her home session: the recorded one while it exists and is not archived, otherwise a new one. Full access is
- * granted on every open (selecting the preset in effect is a no-op), so no "still needs access" state has to
- * survive a restart. Her room is a workspace of the host, so the home is listed under it rather than as
- * ungrouped, and new sessions can be opened in the room; a host without workspaces just gets the cwd. The title is applied when the home is built and again after its first turn, because the
+ * Her home session: the recorded one while it exists and is not archived, otherwise a new one.
+ * Her world lives only in her room's workspace, so the home is built in it, or moved into it, or not opened at all.
+ * The title is applied when the home is built and again after its first turn, because the
  * host retitles a session from its first prompt.
  */
 export function createHome(deps: HomeDeps) {
@@ -41,16 +43,17 @@ export function createHome(deps: HomeDeps) {
     catch (error) { faults.set('rename', `家改名失败：${errorText(error)}`); deps.logger.error(error); return false; }
   }
   async function ready(agent: Agent): Promise<Agent> {
-    host.setFullAccess(agent.session);
+    admit(deps.inWorld, agent);
     if (untitled === agent.id && await rename(agent.id) && untitled === agent.id) untitled = undefined;
     deps.opened(agent);
     return agent;
   }
-  /** Her room as a workspace; a failure is a fault and the home still opens, ungrouped. */
-  async function room(): Promise<HostWorkspace | undefined> {
+  /** Her room as a workspace; without one there is no home (the caller reports why). */
+  async function room(): Promise<HostWorkspace> {
     mkdirSync(deps.roomDir, { recursive: true });
-    try { const workspace = await host.workspace(deps.roomDir, deps.roomTitle); faults.clear('room'); return workspace; }
-    catch (error) { faults.set('room', `房间没能成为工作区：${errorText(error)}`); deps.logger.error(error); return undefined; }
+    const workspace = await host.workspace(deps.roomDir, deps.roomTitle);
+    if (!workspace) throw new Error('宿主没有工作区服务，世界只能住在房间工作区里');
+    return workspace;
   }
   async function build(): Promise<Agent> {
     const workspace = await room();
@@ -59,13 +62,11 @@ export function createHome(deps: HomeDeps) {
       const agent = await host.resolveAgent(current);
       if (agent) {
         // A home built before her room was a workspace moves in.
-        if (workspace && !workspace.sessionIds.includes(agent.id)) {
-          try { await workspace.attachSession(agent.id); } catch (error) { faults.set('room', `家没能挂进房间：${errorText(error)}`); deps.logger.error(error); }
-        }
+        if (!workspace.sessionIds.includes(agent.id)) await workspace.attachSession(agent.id);
         return ready(agent);
       }
     }
-    const sessionId = await host.createSession(deps.roomDir, deps.agentPreset, workspace?.id);
+    const sessionId = await host.createSession(deps.roomDir, deps.agentPreset, workspace.id);
     if (deps.stopped()) throw new Error('生活线已停止');
     untitled = sessionId; firstTurn = sessionId;
     deps.moveIn(sessionId);

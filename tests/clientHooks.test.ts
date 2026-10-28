@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'client', 'index.js'), 'utf8');
 
 /** 假 React：只记 hook 调用顺序，值从 values 里按位取，取不到就用初始值。 */
-function runtime(values: readonly unknown[]): { run(name: string): { hooks: string[]; tree: unknown } } {
+function runtime(values: readonly unknown[]): { run(name: string, props?: object): { hooks: string[]; tree: unknown } } {
   const hooks: string[] = [];
   let at = 0;
   const react = {
@@ -47,12 +47,12 @@ function runtime(values: readonly unknown[]): { run(name: string): { hooks: stri
     throw new Error(`组件不该依赖 ${name}`);
   });
   return {
-    run(name: string) {
+    run(name: string, props: object = filled) {
       at = 0;
       hooks.length = 0;
       const component = exports.__test[name];
       assert.equal(typeof component, 'function', `${name} 应该在 __test 里`);
-      const tree = component({ ...filled, snapshot: filled, snap: filled });
+      const tree = component({ ...props, snapshot: props, snap: props });
       return { hooks: [...hooks], tree };
     },
   };
@@ -77,6 +77,7 @@ const filled = {
   diary: '',
   records: [],
   memory: { rounds: 3 },
+  workspace: { defaultPermission: 'custom-read-only', options: [{ value: 'custom-read-only', name: '只读' }] },
   health: [],
   stats: {},
   alarm: null,
@@ -96,14 +97,14 @@ const filled = {
   },
 };
 
-const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Modules', 'Wechat'] as const;
+const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Modules', 'Wechat', 'WorkspacePermission'] as const;
 
 for (const name of components) {
   test(`${name} 在两帧之间不会换 hook 顺序`, () => {
     // 第一帧：什么都还没读到（第一个 useState 给 null，其余用组件自己的初始值）
-    const empty = runtime([null]).run(name);
+    const empty = name === 'WorkspacePermission' ? runtime([]).run(name, { workspace: null }) : runtime([null]).run(name);
     // 第二帧：数据到了（第一个 useState 给满的假数据，其余仍是初始值）
-    const full = runtime([filled]).run(name);
+    const full = name === 'WorkspacePermission' ? runtime([]).run(name) : runtime([filled]).run(name);
     assert.deepEqual(
       full.hooks,
       empty.hooks,

@@ -3,7 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
-from snapshot import SnapshotBusy, checkedSnapshot, fileStamp
+from snapshot import SnapshotBusy, checkedSnapshot, fileStamp, hasCurrentWalFrames
 from binding import findAccountProcess, checkAccountProcess, WechatOffline
 
 
@@ -28,6 +28,12 @@ def connect(config, stateDir):
     checkProcess()
 
     class ScopedDatabase(WeChatDB):
+        def _merge_wal(self, dst, wal_path, key, from_frame):
+            # The dependency rewrites the page count even when every WAL frame is obsolete.
+            if not hasCurrentWalFrames(self, wal_path):
+                return 0
+            return super()._merge_wal(dst, wal_path, key, from_frame)
+
         def _open_unlocked(self, rel):
             checkProcess()
             try:

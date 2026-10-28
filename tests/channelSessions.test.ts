@@ -43,7 +43,6 @@ test('each group gets one durable session in the existing workspace without gran
       await ctx.agents.create({ sessionId: id, meta: { agentPreset: preset }, agentOptions: { provider: 'test', model: 'test' } }); return id;
     },
     resolveAgent: async id => ctx.agents.get(SessionId(id)), isArchived: id => archived.has(id),
-    setFullAccess: () => { throw new Error('group permissions must not change'); },
     rename: async (_id, title) => { titles.push(title); }, origin: () => 'http://127.0.0.1',
   };
   const deps = { ctx, host, store, roomDir: root, roomTitle: '鲸鲸的房间', agentPreset: 'test' };

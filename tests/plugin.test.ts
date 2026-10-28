@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
-import { createUserMessage, isAgentLoopRequest, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, isAgentLoopRequest, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
@@ -294,6 +294,94 @@ function isolateHome(t: TestContext, root: string) {
   t.after(() => { if (originalDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = originalDshHome; });
 }
 /** Fake desktop host services; `ctx.provide(name, value)` registers each on the root fiber in Cordis 4. */
+test('opening an existing home preserves its manual permission instead of granting full access', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('ok'));
+  isolateHome(t, root);
+  const room = join(root, 'worlds/fish/room'); await mkdir(room, { recursive: true });
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('existing-home'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
+  await writeFile(join(root, 'worlds/fish/life.json'), JSON.stringify({ version: 1, homeSessionId: agent.id }));
+  provideLifeHost(ctx);
+  const logged = captureErrors(ctx);
+  let permission = 'workspace-write';
+  (ctx.get('permissionPresets') as { set(session: unknown, name: string): void }).set = (_session, name) => { permission = name; };
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => (ctx.get('workspaceRegistry') as { list(): { sessionIds: string[] }[] }).list().some(workspace => workspace.sessionIds.includes(agent.id)) || logged.length > 0, 'the existing home to finish opening');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(logged, []);
+  assert.equal(permission, 'workspace-write');
+});
+
+test('the console workspace permission initializes later room sessions without changing existing sessions', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('ok'));
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  const applied = new Map<string, string>();
+  (ctx.get('permissionPresets') as { set(session: { id: string }, name: string): void }).set = (session, name) => { applied.set(session.id, name); };
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.some(route => route.path === '/dsh-world'), 'the console route');
+  await consolePost(routes, '/dsh-world/console/start');
+  const initial = await consoleGet(routes, '/dsh-world/console/snapshot');
+  const home = initial.life.homeSessionId;
+  assert.equal(applied.get(home), 'danger-full-access');
+  await consolePost(routes, '/dsh-world/console/workspace-permission', { permission: 'workspace-write' });
+  assert.equal(applied.get(home), 'danger-full-access');
+  const room = join(root, 'worlds/fish/room');
+  await ctx.agents.create({ sessionId: SessionId('new-room-chat'), meta: { cwd: room, agentPreset: 'other-preset' }, agentOptions: { provider: 'test', model: 'test' } });
+  await ctx.agents.create({ sessionId: SessionId('other-workspace'), meta: { cwd: root, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } });
+  assert.equal(applied.get('new-room-chat'), 'workspace-write');
+  assert.equal(applied.has('other-workspace'), false);
+  const changed = await consoleGet(routes, '/dsh-world/console/snapshot');
+  assert.equal(changed.workspace.defaultPermission, 'workspace-write');
+  await consolePost(routes, '/dsh-world/console/stop');
+  await consolePost(routes, '/dsh-world/console/start');
+  assert.equal(applied.get(home), 'danger-full-access');
+});
+
+test('the installed world injects memory prompts and life tools only into its workspace', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.some(route => route.path === '/dsh-world'), 'the console route');
+  await consolePost(routes, '/dsh-world/console/start');
+  const snapshot = await consoleGet(routes, '/dsh-world/console/snapshot');
+  const home = ctx.agents.get(SessionId(snapshot.life.homeSessionId))!;
+  home.followup(user('WORLD_PRIVATE_HISTORY')); await home.whenIdle();
+  const room = join(root, 'worlds/fish/room');
+  const inside = (await ctx.agents.create({ sessionId: SessionId('inside-world'), meta: { cwd: room, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const workspace = (ctx.get('workspaceRegistry') as { list(): { attachSession(id: string): Promise<void> }[] }).list()[0];
+  await workspace.attachSession(inside.id);
+  inside.followup(user('inside')); await inside.whenIdle();
+  const insideRequest = requests.at(-1)!;
+  assert.match(textOf(insideRequest), /WORLD_PRIVATE_HISTORY/);
+  assert.match(textOf(insideRequest), /# 我的世界/);
+  assert.ok(insideRequest.tools?.some(tool => tool.name === 'plan_next'));
+  const outside = (await ctx.agents.create({ sessionId: SessionId('outside-world'), meta: { cwd: root, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  outside.followup(user('outside')); await outside.whenIdle();
+  const outsideRequest = requests.at(-1)!;
+  assert.ok(!kinds(outsideRequest).includes('dsh-world-history'));
+  assert.doesNotMatch(textOf(outsideRequest), /WORLD_PRIVATE_HISTORY|# 我的世界|【我的时间】/);
+  assert.ok(!outsideRequest.tools?.some(tool => ['plan_next', 'check_alarm', 'cancel_alarm', 'reach_out'].includes(tool.name)));
+});
+
+test('a home recorded in an old directory cannot redirect world injections into that workspace', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  isolateHome(t, root);
+  const room = join(root, 'worlds/fish/room'); await mkdir(room, { recursive: true });
+  const old = (await ctx.agents.create({ sessionId: SessionId('old-home'), meta: { cwd: root, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  await writeFile(join(root, 'worlds/fish/life.json'), JSON.stringify({ version: 1, homeSessionId: old.id }));
+  const oldWorkspace = { id: 'old', path: root, sessionIds: [old.id] };
+  const currentWorkspace = { id: 'room', path: room, sessionIds: [] as string[], attachSession: async () => { throw new Error('cwd does not belong to this workspace'); } };
+  ctx.provide('workspaceRegistry', { archivedSessionIds: [], list: () => [oldWorkspace, currentWorkspace], create: async () => currentWorkspace });
+  provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  old.followup(user('ordinary chat in the old workspace')); await old.whenIdle();
+  assert.doesNotMatch(textOf(requests.at(-1)!), /# 我的世界|【我的时间】/);
+  assert.ok(!kinds(requests.at(-1)!).includes('dsh-world-history'));
+});
+
 function provideLifeHost(ctx: Context) {
   const routes: { path: string }[] = []; const unregistered: string[] = []; let created = 0;
   let workspace: { id: string; path: string; sessionIds: string[]; attachSession(id: string): Promise<void> } | undefined;
@@ -302,10 +390,10 @@ function provideLifeHost(ctx: Context) {
     create: async (path: string) => workspace ??= { id: 'room', path, sessionIds: [], attachSession: async id => { workspace!.sessionIds.push(id); } },
   });
   ctx.provide('webServer', { getOrigin: () => 'http://127.0.0.1:0', register: (route: { path: string }) => { routes.push(route); return () => { unregistered.push(route.path); routes.splice(routes.indexOf(route), 1); }; } });
-  ctx.provide('permissionPresets', { set: () => {} });
+  ctx.provide('permissionPresets', { catalog: () => ({ defaultOptions: [{ value: 'danger-full-access', name: '完全权限' }, { value: 'workspace-write', name: '工作区可写' }] }), set: (_session: unknown, _name: string) => {} });
   ctx.provide('sessionController', {
-    create: async ({ agentPreset }: { agentPreset: string }) => {
-      const { agent } = await ctx.agents.create({ sessionId: SessionId(`life-home-${++created}`), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } });
+    create: async ({ agentPreset, cwd }: { agentPreset: string; cwd?: string }) => {
+      const { agent } = await ctx.agents.create({ sessionId: SessionId(`life-home-${++created}`), meta: { agentPreset, cwd: cwd ?? workspace?.path }, agentOptions: { provider: 'test', model: 'test' } });
       workspace?.sessionIds.push(agent.id); return { sessionId: agent.id };
     },
     resolveAgent: async (id: string) => { const agent = ctx.agents.get(SessionId(id)); return agent ? { agent } : { error: { code: 'session/not-found', message: 'missing' } }; },
@@ -427,7 +515,7 @@ test('an archived home is rebuilt, reading workspaceRegistry from another plugin
   const room = { id: 'room', path: join(root, 'worlds/fish/room'), sessionIds: ['life-home-old', 'life-home-1'], attachSession: async () => {} };
   await ctx.plugin({ name: 'workspace-registry', apply: (c: Context) => { c.provide('workspaceRegistry', { archivedSessionIds: ['life-home-old'], list: () => [room], create: async () => room }); } }).await();
   const logged = captureErrors(ctx);
-  const { routes } = provideLifeHost(ctx);
+  provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
   assert.equal((await firstWakeDone(ctx, root)).homeSessionId, 'life-home-1');
   assert.deepEqual(logged, []);

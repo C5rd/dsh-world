@@ -31,9 +31,11 @@ export interface SnapshotDeps {
   /** Turns her memory block carries. */
   memoryTurns(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
+  workspacePermissions?(): { defaultPermission: string; options: { value: string; name: string; description?: string }[] };
   /** The WeChat module's state; undefined while it is off or her world is stopped. */
   wechat?(): unknown;
-  includesSession?(id: string): boolean;
+  /** Whose conversations her archive keeps; the memory block shown is read through it. */
+  archiveSession?(id: string): boolean;
   /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
   faults(): string[];
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
@@ -53,7 +55,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const life = deps.life()?.snapshot();
     const home = life?.homeSessionId ? deps.ctx.agents.get(SessionId(life.homeSessionId)) : undefined;
     const window = deps.memoryTurns();
-    const turns = await history.loadRecentTurns(config.worldId, window, deps.includesSession);
+    const turns = await history.loadRecentTurns(config.worldId, window, deps.archiveSession);
     const archiveScope = config.archiveScope ?? 'workspace';
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
     // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
@@ -62,6 +64,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
+      workspace: deps.workspacePermissions?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },

@@ -1,6 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { Session } from '@deepseek-ai/dsh-session';
 
 /** A workspace of the host: a directory that groups its sessions in the sidebar and opens new ones there. */
 export interface HostWorkspace { id: string; sessionIds: readonly string[]; attachSession(sessionId: string): Promise<void> }
@@ -12,7 +11,6 @@ export interface LifeHost {
   /** The live or resumed Agent, or `undefined` when the session no longer exists; other failures throw. */
   resolveAgent(sessionId: string): Promise<Agent | undefined>;
   isArchived(sessionId: string): boolean;
-  setFullAccess(session: Session): void;
   rename(sessionId: string, title: string): Promise<void>;
   origin(): string;
 }
@@ -22,7 +20,6 @@ interface HostServices {
     resolveAgent(sessionId: string): Promise<{ agent: Agent } | { error: { code: string; message: string } }>;
     rename(request: { sessionId: string; title: string }): Promise<unknown>;
   };
-  permissionPresets: { set(session: Session, name: string): void };
   webServer: { getOrigin(): string };
   workspaceRegistry?: { archivedSessionIds: Iterable<string>; create(path: string, title: string): Promise<HostWorkspace> };
 }
@@ -43,7 +40,6 @@ export function hostLife(ctx: Context): LifeHost {
     },
     // Optional, so read without injecting it: Cordis throws on an un-injected property access.
     isArchived: sessionId => Array.from((ctx.get('workspaceRegistry') as HostServices['workspaceRegistry'])?.archivedSessionIds ?? []).includes(sessionId),
-    setFullAccess: session => host.permissionPresets.set(session, 'danger-full-access'),
     rename: async (sessionId, title) => { await host.sessionController.rename({ sessionId, title }); },
     origin: () => host.webServer.getOrigin(),
   };

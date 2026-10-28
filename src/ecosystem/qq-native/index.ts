@@ -7,18 +7,29 @@ import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../share
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
+import type { InWorld } from '../../worldScope.ts';
 import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
 
 /** The largest single message we accept from QQ; anything longer is cut before it reaches her. */
 const MAX_INCOMING = 2_000;
 /** How many distinct messages we remember to drop repeats of. */
 const SEEN_LIMIT = 500;
-/**
- * 问她要不要先开口时说的那段话。
- *
- * 她自己决定说什么 —— 想说的那句就是原话；不想说话，回 [SILENT] 就行（和旧桥一样的约定，
- * 但这边不再有候选表、分数和重试：一次问一句，说不说都算一次调用）。
- */
+
+/** The newest `limit` ids, oldest dropped first. */
+function recentIds(limit: number) {
+  const ids = new Set<string>();
+  return {
+    has: (id: string) => ids.has(id),
+    /** False when the id was already there. */
+    add(id: string): boolean {
+      if (ids.has(id)) return false;
+      ids.add(id);
+      if (ids.size > limit) ids.delete(ids.values().next().value!);
+      return true;
+    },
+    clear: () => ids.clear(),
+  };
+}
 
 /**
  * What we actually read off an incoming message.
@@ -84,13 +95,6 @@ export interface QqNativeStatus {
   groupTrigger: 'mention' | 'all';
 }
 
-/**
- * QQ as another way into the same home, without a bridge process in between.
- *
- * One OneBot connection in, the same `home` the WeChat channel uses in the middle, and a reply sent
- * back out. There is no separate session store: a conversation's identity key is the whole mapping,
- * so a group keeps talking to the same conversation she already has for it.
- */
 /** 传输层交给通道的那几件（真身上是 snowluma.js 的 createBridge，测试可以换掉）。 */
 export interface QqTransport {
   start(): Promise<void>;
@@ -110,9 +114,17 @@ export interface QqTransportOptions {
   onNotice?(type: string, notice?: unknown): void;
 }
 
+/**
+ * QQ as another way into the same home, without a bridge process in between.
+ *
+ * One OneBot connection in, the same `home` the WeChat channel uses in the middle, and a reply sent
+ * back out. There is no separate session store: a conversation's identity key is the whole mapping,
+ * so a group keeps talking to the same conversation she already has for it.
+ */
 export function createQqNativeModule(deps: {
   ctx: Context;
   home(identity: SpeakerIdentity): Promise<Agent>;
+  inWorld?: InWorld;
   config(): QqNativeConfig;
   /** 面板拨的开关存这儿；不给就只在内存里活到下一次重载。 */
   stateFile?: string;
@@ -120,12 +132,12 @@ export function createQqNativeModule(deps: {
   /** 传输层；不给就用真身（snowluma.js 那条线）。测试靠它把合成事件灌进来。 */
   transport?(options: QqTransportOptions): QqTransport;
 }) {
-  const home = createQqHome({ ctx: deps.ctx, home: deps.home });
-  const seen = new Set<string>();
+  const home = createQqHome({ ctx: deps.ctx, home: deps.home, inWorld: deps.inWorld });
+  const seen = recentIds(SEEN_LIMIT);
+  // 她说出去的消息 id。有人引用她的话，引用的就是这个 id。
+  const sentIds = recentIds(SEEN_LIMIT);
   const contexts = new Map<string, ChannelContextMessage[]>();
   const answering = new Set<string>();
-  // 她自己的那条线：最后一次见到的账号。
-  let lastSelfId = '';
   let client: QqTransport | undefined;
   let nativeBridge: NativeBridge | undefined;
   let stopped = false;
@@ -135,22 +147,15 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  let overrides: { autoReply?: boolean; bridge?: { port?: number } } = {};
-  let overridesRead = false;
-  function readOverrides(): void {
-    if (overridesRead) return;
-    overridesRead = true;
-    const file = deps.stateFile;
-    if (!file) return;
-    try { overrides = JSON.parse(readFileSync(file, 'utf8')) as { autoReply?: boolean; bridge?: { port?: number } }; } catch { overrides = {}; }
-  }
+  const overrides = ((): { autoReply?: boolean; bridge?: { port?: number } } => {
+    try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
+  })();
   function writeOverrides(): void {
     const file = deps.stateFile;
     if (!file) return;
     try { writeFileSync(file, JSON.stringify(overrides, null, 2) + '\n', 'utf8'); } catch (error) { deps.logger.warn('QQ 原生通道：开关没存下来', error); }
   }
   const settings = (): QqNativeConfig => {
-    readOverrides();
     const base = deps.config();
     // 面板上改过端口就以面板为准；其余字段还是配置里那套。
     const bridge = overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port };
@@ -160,26 +165,6 @@ export function createQqNativeModule(deps: {
       bridge,
     };
   };
-
-  function remember(messageId: string): boolean {
-    if (!messageId) return true;
-    if (seen.has(messageId)) return false;
-    seen.add(messageId);
-    if (seen.size > SEEN_LIMIT) { const first = seen.values().next().value; if (first !== undefined) seen.delete(first); }
-    return true;
-  }
-
-  // 她说出去的消息 id。有人引用她的话，引用的就是这个 id。
-  const sentIds = new Set<string>();
-  function rememberSent(id: unknown): void {
-    const value = id == null ? '' : String(id);
-    if (value === '') return;
-    sentIds.add(value);
-    if (sentIds.size > SEEN_LIMIT) {
-      const oldest = sentIds.values().next().value;
-      if (oldest !== undefined) sentIds.delete(oldest);
-    }
-  }
 
   /**
    * 群里这句是不是在叫她。
@@ -217,7 +202,7 @@ export function createQqNativeModule(deps: {
     const config = settings();
     if (!config.enabled) return;
     const messageId = message.messageId;
-    if (!remember(messageId)) return;
+    if (messageId && !seen.add(messageId)) return;
     const selfId = message.selfId;
     const userId = message.userId;
     // Her own words come back through the same socket; answering them would be talking to herself.
@@ -228,9 +213,6 @@ export function createQqNativeModule(deps: {
     const conversationId = isGroup ? message.groupId ?? '' : userId;
     if (!conversationId) return;
     stats.lastEventAt = new Date().toISOString();
-    // 有人说话了：房间安静了多久她得记得，顺带记住自己这个号是哪个。
-    lastSelfId = selfId || lastSelfId;
-    // 引擎开没开都得记 —— 不然开关一拨开，它以为「一直没人说过话」。
     const speakerName = message.sender?.card || message.sender?.nickname || '';
     let identity: SpeakerIdentity;
     try {
@@ -253,16 +235,10 @@ export function createQqNativeModule(deps: {
       return;
     }
     const key = conversationKey(identity);
-    // 关掉自动回复的意思就是「别理它」：连问都不问。原来是先问完再决定发不发，
-    // 于是开关关着每条还是照样花一轮（今晚拿假服务器实测：两条合成消息各烧了一轮）。
-    // 群里没叫她的消息只进上下文，不开口、不花一轮。私聊不受这条管。
-    if (isGroup && !directedAtHer(message, config)) {
+    // 群里没叫她的话、自动回复关着时的话，都只进上下文：不开口、也不花一轮（关掉自动回复就是「别理它」，
+    // 连问都不问）。等她真被叫到，就知道刚才在说什么。私聊不看叫没叫她。
+    if ((isGroup && !directedAtHer(message, config)) || !config.autoReply || stopped) {
       pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
-      return;
-    }
-
-    if (!config.autoReply || stopped) {
-      pushContext(key, { id: messageId || `${Date.now()}`, occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       return;
     }
     const context = contexts.get(key) ?? [];
@@ -281,8 +257,8 @@ export function createQqNativeModule(deps: {
       pushContext(key, { id: answer.id, occurredAt: new Date().toISOString(), text: answer.text, identity: herIdentity }, config.contextMessages);
       const reply = answer.text.trim();
       if (!reply) return;
-      if (isGroup) rememberSent((await client?.sendGroup(conversationId, reply))?.messageId);
-      else rememberSent((await client?.sendPrivate(conversationId, reply))?.messageId);
+      const sent = await (isGroup ? client?.sendGroup(conversationId, reply) : client?.sendPrivate(conversationId, reply));
+      if (sent?.messageId) sentIds.add(String(sent.messageId));
       stats.sent += 1;
     } catch (error) {
       stats.failed += 1;
@@ -290,10 +266,6 @@ export function createQqNativeModule(deps: {
       deps.logger.warn(`QQ 回复 ${key} 失败: ${stats.lastError}`);
     } finally { answering.delete(key); }
   }
-
-    /**
-
-
 
   /**
    * 阳台：给机器上别的程序留的一条线。
@@ -307,6 +279,7 @@ export function createQqNativeModule(deps: {
     nativeBridge = createNativeBridge({
       ctx: deps.ctx,
       session: identity => deps.home(identity),
+      inWorld: deps.inWorld,
       config: () => {
         const live = settings().bridge;
         return { port: live.port, token: live.token, title: live.title, contextMessages: live.contextMessages };
@@ -351,7 +324,6 @@ export function createQqNativeModule(deps: {
     },
     /** 面板上那个「会不会自己回」的开关。 */
     setAutoReply(value: boolean) {
-      readOverrides();
       overrides.autoReply = value;
       writeOverrides();
       return this.status();
@@ -397,7 +369,7 @@ export function createQqNativeModule(deps: {
       void client?.stop();
       client = undefined;
       contexts.clear();
-      seen.clear();
+      seen.clear(); sentIds.clear();
     },
   };
 }

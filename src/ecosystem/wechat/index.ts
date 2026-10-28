@@ -13,10 +13,11 @@ import { admitContextImages } from './images.ts';
 import { dirname, join } from 'node:path';
 import { createWechatSending } from './sending.ts';
 import { createWechatReading } from './reading.ts';
+import { reassembleOnChange, scopedTool, type InWorld } from '../../worldScope.ts';
 
 export const WECHAT_PATH = '/dsh-world/wechat/ask';
 
-export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; acceptAgent?(agent: Agent): boolean; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const token = randomBytes(32).toString('hex');
   const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default' });
   const reading = createWechatReading({ target: sending.target });
@@ -28,14 +29,38 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
   /** What the adapter last said about the WeChat account itself; only the adapter knows whether it is logged in. */
   let accountState: 'online' | 'offline' | undefined;
   const settings = () => deps.settings?.() ?? { contextMessages: 8, bufferSeconds: 3 };
-  function attach(agent: Agent) {
-    if (stopped || attached.has(agent)) return;
-    const disposers: (() => void)[] = [];
-    try { for (const tool of [...sending.tools, reading.tool]) disposers.push(agent.ctx.tools.register(tool)); attached.set(agent, disposers); }
-    catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }
+  const { inWorld } = deps;
+  const inside = (agent: Agent) => !inWorld || inWorld(agent.session);
+  function detach(agent: Agent): boolean {
+    const disposers = attached.get(agent);
+    if (!disposers) return false;
+    attached.delete(agent);
+    for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* agent already disposed */ } }
+    return true;
   }
-  const detachCreate = deps.ctx.on('agent/created', ({ agent }) => { if (deps.acceptAgent?.(agent)) attach(agent); return undefined; });
-  const detachDispose = deps.ctx.on('agent/disposed', ({ agent }) => { attached.delete(agent); });
+  /** Gives the agent the WeChat tools while it is in her world and takes them away once it leaves; true when that changed them. */
+  function attach(agent: Agent): boolean {
+    if (stopped) return false;
+    if (!inside(agent)) return detach(agent);
+    if (attached.has(agent)) return false;
+    const disposers: (() => void)[] = [];
+    try {
+      for (const tool of [...sending.tools, reading.tool]) disposers.push(agent.ctx.tools.register(scopedTool(tool, () => inside(agent), () => detach(agent))));
+      attached.set(agent, disposers);
+    }
+    catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }
+    return true;
+  }
+  // Following her world, every session is reconciled as it is created, receives a message and assembles its prompt;
+  // without one, only the homes the module itself opens get the tools.
+  const disposers = [
+    deps.ctx.on('agent/disposed', ({ agent }) => { attached.delete(agent); }),
+    ...inWorld ? [
+      deps.ctx.on('agent/created', ({ agent }) => { attach(agent); return undefined; }),
+      deps.ctx.on('agent/inbox/inserted', ({ agent }) => { attach(agent); }),
+      reassembleOnChange(deps.ctx, attach),
+    ] : [],
+  ];
   const home = createWechatHome({ ...deps, home: async identity => { const agent = await deps.home(identity); attach(agent); return agent; }, images: async (identity, context, reference) => {
     if (!reference?.image && !context.some(message => message.image || message.reference?.image)) return [];
     if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
@@ -84,14 +109,13 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
     start() {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 4, references: true }, null, 2));
-      for (const agent of deps.ctx.agents.list()) if (deps.acceptAgent?.(agent)) attach(agent);
+      if (inWorld) for (const agent of deps.ctx.agents.list()) attach(agent);
     },
     stop() {
       if (stopped) return closing;
       stopped = true; reading.stop(); home.stop();
-      detachCreate(); detachDispose();
-      for (const disposers of attached.values()) for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* agent already disposed */ } }
-      attached.clear();
+      for (const dispose of disposers) dispose();
+      for (const agent of attached.keys()) detach(agent);
       try { if (JSON.parse(readFileSync(deps.file, 'utf8')).token === token) rmSync(deps.file, { force: true }); } catch { /* already absent, or a newer module owns the file */ }
       return closing = Promise.allSettled([...requests]).then(() => sending.stop());
     },

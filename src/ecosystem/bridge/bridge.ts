@@ -8,6 +8,7 @@ import { durableWrite } from '../../life/lifeStore.ts';
 import { errorText, Faults } from '../../faults.ts';
 import { realTimers, type LifeTimers } from '../../life/alarmTimer.ts';
 import { busyText, pushOf, type Outlet, type Push, type PushKind } from '../shared/outlets.ts';
+import { admit, type InWorld } from '../../worldScope.ts';
 
 export const REPLY_TIMEOUT_MS = 3 * 60_000;
 /** The words could not be handed to her home; the route answers 503. */
@@ -16,6 +17,7 @@ export interface BridgeDeps {
   ctx: Context;
   /** The current home, resolving or rebuilding it (the life line's own). */
   home(): Promise<Agent>;
+  inWorld?: InWorld;
   /** Where her replies and the busy notice go; each takes the kinds it lists. */
   outlets: readonly Outlet[];
   origin(): string;
@@ -106,6 +108,7 @@ export function createBridge(deps: BridgeDeps) {
     // Tracked first: steering can admit the words before it returns.
     track(words.id, agent.id);
     try {
+      admit(deps.inWorld, agent);
       // Like her partner typing in the home: into the running turn at its next step, or a new turn.
       if (agent.status === 'running') agent.steer(words); else agent.followup(words);
     } catch (error) {

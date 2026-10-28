@@ -7,7 +7,17 @@ export interface Review { at: string; day: string }
 export interface Greeting { at: string; kind: 'arrival' | 'return' }
 /** What her home spent on the local `day`, in CNY, and whether she was told she went past her budget. */
 export interface Spend { day: string; yuan: number; reminded?: true }
-export interface LifeState { version: 1; homeSessionId?: string; alarm?: Alarm; greeting?: Greeting; review?: Review; spend?: Spend }
+/**
+ * A word steered into her home whose turn has not been seen to start a step yet. It is written before the steer,
+ * so a turn that never runs (a hang, a crash, a closed app) is found again and sent again instead of counted.
+ */
+export interface PendingWake {
+  messageId: string; sessionId: string; sentAt: string; what: string;
+  scheduledAt: string; source: WakeRecord['source'];
+  /** What goes back on the schedule if the turn never runs. */
+  job: { alarm: Alarm } | { review: Review } | { greeting: Greeting };
+}
+export interface LifeState { version: 1; homeSessionId?: string; alarm?: Alarm; greeting?: Greeting; review?: Review; spend?: Spend; delivering?: PendingWake }
 /** `first` is a new home's first wake, `return` the word when her world starts again, `review` the daily look back. */
 export interface WakeRecord { scheduledAt: string; deliveredAt: string; source: AlarmSource | 'first' | 'return' | 'review'; lateMs: number }
 export interface ActivityRecord { time: string; sessionId: string; callId: string; tool: string; summary: string; outside: boolean; gapBefore?: true; status?: 'ok' | 'error' }

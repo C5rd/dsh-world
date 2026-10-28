@@ -20,15 +20,19 @@ window.__ModuleLoader__.load({
         return body
       })
     }
-    function api(path) { return fetch('/dsh-world/console/' + path, { cache: 'no-store' }).then(settle) }
-    function post(path, body) {
-      return fetch('/dsh-world/console/' + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
+    function getFrom(base, path) { return fetch(base + path, { cache: 'no-store' }).then(settle) }
+    function postTo(base, path, body) {
+      return fetch(base + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
     }
+    function api(path) { return getFrom('/dsh-world/console/', path) }
+    function post(path, body) { return postTo('/dsh-world/console/', path, body) }
     /** QQ 那几扇门在自己的前缀下（/dsh-world/qq/*），不和 console 混在一起。 */
-    function qqGet(path) { return fetch('/dsh-world/qq/' + path, { cache: 'no-store' }).then(settle) }
-    function qqPost(path, body) {
-      return fetch('/dsh-world/qq/' + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
-    }
+    function qqGet(path) { return getFrom('/dsh-world/qq/', path) }
+    function qqPost(path, body) { return postTo('/dsh-world/qq/', path, body) }
+    /** 保存没成时的那句话。 */
+    function failedTo(setMsg) { return function (e) { setMsg('保存失败：' + (e.message || e)) } }
+    /** 设置卡下面那行状态：没成（失败、请填…）标红，其余灰色。 */
+    function Status(props) { return props.msg ? h('div', { role: 'status', className: /失败|请填/.test(props.msg) ? 'dw-bad' : 'dw-muted' }, props.msg) : null }
     /** 快照，或 null 表示控制台不在（404、不是 JSON 的页面、没有 life 字段的回复）。 */
     function loadSnapshot() {
       return api('snapshot').then(function (s) {
@@ -199,7 +203,7 @@ window.__ModuleLoader__.load({
       function save() {
         setBusy(true)
         post('persona', persona).then(function () { setSaved(persona); setMsg('已保存。下次开始对话或压缩之后，她就照这份来。'); if (props.onSaved) props.onSaved() },
-          function (e) { setMsg('保存失败：' + (e.message || e)) }).then(function () { setBusy(false) })
+          failedTo(setMsg)).then(function () { setBusy(false) })
       }
       var preview = renderPersona(persona)
       return h('div', { className: 'dw-pane' },
@@ -224,7 +228,7 @@ window.__ModuleLoader__.load({
       useEffect(load, [])
       if (!prompt) return h('div', { className: 'dw-muted' }, msg || '读取中…')
       function save(value, done) {
-        post('world-prompt', { text: value }).then(function () { setMsg(done); load() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+        post('world-prompt', { text: value }).then(function () { setMsg(done); load() }, failedTo(setMsg))
       }
       return h('div', { className: 'dw-pane' },
         h(Card, { title: '世界提示词' },
@@ -246,7 +250,7 @@ window.__ModuleLoader__.load({
       function save() {
         var text = String(draft).trim(), value = text === '' ? null : Number(text)
         if (value !== null && !(value >= 0)) { setMsg('请填一个不小于 0 的数，或留空表示不限'); return }
-        post('budget', { daily: value }).then(function () { setMsg(value === null ? '已改为不限' : '已保存'); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+        post('budget', { daily: value }).then(function () { setMsg(value === null ? '已改为不限' : '已保存'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
       }
       var over = daily != null && spent >= daily
       return h(Card, { title: '今日花费', delay: 240 },
@@ -256,7 +260,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'decimal', placeholder: '每天额度（元），留空不限', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
-        msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
+        h(Status, { msg: msg }))
     }
     /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效。 */
     function Memory(props) {
@@ -269,13 +273,13 @@ window.__ModuleLoader__.load({
       function save() {
         var text = String(draft).trim(), value = text === '' ? null : Number(text)
         if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 200'); return }
-        post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+        post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
       }
       function saveScope() {
         post('archive-scope', { scope: scope }).then(function (result) {
           setMsg(result.restartRequired ? '已保存。请重启 DSH，启动后按新范围和消息时间重建记忆块。' : '归档范围已保存。')
           if (props.onSaved) props.onSaved()
-        }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+        }, failedTo(setMsg))
       }
       return h(Card, { title: '记忆', delay: 180 }, mem ? [
         h('div', { key: 'm' }, h('span', { className: 'dw-big' }, mem.turns), h('span', { className: 'dw-muted' }, ' / ' + window_ + ' 轮')),
@@ -290,8 +294,34 @@ window.__ModuleLoader__.load({
         h('div', { key: 's', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
-        msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
+        h(Status, { key: 'x', msg: msg }),
       ] : h('div', { className: 'dw-muted' }, '—'))
+    }
+    function WorkspacePermission(props) {
+      var workspace = props.workspace, permission = workspace && workspace.defaultPermission
+      var selectionState = useState({ saved: permission, draft: permission }), selection = selectionState[0], setSelection = selectionState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      useEffect(function () {
+        setSelection(function (current) { return current.saved === permission ? current : { saved: permission, draft: current.draft === current.saved ? permission : current.draft } })
+      }, [permission])
+      if (!workspace) return null
+      var draft = selection.draft, selected = workspace.options.find(function (option) { return option.value === draft })
+      function save() {
+        setBusy(true)
+        post('workspace-permission', { permission: draft }).then(function () {
+          setSelection({ saved: draft, draft: draft }); setMsg('已保存。新建会话将使用所选权限。')
+          if (props.onSaved) props.onSaved()
+        }, failedTo(setMsg)).then(function () { setBusy(false) })
+      }
+      return h(Card, { title: '工作区权限' },
+        h('div', { className: 'dw-muted' }, '仅用于此工作区新建的会话；已有会话保留各自的权限。'),
+        h('div', { className: 'dw-setting' },
+          h('select', { value: draft, disabled: busy, 'aria-label': '新建会话默认权限', onChange: function (e) { setSelection({ saved: selection.saved, draft: e.target.value }); setMsg('') } },
+            workspace.options.map(function (option) { return h('option', { key: option.value, value: option.value, title: option.description }, option.name) })),
+          h('button', { className: 'dw-btn', disabled: busy || draft === selection.saved || !selected, onClick: save }, busy ? '保存中…' : '保存')),
+        selected && selected.description ? h('div', { className: 'dw-muted' }, selected.description) : null,
+        h(Status, { msg: msg }))
     }
     /** 微信：适配器每约 2 秒来问一次，最近一次来问的时间就是连接状态；两个读取参数在它下次来问时同步。 */
     function Wechat(props) {
@@ -317,7 +347,7 @@ window.__ModuleLoader__.load({
           setMsg('已保存。适配器下次轮询时同步，当前这一批沿用原值。')
           if (c === null) setContext('8'); if (b === null) setBuffer('3')
           if (props.onSaved) props.onSaved()
-        }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+        }, failedTo(setMsg))
       }
       return h(Card, { title: '微信', delay: 300 },
         h('div', null, h('span', { className: 'dw-big ' + (contacted && !offline ? 'dw-ok' : 'dw-bad') }, stateText)),
@@ -337,7 +367,7 @@ window.__ModuleLoader__.load({
           h('input', { type: 'text', inputMode: 'decimal', 'aria-label': '图片缓冲秒数', placeholder: '缓冲秒数，默认 3', value: buffer, onChange: function (e) { setBuffer(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
         h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是私聊图片等待后续图片或文字的秒数。与共享记忆的 200 轮无关。'),
-        msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
+        h(Status, { msg: msg }))
     }
     /** QQ：她自己那条 OneBot 通道（原生），以及 SnowLuma 控制台的入口。 */
     function Qq(props) {
@@ -422,7 +452,7 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台')),
         h('div', { key: 'b', className: 'dw-setting' },
           h('button', { className: 'dw-btn', disabled: busy, onClick: function () { if (props.onSaved) props.onSaved() } }, '刷新')),
-        msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
+        h(Status, { key: 'x', msg: msg }),
       ])
     }
     /**
@@ -504,6 +534,7 @@ window.__ModuleLoader__.load({
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
+          snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
           snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null,
           snap.wechat ? h(Wechat, { wechat: snap.wechat, zone: zone, onSaved: props.refresh }) : null,
           snap.native ? h(Qq, { native: snap.native, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
@@ -596,7 +627,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { WorkspacePermission: WorkspacePermission, Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

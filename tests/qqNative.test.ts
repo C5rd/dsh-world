@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionId } from '@deepseek-ai/dsh-session';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
 import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
@@ -63,6 +64,55 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
 });
 
 async function settle(ms = 400) { await new Promise(resolve => setTimeout(resolve, ms)); }
+
+test('QQ 模块拒绝工作区外的 home，不注入上下文或消息', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns++; return textResponse('不该回复'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('outside'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const members = new Set<string>(['world-home']);
+  const messages: string[] = [];
+  ctx.on('session/event', (session, event) => { if (session.id === agent.id && event.type === 'user/message') messages.push(event.data.id); });
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, inWorld: candidate => members.has(candidate.id), config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emit(incoming());
+  await settle();
+
+  assert.equal(turns, 0);
+  assert.deepEqual(messages, []);
+  assert.deepEqual(wire.sent, []);
+  assert.equal(channel.status().failed, 1);
+  assert.match(channel.status().lastError!, /工作区/);
+});
+
+test('QQ home 等待空闲期间移出工作区，不再注入上下文或消息', async t => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let playing!: () => void; const started = new Promise<void>(resolve => { playing = resolve; });
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () { turns++; if (turns === 1) { playing(); await gate; } yield* textResponse('忙完了'); })());
+  cleanup.push(release);
+  const agent = (await ctx.agents.create({ sessionId: SessionId('moving-home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '先忙着' }] }));
+  await started;
+  let waiting!: () => void; const idleStarted = new Promise<void>(resolve => { waiting = resolve; });
+  const whenIdle = agent.whenIdle.bind(agent);
+  agent.whenIdle = () => { waiting(); return whenIdle(); };
+  const members = new Set<string>([agent.id]);
+  const messages: string[] = [];
+  ctx.on('session/event', (session, event) => { if (session.id === agent.id && event.type === 'user/message') messages.push(event.data.id); });
+  const home = createQqHome({ ctx, home: async () => agent, inWorld: candidate => members.has(candidate.id) }); cleanup.push(home.stop);
+  const identity = speakerIdentity({ channel: 'qq', accountId: 'bot', conversationType: 'group', conversationId: 'family', speakerId: 'qq:owner' });
+  const answer = home.ask('不能进入原会话', identity, [{ id: 'past', occurredAt: '2026-10-28T00:00:00.000Z', text: '旧消息', identity }]);
+  await idleStarted;
+  members.delete(agent.id);
+  const rejected = assert.rejects(answer, /工作区/);
+  release();
+  await rejected;
+  await whenIdle();
+  assert.equal(turns, 1);
+  assert.deepEqual(messages, []);
+});
 
 test('关掉自动回复就是「收到但不理」：连问都不问，一轮都不花', async t => {
   let turns = 0;
@@ -255,6 +305,47 @@ test('她回过的话记成她自己说的：下一轮的上下文里那几句�
   assert.match(injected[0], /"role":"assistant"/, '她说过的那句是 assistant，不是对方说的');
 });
 
+test('阳台等待空闲期间移出工作区，不再注入上下文或敲门消息', async t => {
+  for (const kind of ['message', 'ring']) await t.test(kind, async t => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let playing!: () => void; const started = new Promise<void>(resolve => { playing = resolve; });
+    let turns = 0;
+    const { ctx, cleanup, root } = await hostFixture(t, () => (async function* () { turns++; if (turns === 1) { playing(); await gate; } yield* textResponse('忙完了'); })());
+    cleanup.push(release);
+    const agent = (await ctx.agents.create({ sessionId: SessionId(`moving-${kind}`), agentOptions: { provider: 'test', model: 'test' } })).agent;
+    agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '先忙着' }] }));
+    await started;
+    let waiting!: () => void; const idleStarted = new Promise<void>(resolve => { waiting = resolve; });
+    const whenIdle = agent.whenIdle.bind(agent);
+    agent.whenIdle = () => { waiting(); return whenIdle(); };
+    const members = new Set<string>([agent.id]);
+    const messages: string[] = [];
+    ctx.on('session/event', (session, event) => { if (session.id === agent.id && event.type === 'user/message') messages.push(event.data.id); });
+    const port = 13900 + Math.floor(Math.random() * 100);
+    const token = 'secret-token-workspace-01';
+    const bridge = createNativeBridge({
+      ctx, session: async () => agent, inWorld: candidate => members.has(candidate.id),
+      config: () => ({ port, token, title: '阳台', contextMessages: 4 }),
+      worldDir: root, script: 'qq-line.js', log: () => {},
+    });
+    await bridge.start(); cleanup.push(bridge.stop);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`);
+    cleanup.push(() => ws.close());
+    await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    ws.send(JSON.stringify({ kind, threadId: 'moving-line', text: '不能进入原会话' }));
+    await idleStarted;
+    members.delete(agent.id);
+    release();
+    await whenIdle();
+    await settle();
+
+    assert.equal(turns, 1);
+    assert.deepEqual(messages, []);
+    assert.match(bridge.status().lastError!, /工作区/);
+    assert.equal(bridge.status().spoken, 0);
+  });
+});
+
 test('阳台：外面递一句话进来，她把原话吐回那条线；口令不对连不上', async t => {
   let turns = 0;
   const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('听见了，这条线是通的。'); });
@@ -374,4 +465,15 @@ test('阳台：线走了以后她说的话记成 dropped，不再混进 spoken',
   assert.equal(status.relayed, 1);
   assert.equal(status.spoken, 0, '线都走了，不该算"说出去了"');
   assert.equal(status.dropped, 1, '没递到要单独记一笔');
+});
+
+test('面板先改阳台端口，也不会丢掉之前存下的自动回复开关', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-state-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const make = () => createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), stateFile, logger: quiet, transport: fakeTransport().factory });
+  make().setAutoReply(false);
+  make().setBridge({ port: 0 });
+  assert.equal(make().status().autoReply, false);
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { autoReply: false, bridge: { port: 0 } });
 });

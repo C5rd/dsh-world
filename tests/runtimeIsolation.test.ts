@@ -35,3 +35,23 @@ test('hot reload isolates an active corrupt session, keeps healthy turns running
   bad.followup(user('repaired now')); await bad.whenIdle(); await world.flush();
   assert.equal(requests.length, 3); assert.deepEqual(world.faults(), []);
 });
+
+test('sessions that can never carry her world are not read, tracked or reported', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  const persistence = ctx.sessionPersistence, open = persistence.open.bind(persistence);
+  const reads: string[] = [];
+  persistence.open = async (id, mode) => { if (mode === 'read') reads.push(id); return open(id, mode); };
+  cleanup.push(() => { persistence.open = open; });
+  const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
+  await world.start();
+  const coding = (await ctx.agents.create({ sessionId: SessionId('coding'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const helper = (await ctx.agents.create({ sessionId: SessionId('helper'), meta: { agentPreset: 'companion', origin: 'subagent', delegationDepth: 1 }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  for (const agent of [coding, helper]) { agent.followup(user('work')); await agent.whenIdle(); }
+  assert.equal(requests.length, 2);
+  assert.deepEqual(reads.filter(id => id === 'coding' || id === 'helper'), []);
+  assert.deepEqual(world.faults(), []);
+  assert.equal(errors.length, 0);
+});

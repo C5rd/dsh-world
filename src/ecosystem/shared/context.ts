@@ -68,3 +68,9 @@ function contextMessages(value: unknown, current: SpeakerIdentity, limit: number
     return { id: item.id, occurredAt: item.occurredAt, text: item.text, identity, ...(image ? { image } : {}), ...(reference ? { reference } : {}) };
   });
 }
+
+/** The messages before this one as JSON for her to read, each marked as hers (`assistant`) or someone else's. */
+export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity): string {
+  const self = `${current.channel}:${current.accountId}`;
+  return JSON.stringify(context.map(message => ({ ...message, role: message.identity.speakerId === self ? 'assistant' : 'user' })));
+}

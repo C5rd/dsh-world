@@ -46,7 +46,7 @@ docker build -f docker/Dockerfile.smoke --build-arg BASE_IMAGE=node:22-slim -t d
 docker run --rm dsh-world-smoke
 ```
 
-它做的是：`npm pack` 出 `dsh-world-0.6.0.tgz` → `dsh plugin --profile web add <tgz>`（装进 `dsh web` 用的那个 profile）→ 用 `docker/container.yml` 那一层覆盖把 `qqNative` 打开并指向容器里的假 OneBot → `dsh web --patch … --port 3355 --no-open` 起一个没有界面的宿主 → `docker/smoke.mjs` 等端口、喂一条假群消息、断言 `/dsh-world/qq/native` 收到、`/dsh-world/console/snapshot` 里有 `native`、再把阳台开起来连一下。
+它做的是：`npm pack` 出 `dsh-world-0.6.2.tgz` → `dsh plugin --profile web add <tgz>`（装进 `dsh web` 用的那个 profile）→ 用 `docker/container.yml` 那一层覆盖把 `qqNative` 打开并指向容器里的假 OneBot → `dsh web --patch … --port 3355 --no-open` 起一个没有界面的宿主 → `docker/smoke.mjs` 等端口、喂一条假群消息、断言 `/dsh-world/qq/native` 收到、`/dsh-world/console/snapshot` 里有 `native`、再把阳台开起来连一下。
 
 **它现在在 Linux 上跑出来的结果是**（这条结论比断言本身值钱）：
 

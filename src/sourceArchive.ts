@@ -17,6 +17,10 @@ export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldCo
   const header = session.header;
   return header.agentPreset === config.agentPreset && header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 }
+/** One of her sessions that is also in her room's workspace; without a membership test, any of her sessions. */
+export function inWorld(session: Pick<Session, 'header' | 'id'>, config: WorldConfig, inWorkspace?: (sessionId: string) => boolean): boolean {
+  return belongsToWorld(session, config) && (inWorkspace?.(session.id) ?? true);
+}
 const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
 const ordinary =(header: Session['header']) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 

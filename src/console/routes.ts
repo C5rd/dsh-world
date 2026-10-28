@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validTurns, validWechatBuffer, validWechatContext, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
+import { validTurns, validWechatBuffer, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
@@ -27,6 +27,7 @@ export interface ConsoleActions {
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
+  setWorkspacePermission(permission: string): void;
   /** A field left out stays as it is; null goes back to its default. */
   /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
   setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | undefined>;
@@ -77,6 +78,11 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
       return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });
+    }
+    case '/console/workspace-permission': {
+      if (!validWorkspacePermission(body?.permission)) return bad('工作区权限必须为非空字符串');
+      try { actions.setWorkspacePermission(body.permission); return ok(); }
+      catch (error) { return bad(error instanceof Error ? error.message : String(error)); }
     }
     case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };

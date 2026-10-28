@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
+import type { Session } from '@deepseek-ai/dsh-session';
 import z from '@deepseek-ai/schemastery';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
@@ -27,8 +28,9 @@ import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.
 import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
 import { createAdapterSupervisor, type AdapterSupervisor } from './ecosystem/wechat/supervisor.ts';
 import { createChannelSessions } from './ecosystem/shared/sessions.ts';
-import { createArchiveSelection } from './archiveSelection.ts';
-import { belongsToWorld } from './sourceArchive.ts';
+import { createArchiveSelection, createWorkspaceMembership } from './archiveSelection.ts';
+import { inWorld } from './sourceArchive.ts';
+import { createWorkspacePermissions } from './workspacePermissions.ts';
 
 export { createWorldRuntime } from './runtime.ts';
 export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor } from './types.ts';
@@ -78,6 +80,7 @@ export const Config = z.object({
   wechat: z.boolean().default(false),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
+  toastAppId: z.string().description('系统通知用的 AppUserModelID；不填就在开始菜单里找 DSH 桌面版'),
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
 });
@@ -109,14 +112,18 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })();
   const storedHome = () => lifeStore?.read().homeSessionId;
   let isHome: (sessionId: string) => boolean = id => id === storedHome();
-  const includesSession = createArchiveSelection(ctx, power.archiveScope(), id => isHome(id), options.roomDir);
+  /** Whose conversations her archive keeps (the home, or her whole workspace). */
+  const archiveSession = createArchiveSelection(ctx, power.archiveScope(), id => isHome(id), options.roomDir);
+  /** Where her world reaches: her room's workspace, and in it the sessions of her preset. */
+  const inWorkspace = createWorkspaceMembership(ctx, options.roomDir);
+  const inWorldSession = (session: Session) => inWorld(session, config, inWorkspace);
 
   let memory: ReturnType<typeof createWorldRuntime> | undefined;
   let stopLifeLine: (() => Promise<void>) | undefined;
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession: includesSession }, power.memoryTurns);
+    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession, inWorkspace }, power.memoryTurns);
     await memory.start({ fresh });
   }
   async function stopMemory(): Promise<void> {
@@ -135,6 +142,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
+    const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);
     // QQ 的两扇门：她自己那条 OneBot 通道的状态与开关，以及 SnowLuma 的控制台。**无条件注册** —— 通道
     // 关着的时候 /native 回 null，而 SnowLuma 那扇门跟通道没关系。（这里原来还有一半是给外面那个
     // qq-bridge 进程用的，连 qqBridgeDir 一起在 2026-10-27 拆掉了。当时的教训：那条路由是注册在「有桥
@@ -165,8 +173,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       await wechatClosing;
         const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
         channels = groupSessions;
-        wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, acceptAgent: agent => belongsToWorld(agent.session, config), home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
-          ...createWechatRecorder(store, config.worldId, includesSession) });
+        wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, inWorld: inWorldSession, home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
+          ...createWechatRecorder(store, config.worldId, archiveSession) });
         wechat.start(); unregisterWechat = webServer.register(wechat.route);
         if (config.wechatAdapter?.python && config.wechatAdapter.config) { adapter = createAdapterSupervisor({ python: config.wechatAdapter.python, config: config.wechatAdapter.config, logFile: join(worldDir, 'wechat-adapter.log'), log: message => lifeCtx.logger.warn(message) }); adapter.start(); }
     }
@@ -189,6 +197,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         qqChannels = groupSessions;
         qqNative = createQqNativeModule({
           ctx: lifeCtx,
+          inWorld: inWorldSession,
           // `none` keeps private test traffic out of her real home, as groups are by default.
           home: identity => {
             const bind = q.bindHomeSession ?? 'owner';
@@ -229,10 +238,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       try {
         await lifeStop;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
-        const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast() } : {}), outlets };
-        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget });
+        const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
+        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace });
         life = current; isHome = current.isHome;
-        if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
+        if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(current);
         if (config.qqNative?.enabled && power.qqEnabled()) await startQqNative(current);
         faults.clear('life');
@@ -257,7 +266,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, native: () => qqNative?.status() ?? null,
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
@@ -278,6 +287,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
+      setWorkspacePermission: permission => { permissions.set(permission); sources.invalidate(); },
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';

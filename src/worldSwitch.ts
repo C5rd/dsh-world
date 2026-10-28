@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
@@ -24,6 +24,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
+    ...(validWorkspacePermission(stored?.workspacePermission) ? { workspacePermission: stored.workspacePermission } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
     ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
@@ -41,6 +42,11 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     setArchiveScope(scope: MemoryArchiveScope): void {
       if (!validArchiveScope(scope)) throw new Error('归档范围只能为 home 或 workspace');
       save({ ...settings, archiveScope: scope });
+    },
+    workspacePermission: () => settings.workspacePermission ?? 'danger-full-access',
+    setWorkspacePermission(permission: string): void {
+      if (!validWorkspacePermission(permission)) throw new Error('工作区权限必须为非空字符串');
+      save({ ...settings, workspacePermission: permission });
     },
     running: () => settings.running,
     set: (running: boolean) => save({ ...settings, running }),
@@ -77,6 +83,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
 }
 export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
+export const validWorkspacePermission = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
 export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;

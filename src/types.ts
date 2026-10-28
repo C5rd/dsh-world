@@ -48,6 +48,8 @@ export interface WorldConfig {
   wechatAdapter?: { python?: string; config?: string };
   /** reach_out also shows a system notification (Windows only); on by default. */
   toast?: boolean;
+  /** The desktop's notification identity (AppUserModelID); found in the Start menu when absent. */
+  toastAppId?: string;
   /** Names besides this machine the console and the bridge answer to (a LAN address or domain behind a reverse proxy). */
   allowedHosts?: string[];
   // 外面那个 qq-bridge 进程在 2026-10-27 拆掉了，它的五个配置键（qqBridgeDir/Port/Node/AutoStart/
