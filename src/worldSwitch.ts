@@ -28,7 +28,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
     ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
-    ...(stored?.qqEnabled === false ? { qqEnabled: false } : {}),
+    ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -62,13 +62,16 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
     },
-    /** The console's switches for the WeChat and QQ modules; on unless turned off, and only an off switch is written out. */
+    /**
+     * The console's switches for the WeChat and QQ modules. WeChat is on unless turned off; QQ, whose SDK is an
+     * optional dependency, is off until turned on, so its code is not even loaded before someone asks for it.
+     */
     wechatEnabled: () => settings.wechatEnabled !== false,
-    qqEnabled: () => settings.qqEnabled !== false,
+    qqEnabled: () => settings.qqEnabled === true,
     setModules(next: { wechat?: boolean; qq?: boolean }): void {
       const { wechatEnabled, qqEnabled, ...rest } = settings;
-      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled !== false;
-      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? {} : { qqEnabled: false }) });
+      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled === true;
+      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? { qqEnabled: true } : {}) });
     },
     /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
     wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,

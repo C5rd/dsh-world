@@ -52,9 +52,15 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   wsUrl: 'ws://127.0.0.1:1',
   accessToken: '',
   allowPrivate: ['3475994805'],
+  ownerQQ: '',
   allowGroups: ['681528723'],
   autoReply: true,
   contextMessages: 3,
+  // 一条一问：合批有自己的用例。
+  batchQuietMs: 0,
+  mutedUntil: '',
+  snowlumaHome: '',
+  supervise: false,
   bindHomeSession: 'none',
   groupTrigger: 'mention',
   groupKeywords: [],
@@ -472,8 +478,8 @@ test('面板先改阳台端口，也不会丢掉之前存下的自动回复开�
   const dir = mkdtempSync(join(tmpdir(), 'dw-qq-state-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const stateFile = join(dir, 'qq-native.json');
   const make = () => createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), stateFile, logger: quiet, transport: fakeTransport().factory });
-  make().setAutoReply(false);
-  make().setBridge({ port: 0 });
+  make().update({ autoReply: false });
+  make().update({ bridge: { port: 0 } });
   assert.equal(make().status().autoReply, false);
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { autoReply: false, bridge: { port: 0 } });
 });

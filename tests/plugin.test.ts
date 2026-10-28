@@ -625,10 +625,11 @@ test('a module the config does not provide cannot be switched on from the consol
   await until(async () => routes.length === 2, 'console');
   const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: true, running: false } });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: false, running: false } });
+  assert.equal((await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
 });
 
-test('the QQ off switch survives world restart and plugin reload; re-enabling opens one connection', async t => {
+test('QQ stays off until switched on; the off switch survives world restart and plugin reload, and re-enabling opens one connection', async t => {
   const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('reply'));
   isolateHome(t, root);
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -638,13 +639,16 @@ test('the QQ off switch survives world restart and plugin reload; re-enabling op
   server.on('connection', () => { connections++; });
   const port = (server.address() as AddressInfo).port;
   const { routes } = provideLifeHost(ctx);
-  const options = { ...config, life: true, qqNative: { enabled: true, wsUrl: `ws://127.0.0.1:${port}` } };
+  // No watchdog here: it would go looking for a real SnowLuma on this machine.
+  const options = { ...config, life: true, qqNative: { enabled: true, wsUrl: `ws://127.0.0.1:${port}`, supervise: false } };
   let plugin = ctx.plugin(worldPlugin, options); cleanup.push(() => plugin.dispose()); await plugin.await();
   await until(async () => routes.length === 2, 'console');
   await consolePost(routes, '/dsh-world/console/start'); await firstWakeDone(ctx, root);
+  assert.equal(connections, 0, 'the config only allows QQ; the console switches it on');
+  await consolePost(routes, '/dsh-world/console/modules', { qq: true });
   await until(async () => connections === 1, 'QQ connected');
   await consolePost(routes, '/dsh-world/console/modules', { qq: false });
-  assert.equal(JSON.parse(await readFile(join(root, 'worlds/fish/world.json'), 'utf8')).qqEnabled, false);
+  assert.equal('qqEnabled' in JSON.parse(await readFile(join(root, 'worlds/fish/world.json'), 'utf8')), false);
   await consolePost(routes, '/dsh-world/console/stop');
   await consolePost(routes, '/dsh-world/console/start');
   const off = { available: true, enabled: false, running: false };

@@ -34,7 +34,7 @@
 ```powershell
 node .\scripts\update-world.mjs `
   --profile '<DSH_HOME>/profiles/desktop' `
-  --package '<下载目录>/dsh-world-0.6.2.tgz' `
+  --package '<下载目录>/dsh-world-0.6.3.tgz' `
   --pnpm '<DSH 自带 pnpm 的入口文件>'
 ```
 
@@ -60,7 +60,7 @@ npm pack      # 会先 typecheck + build，产出 dsh-world-<版本>.tgz
 
 安装会自动执行 `scripts/patch-snowluma.mjs`，为固定的 SnowLuma SDK 1.x 补齐相对 ESM 导入的 `.js` 后缀，保留 Node 22 支持；不需要升级 DSH 的 Node。QQ 只在启用时加载，加载失败只显示 QQ 自身故障。
 
-拿到 `dsh-world-0.6.2.tgz` 的**绝对路径**，然后：
+拿到 `dsh-world-0.6.3.tgz` 的**绝对路径**，然后：
 
 ```bash
 cd <DSH_HOME>/profiles/<你的 profile>
@@ -101,11 +101,12 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
           groupKeywords: []
           bindHomeSession: none                 # owner = 群各自独立、主人私聊用她的家会话；all = 都用家会话；none = 各建一个
           snowlumaHome: 'D:\SnowLuma'           # 去哪儿读 SnowLuma 的 config/runtime.json（控制台那扇门要用）；不填按 D:\SnowLuma、C:\SnowLuma、E:\SnowLuma、~/SnowLuma、~/snowluma 挨个认
-          # proactive: { enabled: false, dryRun: true, policy: { ... } }   # 主动开口，默认关
+          supervise: true                       # 看门狗：QQ 开着时端口不通就把 SnowLuma 拉起来；不想让插件动手就写 false
 ```
 
 > 这一段**先照抄**：token、白名单、端口这些真值要等第二步人把 SnowLuma 装好才有，第五步再填。
 > `qqNative.enabled` 写 `false`（或者整段不写）= 不接 QQ，控制台里那张 QQ 卡整个不出现。这是刻意的。
+> 写 `true` 也只是**允许**接 QQ：还要在控制台「概览 → 接入」里把 QQ 拨开，才会加载它的代码、连上通道。`@snowluma/sdk` 是可选依赖，没装不影响插件本身。
 > 示例里 `bindHomeSession` 写了 `none`，是为了第一次联调不往她真正生活着的家会话里写东西；通道顺了以后改回默认的 `owner`（群各自独立、主人私聊用她的家会话）。
 > 路径写 Windows 绝对路径，用正斜杠或单反斜杠都行。
 
@@ -175,7 +176,7 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
           enabled: true
           wsUrl: ws://127.0.0.1:3003
           accessToken: '<第二步拿到的 WS 服务端 token，没有就留空>'
-          allowPrivate: [ '3475994805' ]        # 谁能私聊她；主动开口也发给这里面的第一个人
+          allowPrivate: [ '3475994805' ]        # 谁能私聊她；没填 ownerQQ 时，她自己开口的话推给这里面的第一个人
           allowGroups: [ '681528723' ]          # 要放行的群
           autoReply: true
           contextMessages: 6
@@ -218,40 +219,24 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 
 `contextMessages` 控制每轮带几条最近的上下文（默认 6）——群里那些没叫她的消息，价值就在这里：她看得见，但不接。
 
-### 主动开口（她先说话）
+### 她自己开口
 
-`proactive` 默认关。打开后（控制台卡上那个「让她自己想说话时说」）她会自己隔一阵子找时机开口。规矩由 `policy` 定，默认值：
-
-| 键 | 默认 | 意思 |
-|---|---|---|
-| `checkIntervalMs` | `300000` | 每 5 分钟判一轮 |
-| `idleThresholdMs` | `1800000` | 至少 30 分钟没人说话才考虑开口 |
-| `minIntervalMs` | `10800000` | 距上次主动开口要超过 3 小时 |
-| `maxPerDay` | `3` | 每天最多主动发 3 条 |
-| `maxCallsPerDay` | `12` | 每天最多问她 12 次（判成要开口才问，问一次算一次） |
-| `quietHours` | `23:00` – `08:00` | 静默时段不开口 |
-| `sendProbability` | `1` | 判成要开口时真发的概率（0–1） |
-| `failureLimit` | `3` | 连续失败 3 次，当天不再问 |
-
-`dryRun: true` 是**演练**：照常判定，但不问她、也不发消息、不花配额 —— 想先看看她判得准不准，就开这个。`proactive.enabled` 关着时 `policy` 里的数字一个都不看。
-
-主动开口只发给 `allowPrivate` 里的**第一个人**；白名单空着就发不出去（会记成失败）。
-
-账在 `~/.dsh/worlds/<世界>/qq-proactive.json`。
+她在家里自己开的那一轮（闹钟、世界线）说完的话，会推一份给主人的 QQ：`ownerQQ`，空着就取 `allowPrivate` 的第一个人（白名单不止一人时一定要填）。有人说话的轮次是在回那个人，不另推。静默（`mutedUntil`，或卡上「静默到这个点」）期间也不推。
 
 ### 控制台那张 QQ 卡上有什么
 
-「世界控制台」里那张 QQ 卡写的是：`● 她自己连着 ws://…`（或「她自己的通道没连上」）+ `收 N 个会话 · 发 N 条[ · 失败 N][ · 挡下 N][ · 会自己回 / 只看不回]`，出问题会跟一句 `lastError`。
+「世界控制台」里那张 QQ 卡写的是：`● 她自己连着 ws://…`（或「她自己的通道没连上」）+ `收 N 个会话 · 发 N 条[ · 失败 N][ · 挡下 N][ · 会自己回 / 只看不回]`，出问题会跟一句 `lastError`；下面一行是看门狗的状态（SnowLuma 通不通、拉起过几次、为什么拉不起来）。
 
 下面是一排控件：
 
 - **「会自己回话 / 只看不回」** —— 等于 `autoReply`。想只验链路通不通就先关掉：她会收、但一个字都不回，也不开会话、不花 AI 的额度。
-- **「让她自己想说话时说 / 不主动开口」** —— 上面的 `proactive.enabled`。
-- **「演练模式（判而不做，不问她也不发）」** —— 上面的 `proactive.dryRun`。
+- **「静默到这个点 / 立刻恢复」** —— 等于 `mutedUntil`：到点前只收不回、上下文照记，到点自己醒。
+- **私聊 / 群白名单** —— 等于 `allowPrivate` / `allowGroups`，多个用逗号隔开；留空就是谁都不收。
 - **「打开 SnowLuma 控制台」** —— 见下。
+- **「拉起 SnowLuma」** —— 手动把 SnowLuma 拉起来一次，和看门狗走同一条路。
 - **「刷新」** —— 重新拉一次快照。
 
-这三个勾选和另外两个按钮都是**活的**：改完下一次判定就生效，不用重启。临时覆盖存在 `~/.dsh/worlds/<世界>/qq-native.json`；profile 里的值仍然是最底下的默认。
+这些都是**活的**：改完下一条消息就生效，不用重启。临时覆盖存在 `~/.dsh/worlds/<世界>/qq-native.json`；profile 里的值仍然是最底下的默认。
 
 设置页「模块」里的 QQ 那一行管的是**通道本身**：关掉就断开这条 OneBot 连接、QQ 卡隐藏；再打开就恢复。状态记在 `world.json`。配置里没写 `qqNative.enabled: true` 时，这个开关按不动（控制台会明说）。
 
@@ -301,7 +286,8 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 | 私聊发了没反应，卡上「挡下 N」在涨 | 那个 QQ 号不在 `allowPrivate` 里。白名单留空 = 谁都不理，抬手加上去 |
 | 群里 @ 她了，还是不接 | 群里默认 `groupTrigger: mention`，只有 @、引用她的消息、命中 `groupKeywords` 才算叫她；另外确认群号在 `allowGroups` 里（要数字，别写成别的字） |
 | 她收得到但一个字不回 | `autoReply` 关着（卡上写着「只看不回」），或者卡上那个勾被拨掉了 |
-| 主动开口一条也发不出来 | `allowPrivate` 是空的（没处发）；或者 `dryRun` 开着（演练不真发）；或者还没满足 `idleThresholdMs` / 已到 `maxPerDay` / 正处 `quietHours` |
+| 她自己开口的话没推到 QQ | `ownerQQ` 和 `allowPrivate` 都空着（没处发）；或者正在静默；或者那一轮是在回别人的话 |
+| 卡上写着「排队待发」 | 发送失败的消息在队里，每 3 秒重试一次，最多留 5 分钟；通道连回来就会发出去 |
 | 点「打开 SnowLuma 控制台」说「还差一次面板密码」 | 第一次要先填一次 SnowLuma 的面板密码，填对了就记在 `<世界目录>/panel.json`，之后不用再填 |
 | 点那扇门说「没找到 SnowLuma 的控制台配置」 | `snowlumaHome` 没填或填错；它要的是 SnowLuma 的**安装目录**（里面得有 `config/runtime.json`） |
 | 设置页「模块」里的 QQ 开关按不动 | 配置里没写 `qqNative.enabled: true`，控制台不会凭空打开一个没配的模块 |

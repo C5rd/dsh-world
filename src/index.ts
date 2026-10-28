@@ -18,7 +18,7 @@ import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
 import type { QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
-import { createConsoleDoors } from './ecosystem/qq/panel.ts';
+import { createConsoleDoors, discoverSnowlumaHome } from './ecosystem/qq/panel.ts';
 import { createWorldRuntime } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -56,16 +56,24 @@ export const Config = z.object({
     wsUrl: z.string().default('ws://127.0.0.1:3003'),
     accessToken: z.string().default(''),
     allowPrivate: z.array(z.string()).default([]),
+    // 她自己开口（家里闹钟那一轮）的话推给谁。空着退回 allowPrivate 的第一个；白名单不止一人时一定要填。
+    ownerQQ: z.string().default(''),
     allowGroups: z.array(z.string()).default([]),
     autoReply: z.boolean().default(true),
     contextMessages: z.number().default(6),
+    // 同一会话这几毫秒内说的话攒成一条再问她（0 = 一条一问）。
+    batchQuietMs: z.number().default(10_000),
     // 群里什么时候接话。量出来的事实是：不做这个判断的话，群里每句都会让她跑完一轮、还往群里冒一条
     // （她自己会在话里写「这句不接」，但那句话本身也发到群里了）。默认只接被叫到的。
     groupTrigger: z.union([z.const('mention').description('只接被叫到的（被 @ / 被引用她的话 / 命中关键词）'), z.const('all').description('每句都接')]).default('mention'),
     groupKeywords: z.array(z.string()).default([]),
+    // 只停嘴不停耳：这个时间之前照收、照记，但不回，到点自己醒。ISO 时间，如 2026-10-28T08:00:00+08:00。
+    mutedUntil: z.string().default(''),
     // SnowLuma 装在哪：控制台那扇门要去它的 config/runtime.json 拿地址与端口。空着就按 D:\SnowLuma、
     // C:\SnowLuma、~/SnowLuma 挨个认（认「里面有 config/runtime.json」这一条）。
     snowlumaHome: z.string().default(''),
+    // 看门狗：通道开着时每 30 秒探一次 wsUrl 的端口，不通就把 SnowLuma 拉起来。不想让插件动手就关掉，面板上的按钮照旧能用。
+    supervise: z.boolean().default(true),
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。
     bindHomeSession: z.union([z.const('owner').description('群各自独立，私聊用她的家会话'), z.const('all').description('都用她的家会话'), z.const('none').description('谁都不绑，每个入口各建一个'), z.const('')]).default('owner'),
@@ -150,11 +158,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // 任何配置上 —— 端点先存在，功能再按需开关。）
     const doors = createConsoleDoors({ worldDir, snowlumaHome: config.qqNative?.snowlumaHome ?? '' });
     const unregisterQq = webServer.register(
-      qqRoute(config.allowedHosts, doors, () => qqNative?.status() ?? null, patch => {
-        if (!qqNative) return null;
-        if (patch.bridge) return qqNative.setBridge(patch.bridge);
-        return qqNative.setAutoReply(patch.autoReply === true);
-      }),
+      qqRoute(config.allowedHosts, doors, () => qqNative?.status() ?? null, patch => qqNative?.update(patch) ?? null),
     );
     lifeCtx.effect(() => () => unregisterQq(), 'dsh-world qq route');
     let life: LifeRuntime | undefined;
@@ -198,6 +202,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         qqNative = createQqNativeModule({
           ctx: lifeCtx,
           inWorld: inWorldSession,
+          isHome: id => current.isHome(id),
           // `none` keeps private test traffic out of her real home, as groups are by default.
           home: identity => {
             const bind = q.bindHomeSession ?? 'owner';
@@ -211,11 +216,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             wsUrl: q.wsUrl ?? 'ws://127.0.0.1:3003',
             accessToken: q.accessToken ?? '',
             allowPrivate: q.allowPrivate ?? [],
+            ownerQQ: q.ownerQQ ?? '',
             allowGroups: q.allowGroups ?? [],
             autoReply: q.autoReply ?? true,
             contextMessages: q.contextMessages ?? 6,
+            batchQuietMs: q.batchQuietMs ?? 10_000,
             groupTrigger: q.groupTrigger ?? 'mention',
             groupKeywords: q.groupKeywords ?? [],
+            mutedUntil: q.mutedUntil ?? '',
+            snowlumaHome: discoverSnowlumaHome(q.snowlumaHome ?? ''),
+            supervise: q.supervise ?? true,
             bridge: {
               port: q.bridge?.port ?? 0,
               token: q.bridge?.token ?? '',

@@ -9,7 +9,8 @@ import type { ConsoleDoors } from './panel.ts';
  * Read:  GET  /dsh-world/qq/native    her own OneBot channel: is it connected, what has it seen, is it replying
  *        GET  /dsh-world/qq/console   SnowLuma's console address, with a session token already traded for the
  *                                     panel password
- * Write: POST /dsh-world/qq/native    { autoReply?, bridge?: { port? } } the channel's switches; a new bridge
+ * Write: POST /dsh-world/qq/native    { autoReply?, bridge?: { port? }, mutedUntil?, allowPrivate?, allowGroups?,
+ *                                     startSnowluma? } the channel's switches, applied together; a new bridge
  *                                     port restarts the balcony on the spot
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
@@ -35,9 +36,26 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
   return knownHost(req.headers.host, allowedHosts);
 }
 
-/** What the panel may change about her own channel: replying, and the balcony's port. */
-export interface NativePatch { autoReply?: boolean; bridge?: { port?: number } }
+/**
+ * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
+ * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
+ */
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
+
+/** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
+function qqNumbers(raw: unknown, key: string): string[] | string {
+  if (!Array.isArray(raw)) return `${key} 要给一个数组`;
+  const list: string[] = [];
+  for (const one of raw) {
+    if (typeof one !== 'string' && typeof one !== 'number') return `${key} 里只能是 QQ 号`;
+    const id = String(one).trim();
+    if (!id) continue;
+    if (!/^[0-9]+$/.test(id)) return `${key} 里有个不是号码：${id}`;
+    list.push(id);
+  }
+  return list;
+}
 
 async function write(doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: SetNative): Promise<JsonResult | undefined> {
   switch (path) {
@@ -45,6 +63,18 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
       if (!setNative) return bad('原生通道没有接上');
       const patch: NativePatch = {};
       if (typeof body?.autoReply === 'boolean') patch.autoReply = body.autoReply;
+      for (const key of ['allowPrivate', 'allowGroups'] as const) {
+        if (body?.[key] === undefined) continue;
+        const list = qqNumbers(body[key], key);
+        if (typeof list === 'string') return bad(list);
+        patch[key] = list;
+      }
+      if (body?.mutedUntil !== undefined) {
+        const until = body.mutedUntil;
+        if (until !== null && (typeof until !== 'string' || (until.trim() && Number.isNaN(Date.parse(until))))) return bad('mutedUntil 要是能解析的 ISO 时间，或者 null');
+        patch.mutedUntil = until === null || !until.trim() ? null : until.trim();
+      }
+      if (body?.startSnowluma === true) patch.startSnowluma = true;
       // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
       const rawBridge = body?.bridge;
       if (rawBridge !== undefined) {
@@ -54,7 +84,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (patch.autoReply === undefined && patch.bridge === undefined) return bad('autoReply、bridge 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {

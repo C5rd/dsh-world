@@ -51,6 +51,22 @@ test('写操作必须带 x-dsh-world 头，跨站来的连读都不给', async (
   assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { autoReply: true } }))).status, 200);
 });
 
+test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute([], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  assert.equal((await post({ allowPrivate: '123' })).status, 400, '名单要是数组');
+  assert.match(String((await post({ allowGroups: ['12a'] })).body.error), /不是号码：12a/);
+  assert.equal((await post({ mutedUntil: '明天早上' })).status, 400);
+  assert.equal((await post({ startSnowluma: 'yes' })).status, 400, '只认 true，别的不猜');
+  assert.equal((await post({ allowPrivate: [' 123 ', 456, ''], allowGroups: [], mutedUntil: '2026-10-29T08:00:00+08:00', startSnowluma: true })).status, 200);
+  assert.equal((await post({ mutedUntil: '' })).status, 200);
+  assert.deepEqual(patches, [
+    { allowPrivate: ['123', '456'], allowGroups: [], mutedUntil: '2026-10-29T08:00:00+08:00', startSnowluma: true },
+    { mutedUntil: null },
+  ]);
+});
+
 test('原生通道没有接上时，写接口说清楚，而不是静默成功', async () => {
   const route = qqRoute([], doors(), undefined, undefined);
   assert.equal((await call(route, request('GET', '/native'))).status, 200);

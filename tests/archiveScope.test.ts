@@ -42,6 +42,18 @@ test('workspace scope uses the workspace owning home, includes groups and ignore
   assert.equal(onlyHome('home'), true); assert.equal(onlyHome('family'), false);
 });
 
+test('a home also left in an older workspace does not pull that workspace into her archive', () => {
+  const ctx = new Context();
+  // Moving a home into her room adds it there; the host keeps it in the workspace it came from, listed first.
+  ctx.provide('workspaceRegistry', { list: () => [
+    { path: 'default-workspace', sessionIds: ['home', 'coding'] },
+    { path: 'room', sessionIds: ['home', 'family'] },
+  ] });
+  const archived = createArchiveSelection(ctx, 'workspace', id => id === 'home', 'room');
+  for (const id of ['home', 'family']) assert.equal(archived(id), true, id);
+  assert.equal(archived('coding'), false);
+});
+
 test('workspace membership follows the room path only and is empty until the host has workspaces', () => {
   const ctx = new Context();
   const inWorkspace = createWorkspaceMembership(ctx, 'room');

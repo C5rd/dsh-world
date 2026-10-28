@@ -391,20 +391,43 @@ window.__ModuleLoader__.load({
           return null
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
-      // 阳台：拨端口就是开关（0 是关）。
-      function flipBridge(port) {
+      /** 改通道的开关：一次给的几项一起生效；`done` 拿到通道的新状态，说一句结果。 */
+      function change(body, done) {
         setBusy(true); setMsg('')
-        qqPost('native', { bridge: { port: port } }).then(function () {
-          setMsg('')
+        qqPost('native', body).then(function (state) {
+          setMsg(done ? done(state) : '')
           if (props.onSaved) props.onSaved()
         }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
       }
-      function flipNative(autoReply) {
-        setBusy(true); setMsg('')
-        qqPost('native', { autoReply: autoReply }).then(function () {
-          setMsg('')
-          if (props.onSaved) props.onSaved()
-        }, function (e) { setMsg('失败：' + ((e && e.message) || e)) }).then(function () { setBusy(false) })
+      // 阳台：拨端口就是开关（0 是关）。
+      function flipBridge(port) { change({ bridge: { port: port } }) }
+      function flipNative(autoReply) { change({ autoReply: autoReply }) }
+      // 静默：给一个时间点，到点前只收不回，到点自己醒；null 立刻恢复。
+      var muteState = useState(''), muteAt = muteState[0], setMuteAt = muteState[1]
+      function muteUntil(local) {
+        var at = new Date(local)
+        if (isNaN(at.getTime())) { setMsg('这个时间看不懂，重挑一下'); return }
+        change({ mutedUntil: at.toISOString() })
+      }
+      // 白名单：谁的话能进来。打开时填上现有的名单，之后不覆盖正在改的字。
+      var ids = props.native ? [(props.native.allowPrivateIds || []).join(', '), (props.native.allowGroupsIds || []).join(', ')] : ['', '']
+      var allowState = useState({ from: '', people: '', groups: '' }), allow = allowState[0], setAllow = allowState[1]
+      useEffect(function () {
+        var from = ids.join('|')
+        setAllow(function (current) { return current.from === from ? current : { from: from, people: ids[0], groups: ids[1] } })
+      }, [ids[0], ids[1]])
+      function saveAllow() {
+        function split(text) { return String(text).split(/[\s,，、;；]+/).filter(Boolean) }
+        var people = split(allow.people), groups = split(allow.groups), wrong = people.concat(groups).find(function (id) { return !/^[0-9]+$/.test(id) })
+        if (wrong) { setMsg('请填 QQ 号：「' + wrong + '」不是号码'); return }
+        change({ allowPrivate: people, allowGroups: groups }, function () { return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个' : '名单存好了：现在谁的话都不收' })
+      }
+      function startSnowluma() {
+        change({ startSnowluma: true }, function (state) {
+          var r = state && state.launch
+          if (!r || !r.started) return '没起来：' + ((r && r.error) || '原因不明')
+          return '已经让 SnowLuma 起来' + (r.how === 'spawn' ? '（直接起的，这条线只活到 DSH 退出）' : '') + (r.error ? '；' + r.error : '')
+        })
       }
       function copyLine(text) {
         if (!text) { setMsg('这条命令还没生出来'); return }
@@ -416,7 +439,7 @@ window.__ModuleLoader__.load({
           if (!n) return h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开')
           return h('div', { key: 'n' }, [
             h('span', { key: 'a', className: n.connected ? 'dw-ok' : 'dw-muted' }, n.connected ? '● 她自己连着 ' + n.url : '● 她自己的通道没连上'),
-            h('span', { key: 'b', className: 'dw-muted' }, ' · 收 ' + (n.conversations || 0) + ' 个会话 · 发 ' + (n.sent || 0) + ' 条' + (n.failed ? ' · 失败 ' + n.failed : '') + (n.blocked ? ' · 挡下 ' + n.blocked : '') + (n.autoReply ? ' · 会自己回' : ' · 只看不回')),
+            h('span', { key: 'b', className: 'dw-muted' }, ' · 收 ' + (n.conversations || 0) + ' 个会话 · 发 ' + (n.sent || 0) + ' 条' + (n.failed ? ' · 失败 ' + n.failed : '') + (n.outbox ? ' · 排队待发 ' + n.outbox : '') + (n.blocked ? ' · 挡下 ' + n.blocked : '') + (n.autoReply ? ' · 会自己回' : ' · 只看不回')),
             n.lastError ? h('span', { key: 'c', className: 'dw-bad' }, ' · ' + n.lastError) : null,
           ])
         })(props.native) : h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开（配置里 qqNative.enabled）'),
@@ -428,6 +451,21 @@ window.__ModuleLoader__.load({
             h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
           ])
         })(props.native),
+        (function (n) {
+          if (!n) return null
+          return h('div', { key: 'mute', className: 'dw-setting' }, [
+            h('span', { key: 's', className: n.mutedUntil ? 'dw-bad' : 'dw-muted' }, n.mutedUntil ? '静默到 ' + new Date(n.mutedUntil).toLocaleString() + '（只收不回）' : '现在会出声'),
+            h('input', { key: 'i', type: 'datetime-local', 'aria-label': '静默到', disabled: busy, value: muteAt, onChange: function (e) { setMuteAt(e.target.value) } }),
+            h('button', { key: 'b', className: 'dw-btn', disabled: busy || !muteAt, onClick: function () { muteUntil(muteAt) } }, '静默到这个点'),
+            n.mutedUntil ? h('button', { key: 'r', className: 'dw-btn', disabled: busy, onClick: function () { change({ mutedUntil: null }) } }, '立刻恢复') : null,
+          ])
+        })(props.native),
+        props.native ? h('div', { key: 'allow', className: 'dw-setting' }, [
+          h('input', { key: 'p', type: 'text', 'aria-label': '私聊白名单', placeholder: '私聊 QQ 号', disabled: busy, value: allow.people, onChange: function (e) { setAllow({ from: allow.from, people: e.target.value, groups: allow.groups }) } }),
+          h('input', { key: 'g', type: 'text', 'aria-label': '群白名单', placeholder: '群号', disabled: busy, value: allow.groups, onChange: function (e) { setAllow({ from: allow.from, people: allow.people, groups: e.target.value }) } }),
+          h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveAllow }, '存名单'),
+          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '多个用逗号隔开；留空就是谁的话都不收。改完不用重启。'),
+        ]) : null,
         (function (n) {
           if (!n) return null
           var b = n.bridge
@@ -448,8 +486,15 @@ window.__ModuleLoader__.load({
             ]),
           ])
         })(props.native),
+        (function (sv) {
+          if (!sv) return null
+          return h('div', { key: 'sv', className: sv.lastError ? 'dw-bad' : 'dw-muted' },
+            (sv.watching ? '● 看门狗盯着' : '○ 看门狗没开') + (sv.lastCheckAt ? ' · SnowLuma ' + (sv.alive ? '通着' : '不通') : '')
+              + (sv.restarts ? ' · 已拉起 ' + sv.restarts + ' 次' : '') + (sv.lastError ? ' · ' + sv.lastError : ''))
+        })(props.native && props.native.supervisor),
         h('div', { key: 'k', className: 'dw-setting' },
-          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台')),
+          h('button', { className: 'dw-btn', disabled: busy, onClick: function () { openDoor('snowluma') } }, '打开 SnowLuma 控制台'),
+          props.native ? h('button', { className: 'dw-btn', disabled: busy, onClick: startSnowluma }, '拉起 SnowLuma') : null),
         h('div', { key: 'b', className: 'dw-setting' },
           h('button', { className: 'dw-btn', disabled: busy, onClick: function () { if (props.onSaved) props.onSaved() } }, '刷新')),
         h(Status, { key: 'x', msg: msg }),

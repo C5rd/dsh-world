@@ -34,13 +34,17 @@ export interface WorldConfig {
   /** The independent local WeChat module; the Windows adapter uses `<world>/wechat.json`. */
   wechat?: boolean;
   /** QQ straight to OneBot: no qq-bridge process, the plugin owns the sockets, the sessions and the state. */
-  qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; allowGroups?: string[]; autoReply?: boolean; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
+  qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; ownerQQ?: string; allowGroups?: string[]; autoReply?: boolean; batchQuietMs?: number; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
     /** 群里什么时候接话：mention 只接被叫到的（被 @ / 被引用她的话 / 命中关键词），all 每句都接。 */
     groupTrigger?: 'mention' | 'all';
     /** 群里命中这些词也算在叫她。 */
     groupKeywords?: string[];
+    /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但一句都不回；到点自己醒。空着就是没静默。 */
+    mutedUntil?: string;
     /** SnowLuma 装在哪；空着就靠猜（D:\SnowLuma、C:\SnowLuma、~/SnowLuma）。 */
     snowlumaHome?: string;
+    /** 看门狗：通道开着时盯住 wsUrl 的端口，不通就按 snowlumaHome 把 SnowLuma 拉起来。默认开。 */
+    supervise?: boolean;
     /** 阳台：让这台机器上别的程序能跟家里说话（一行一条 JSON 的 WebSocket）。port 为 0 就不开。 */
     bridge?: { port?: number; token?: string; title?: string; contextMessages?: number };
   };

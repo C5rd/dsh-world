@@ -118,6 +118,12 @@ type Loose = any;
 const SEND_TIMEOUT_MS = 15000;      // 单次发送的外层超时（切片第 6 节：SEND_TIMEOUT_MS = 15000）
 const DEFAULT_SEND_DELAY_MS = 500;  // 串行发送间隔的默认值（见实现说明⑤）
 const DEFAULT_WS_URL = 'ws://127.0.0.1:3001';
+/** 她想的词和收藏表情备注里写的词对不上时，按这张小表再找一次。 */
+const FACE_ALIASES: Record<string, string[]> = {
+  开心: ['好耶', '成了', '可以', '舒服'], 高兴: ['好耶', '成了'], 生气: ['炸毛', '气'], 不懂: ['问号', '不懂'], 疑问: ['问号'],
+  求: ['拜托', '合十'], 拜托: ['合十', '拜托'], 钱: ['钱包', '钱来了'], 累: ['熬夜', '咖啡'], 困: ['睡觉', '抱枕头'], 睡: ['睡觉', '抱枕头'],
+  在: ['举手', '我在这'], 同意: ['可以', '比赞'], 赞: ['比赞', '可以'], 思考: ['思考中', '转圈'], 等我: ['思考中'],
+};
 
 const sleep = (ms: Loose): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -164,8 +170,9 @@ export function segmentsToText(message: Loose) {
       case 'face': out.push(`[表情${d.id ?? ''}]`); break;
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
-      case 'image': out.push('[图片]'); break;
-      case 'record': out.push('[语音]'); break;
+      // 带上 file 名：光写「[图片]」等于把图丢了，有 file 才能再向 OneBot 换直链。
+      case 'image': out.push(d.file ? `[图片 file=${d.file}]` : '[图片]'); break;
+      case 'record': out.push(d.file ? `[语音 file=${d.file}]` : '[语音]'); break;
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply':
@@ -418,29 +425,62 @@ export function createBridge(options: Loose) {
   /** @type {Promise<void>} */
   let sendChain = Promise.resolve();
 
-  function enqueueSend(kind: Loose, targetId: Loose, parts: Loose) {
-    if (!client) {
-      return Promise.reject(new Error(`QQ 桥未启动或已停止，无法发送（${kind}:${targetId}）`));
-    }
+  /** 往外发的每一件事（消息、收藏表情、说说）都排同一条队：串行、限时、两件之间停 sendDelayMs。 */
+  function serial<T>(label: string, work: (bot: Loose) => Promise<T>): Promise<T> {
+    if (!client) return Promise.reject(new Error(`QQ 桥未启动或已停止，无法${label}`));
     const bot = client;
-    const task = sendChain.then(async () => {
-      // 段转换放在队列任务里：转换错误也走 reject，调用方 await 时统一接住
-      const segments = buildSegments(parts);
-      const sendPromise = kind === 'group'
-        ? bot.sendGroupMessage(targetId, segments)
-        : bot.sendPrivateMessage(targetId, segments);
-      const result = await withTimeout(sendPromise, SEND_TIMEOUT_MS, `QQ发送 ${kind}:${targetId}`);
-      return { messageId: String(result?.message_id ?? '') };
-    });
-    // 队列本体不管成败都继续走：成功后停 sendDelayMs 再放行下一条（切片第 6 节的节奏）
+    // 转换放在任务里：段转换出错也走 reject，调用方 await 时统一接住
+    const task = sendChain.then(() => withTimeout(work(bot), SEND_TIMEOUT_MS, label) as Promise<T>);
+    // 队列本体不管成败都继续走（切片第 6 节的节奏）
     sendChain = task.then(
       () => sleep(sendDelayMs),
       (error) => {
-        log('error', `QQ 发送失败 (${kind}:${targetId}): ${(error as Loose)?.message ?? error}`);
+        log('error', `${label}失败: ${(error as Loose)?.message ?? error}`);
         return sleep(sendDelayMs);
       },
     );
     return task;
+  }
+
+  function enqueueSend(kind: Loose, targetId: Loose, parts: Loose) {
+    return serial(`发送（${kind}:${targetId}）`, async bot => {
+      const segments = buildSegments(parts);
+      const result = await (kind === 'group' ? bot.sendGroupMessage(targetId, segments) : bot.sendPrivateMessage(targetId, segments));
+      return { messageId: String(result?.message_id ?? '') };
+    });
+  }
+
+  /**
+   * 收藏表情（id 和备注），缓存 5 分钟。备注里写着「炸毛生气」「爱心眼捧脸（好耶）」这种话，
+   * 她按意思挑就行，不用记十五位的 hex。
+   */
+  let faces: { at: number; list: { id: string; desc: string }[] } | undefined;
+  async function faceList(): Promise<{ id: string; desc: string }[]> {
+    if (faces && Date.now() - faces.at < 5 * 60_000) return faces.list;
+    if (!client) throw new Error('QQ 桥未启动或已停止，拿不到收藏表情');
+    const res = await withTimeout(client.request('fetch_custom_face_detail', { count: 50 }), SEND_TIMEOUT_MS, '拉收藏表情') as Loose;
+    const list = (Array.isArray(res?.data) ? res.data as Loose[] : [])
+      .map(face => ({ id: String(face?.emoji_id ?? ''), desc: String(face?.desc ?? '') }))
+      .filter(face => face.id);
+    faces = { at: Date.now(), list };
+    return list;
+  }
+  async function resolveFace(wanted: Loose): Promise<string> {
+    const raw = String(wanted ?? '').trim();
+    if (raw.length > 20 || raw.includes('_')) return raw; // 已经是 emoji_id
+    const list = await faceList();
+    if (!raw || /^\d{1,3}$/.test(raw)) {
+      const hit = list[Number(raw || '1') - 1];
+      if (!hit) throw new Error(`没有第 ${raw || 1} 个收藏表情（一共 ${list.length} 个）`);
+      return hit.id;
+    }
+    const key = raw.toLowerCase();
+    const hit = list.find(face => face.desc.toLowerCase().includes(key))
+      // 整词对不上就按字松一点找（备注里常有括号、标点），再查一张小同义表。
+      ?? list.find(face => [...key].filter(char => char.trim()).every(char => face.desc.toLowerCase().includes(char)))
+      ?? (FACE_ALIASES[raw] ?? []).map(alias => list.find(face => face.desc.includes(alias))).find(Boolean);
+    if (!hit) throw new Error(`没有跟「${raw}」对得上的收藏表情；现有：${list.map(face => face.desc).join(' / ')}`);
+    return hit.id;
   }
 
   function buildClient() {
@@ -529,6 +569,29 @@ export function createBridge(options: Loose) {
       const id = Number(userId);
       if (!Number.isFinite(id)) throw new Error(`sendPrivate: 无效的 QQ 号 ${JSON.stringify(userId ?? null)}`);
       return enqueueSend('private', id, parts);
+    },
+
+    /**
+     * 发账号收藏表情：它走 `send_custom_face`，不是消息段，只能单发一条。`emojiId` 可以是 emoji_id、
+     * 第几个（1 起），或者一个意思（「开心」）——按备注挑。
+     */
+    async sendCustomFace(emojiId: Loose, target: { groupId?: Loose; userId?: Loose }) {
+      const { groupId, userId } = target ?? {};
+      if ((groupId == null) === (userId == null)) throw new Error('sendCustomFace: 群号和 QQ 号必须且只能给一个');
+      const emoji = await resolveFace(emojiId);
+      return serial('发收藏表情', async bot => {
+        const raw = await bot.request('send_custom_face', groupId != null ? { emoji_id: emoji, group_id: Number(groupId) } : { emoji_id: emoji, user_id: Number(userId) });
+        return { messageId: String(raw?.data?.message_id ?? '') };
+      });
+    },
+
+    /** 发一条 QQ 空间说说（`send_qzone_msg`）：图片可选，`ugcRight` 缺省 1（所有人可见）。 */
+    async publishQzone(content: string, options?: { images?: string[]; ugcRight?: number }) {
+      return serial('发说说', async bot => {
+        const raw = await bot.request('send_qzone_msg', { content, ugc_right: options?.ugcRight ?? 1, ...(options?.images?.length ? { images: options.images } : {}) });
+        const data = raw?.data ?? raw;
+        return { tid: String(data?.tid ?? ''), time: Number(data?.time ?? 0) };
+      });
     },
 
     /** @returns {BridgeState} */

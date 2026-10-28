@@ -1,6 +1,6 @@
 {
   "name": "dsh-world",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Cross-session memory, persona and life routines for DSH, with a world console, tool-free compaction, native QQ and Windows WeChat messaging, group history and quoted replies",
   "license": "MIT",
   "repository": {
@@ -67,8 +67,10 @@
     }
   },
   "dependencies": {
-    "@snowluma/sdk": "1.14.22",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "@snowluma/sdk": "1.14.22"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",

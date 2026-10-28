@@ -21,13 +21,19 @@ export function patchSnowluma(packageDir) {
       if (patched !== source) changes.push([file, patched]);
     }
   }
-  visit(join(packageDir, 'dist'));
+  const dist = join(packageDir, 'dist');
+  if (!existsSync(dist)) return 0;
+  visit(dist);
   for (const [file, patched] of changes) writeFileSync(file, patched, 'utf8');
   return changes.length;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const require = createRequire(import.meta.url);
-  const count = patchSnowluma(dirname(require.resolve('@snowluma/sdk/package.json')));
+  // The SDK is optional (only the QQ module, switched on in the console, loads it): a missing SDK must not fail the install.
+  let manifest;
+  try { manifest = require.resolve('@snowluma/sdk/package.json'); }
+  catch { process.stdout.write('@snowluma/sdk is not installed; QQ stays unavailable until it is.\n'); process.exit(0); }
+  const count = patchSnowluma(dirname(manifest));
   process.stdout.write(`SnowLuma SDK ESM imports ready (${count} files updated).\n`);
 }
