@@ -1,11 +1,73 @@
 import tempfile
 import unittest
 import threading
+import io
+from urllib.error import HTTPError
+from unittest.mock import Mock, patch
 from pathlib import Path
 from adapter import MessageStore, flushOutgoing, watch
 
 
 class SendingTest(unittest.TestCase):
+    def test_pending_incoming_pauses_receiving_but_independent_outgoing_keeps_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); store = MessageStore(root / 'state.sqlite')
+            store.baseline('private', 10); store.baseline('other', 20)
+            store.begin('private', 'm.db:11', 11)
+            config = dict(selfId='bot', moduleFile=str(root / 'wechat.json'), chats=[dict(id='private', name='伙伴'), dict(id='other', name='朋友')])
+            job = dict(id='b' * 64, accountId='bot', chatId='other', messages=[dict(type='text', text='独立消息')])
+            poll = Mock(side_effect=[dict(job=job), {}, {}, StopIteration('done')])
+            database, ask, send = Mock(), Mock(), Mock()
+            try:
+                with patch('adapter.time.sleep'), patch('builtins.print'), self.assertRaises(StopIteration):
+                    watch(config, database, store, send, ask=ask, report=lambda *_: None, poll=poll)
+                send.assert_called_once_with(config['chats'][1], dict(type='text', text='独立消息'))
+                ask.assert_not_called(); database.get_messages.assert_not_called()
+                self.assertEqual(store.cursor('private'), 10)
+                with self.assertRaisesRegex(RuntimeError, 'm.db:11'): store.checkPending()
+            finally: store.close()
+
+    def test_uncertain_claim_only_reports_its_receipt_and_does_not_block_the_next_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); store = MessageStore(root / 'state.sqlite')
+            store.baseline('private', 10); store.beginReply('a' * 64, 1, 'private', 10)
+            config = dict(selfId='bot', moduleFile=str(root / 'wechat.json'), chats=[dict(id='private', name='伙伴')])
+            first = dict(id='a' * 64, accountId='bot', chatId='private', messages=[dict(type='text', text='结果不明，不能再发')])
+            second = {**first, 'id': 'b' * 64, 'messages': [dict(type='text', text='另一条独立任务')]}
+            work = [dict(job=first), dict(job=second), {}]
+            send, report = Mock(), Mock()
+            try:
+                flushOutgoing(config, None, store, send, poll=lambda _: work.pop(0), report=report)
+                send.assert_called_once_with(config['chats'][0], second['messages'][0])
+                self.assertEqual(store.reply(first['id'])['status'], 'uncertain')
+                self.assertEqual(store.reply(second['id'])['status'], 'sent')
+                with self.assertRaisesRegex(RuntimeError, 'outgoing:'): store.checkPending()
+            finally: store.close()
+
+    def test_failed_generation_is_not_repeated_while_its_queued_reply_can_still_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); store = MessageStore(root / 'state.sqlite'); store.baseline('private', 10)
+            file = root / 'wechat.json'
+            file.write_text('{"origin":"http://127.0.0.1:1234","path":"/dsh-world/wechat/ask","token":"secret"}', encoding='utf-8')
+            config = dict(selfId='bot', moduleFile=str(file), chats=[dict(id='private', name='伙伴')], pollSeconds=0.001)
+            row = dict(local_id=11, shard='m.db', sort_seq=11, type='文本', sender_username='owner', content='在吗')
+            database = Mock(); database.get_messages.side_effect = lambda _chat, limit, offset=0: [row][offset:offset + limit]
+            job = dict(id='a' * 64, accountId='bot', chatId='private', messages=[dict(type='text', text='已经生成的回复')])
+            sent, polls = [], [0]
+            def poll(_config):
+                polls[0] += 1
+                if polls[0] > 4 and sent: raise StopIteration('done')
+                return dict(job=job) if store.seen('private', 'm.db:11') and not sent else {}
+            error = HTTPError('http://127.0.0.1:1234', 503, 'Unavailable', {}, io.BytesIO(b'{"error":"delivery must be checked"}'))
+            try:
+                with patch('adapter.urlopen', side_effect=error) as request, patch('sys.stderr'), self.assertRaises(StopIteration):
+                    watch(config, database, store, lambda _chat, item: sent.append(item), report=lambda *_: None, poll=poll)
+                self.assertEqual(request.call_count, 1)
+                self.assertEqual(sent, job['messages'])
+                self.assertEqual(store.cursor('private'), 10)
+                with self.assertRaisesRegex(RuntimeError, 'm.db:11'): store.checkPending()
+            finally: store.close()
+
     def test_model_wait_does_not_block_native_delivery_or_require_the_turn_to_end(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);store=MessageStore(root/'state.sqlite');store.baseline('private',10)
@@ -75,8 +137,9 @@ class SendingTest(unittest.TestCase):
                     flushOutgoing(config,None,store,send,poll=lambda _config:dict(job=job),report=lambda _file,r:receipts.append(r))
                 self.assertEqual(receipts[-1],dict(id='a'*64,confirmed=1,status='uncertain'))
                 store.close();store=MessageStore(root/'state.sqlite')
-                with self.assertRaisesRegex(RuntimeError,'尚未确认'):
-                    flushOutgoing(config,None,store,send,poll=lambda _config:dict(job=job),report=lambda *_:None)
+                jobs = [job, None]
+                flushOutgoing(config,None,store,send,poll=lambda _config:dict(job=jobs.pop(0)),report=lambda *_:None)
+                with self.assertRaisesRegex(RuntimeError,'尚未确认'): store.checkPending()
                 self.assertEqual(sent,['一','二'])
             finally:store.close()
 

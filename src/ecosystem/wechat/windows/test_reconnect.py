@@ -56,17 +56,23 @@ class ReconnectTest(unittest.TestCase):
                 report.assert_called_once()
             finally: store.close()
 
-    def test_uncertain_message_and_non_connection_errors_never_auto_retry(self):
+    def test_pending_input_does_not_prevent_connecting_but_unrelated_connection_errors_still_stop(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);store=MessageStore(root/'state.sqlite')
             store.baseline('private',10)
             store.begin('private','m.db:11',11)
-            connector,sleep=Mock(),Mock()
+            database, send, sleep = Mock(), Mock(), Mock()
+            send.probe.return_value = dict(version='4.1.15.13')
+            connector = Mock(return_value=(database, send))
+            config = dict(selfId='bot', moduleFile='unused', chats=[dict(id='private', name='伙伴')])
             try:
-                with self.assertRaisesRegex(RuntimeError,'尚未确认'):
-                    watchConnected({},root,store,connector,poll=lambda _: {},sleep=sleep)
-                connector.assert_not_called();sleep.assert_not_called()
+                with patch('adapter.time.sleep'), patch('sys.stderr'), self.assertRaises(PollComplete):
+                    watchConnected(config,root,store,connector,poll=Mock(side_effect=[{}, PollComplete()]),sleep=sleep)
+                connector.assert_called_once(); send.close.assert_called_once(); sleep.assert_not_called()
+                database.get_messages.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError,'尚未确认'): store.checkPending()
                 store.acknowledge('private','m.db:11')
+                connector.reset_mock()
                 connector.side_effect=RuntimeError('账号不唯一')
                 with self.assertRaisesRegex(RuntimeError,'账号不唯一'):
                     watchConnected({},root,store,connector,poll=lambda _: {},sleep=sleep)

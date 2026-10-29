@@ -19,6 +19,7 @@ function fakeActions() {
   const persona = Object.fromEntries(PERSONA_LAYERS.map(layer => [layer, ''])) as Persona;
   const actions: ConsoleActions = {
     start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); },
+    applyHome: () => { calls.push('apply-home'); return undefined; },
     prompts: () => ({ persona, worldPrompt: { text: 'T', custom: false } }),
     savePersona: layers => { calls.push(`persona:${JSON.stringify(layers)}`); },
     saveWorldPrompt: text => { calls.push(`world:${text}`); },
@@ -33,6 +34,40 @@ function fakeActions() {
   return { actions, calls };
 }
 const get = (url: string, actions = fakeActions().actions) => handleConsole(sources, actions, { method: 'GET', url, write: false });
+
+test('album metadata is paginated and image bytes stay in a same-origin no-store endpoint', async () => {
+  const image = { ref: { mediaType: 'image/png' }, data: new Uint8Array([1, 2, 3, 4]) };
+  const view = { ...sources, photos: (limit: number, offset: number) => ({ photos: [], total: 0, hasMore: false, limit, offset }), photo: (id: string) => id === 'kept' ? image as never : undefined };
+  const request = { method: 'GET', url: '/dsh-world/console/photos?limit=12&offset=24', write: false };
+  assert.deepEqual((await handleConsole(view, fakeActions().actions, request)).body, { photos: [], total: 0, hasMore: false, limit: 12, offset: 24 });
+  for (const query of ['limit=0', 'limit=101', 'offset=-1']) assert.equal((await handleConsole(view, fakeActions().actions, { ...request, url: '/dsh-world/console/photos?' + query })).status, 400);
+  const route = consoleRoute(view, fakeActions().actions);
+  for (const cross of [false, true]) {
+    let status = 0, headers: Record<string, unknown> = {}, bytes: unknown;
+    await route.handler({ method: 'GET', url: '/dsh-world/console/photo?id=kept', headers: { host: 'localhost', ...(cross ? { 'sec-fetch-site': 'cross-site' } : {}) } } as never,
+      { writeHead(code: number, value: Record<string, unknown>) { status = code; headers = value; }, end(value: unknown) { bytes = value; } } as never);
+    assert.equal(status, cross ? 403 : 200);
+    if (!cross) { assert.equal(headers['content-type'], 'image/png'); assert.equal(headers['cache-control'], 'no-store'); assert.deepEqual(bytes, image.data); }
+  }
+});
+
+test('QQ dependency preparation can report a successful installation requiring restart', async () => {
+  const reply = await handleConsole(sources, { ...fakeActions().actions, setModules: async () => ({ restartRequired: true, message: 'SDK 已安装，请重启 DSH' }) }, { method: 'POST', url: '/dsh-world/console/modules', write: true, body: { qq: true } });
+  assert.equal(reply.status, 200); assert.deepEqual(reply.body, { ok: true, restartRequired: true, message: 'SDK 已安装，请重启 DSH' });
+});
+
+test('applying home prompts requires the write header and reports an unavailable home or compaction service', async () => {
+  const { actions, calls } = fakeActions();
+  const request = { method: 'POST', url: '/dsh-world/console/apply-home', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: '{}' };
+  for (const headers of [{ 'content-type': 'application/json' }, { ...request.headers, 'sec-fetch-site': 'cross-site' }]) {
+    assert.equal((await run(sources, { ...request, headers }, actions)).status, 403);
+  }
+  assert.deepEqual(calls, []);
+  assert.equal((await run(sources, request, actions)).status, 200);
+  assert.deepEqual(calls, ['apply-home']);
+  const refused = await run(sources, request, { ...actions, applyHome: () => '请先启动世界生活线' });
+  assert.equal(refused.status, 400); assert.equal(JSON.parse(refused.body!).error, '请先启动世界生活线');
+});
 
 test('console reads are JSON views', async () => {
   assert.deepEqual(await get('/dsh-world/console/snapshot'), { status: 200, body: { worldId: 'jingjing' } });

@@ -2,11 +2,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from '../faults.ts';
 import { scopedTool } from '../worldScope.ts';
-import type { lifeTools } from './tools.ts';
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 
 type Registration = (() => void)[];
 const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
-const HOME_TOOLS = ['reach_out'];
+const HOME_TOOLS = ['reach_out', 'keep_photo', 'list_photos', 'forget_photo'];
 
 /** Disposes in reverse; a disposer whose agent scope is already gone may throw and is skipped. */
 function undo(list: Registration): void {
@@ -18,10 +18,10 @@ function undo(list: Registration): void {
  * reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
  * agent creation; it registers all of a group or none. Each tool refuses to run once its session leaves her world.
  */
-export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: () => ReturnType<typeof lifeTools>; isHome(agent: Agent): boolean; inWorld(agent: Agent): boolean }) {
+export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: (agent: Agent) => readonly ToolDefinition[]; isHome(agent: Agent): boolean; inWorld(agent: Agent): boolean }) {
   const alarm = new Map<Agent, Registration>();
   const home = new Map<Agent, Registration>();
-  function register(agent: Agent, tools: ReturnType<typeof lifeTools>, names: string[]): Registration {
+  function register(agent: Agent, tools: readonly ToolDefinition[], names: string[]): Registration {
     const done: Registration = [];
     try { for (const tool of tools) if (names.includes(tool.name)) done.push(agent.ctx.tools.register(scopedTool(tool, () => deps.inWorld(agent)))); }
     catch (error) { undo(done); throw error; }
@@ -35,7 +35,7 @@ export function createToolRegistry(deps: { faults: Faults; logger: { error(...ar
       if (!needsAlarm && !needsHome) return false;
       let changed = false;
       try {
-        const tools = deps.tools();
+        const tools = deps.tools(agent);
         if (needsAlarm) { alarm.set(agent, register(agent, tools, ALARM_TOOLS)); changed = true; }
         if (needsHome) { home.set(agent, register(agent, tools, HOME_TOOLS)); changed = true; }
         deps.faults.clear(`attach:${agent.id}`);

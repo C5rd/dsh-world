@@ -32,11 +32,11 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22.16.0'
+          node-version: '24.22.1'
           cache: npm
 
-      - name: Install locked dependencies and repair SDK imports
-        run: npm ci --no-audit --no-fund
+      - name: Install locked development dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Typecheck
         run: npm run typecheck
@@ -74,6 +74,21 @@ jobs:
       - name: Upload tested package
         uses: actions/upload-artifact@v7
         with:
-          name: dsh-world-${{ runner.os }}-node22
+          name: dsh-world-${{ runner.os }}-node24
           path: artifacts/*.tgz
           if-no-files-found: error
+
+  core-node22:
+    name: Core entry / Node 22 without QQ SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.16.0'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/entry.test.ts

@@ -25,7 +25,7 @@
 
 ## 已有 world：用编译包更新
 
-已经装过 `dsh-world` 时，保留原 profile 和世界目录，从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载 `.tgz`，不要另建 world。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
+已经装过 `dsh-world` 时，保留原 profile 和世界目录，不要另建 world。先下载编译好的 `.tgz`：浏览器直接打开 npm 上的安装包地址即可，例如 <https://registry.npmjs.org/dsh-world/-/dsh-world-0.6.4.tgz>，其他版本把地址里的两处版本号一起换掉；也可以从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载（需登录 GitHub，产物会过期）。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
 
 1. 从应用菜单正常退出 DSH，等待微信适配器一并退出。脚本会拒绝在 DSH 或适配器仍运行时更新，不强制结束进程。
 2. 使用仓库的 `scripts/update-world.mjs`，或已安装包的 `node_modules/dsh-world/scripts/update-world.mjs`。老版本尚无此文件时，可从仓库单独下载这个脚本，无需克隆或安装源码依赖。
@@ -34,7 +34,7 @@
 ```powershell
 node .\scripts\update-world.mjs `
   --profile '<DSH_HOME>/profiles/desktop' `
-  --package '<下载目录>/dsh-world-0.6.3.tgz' `
+  --package '<下载目录>/dsh-world-0.6.4.tgz' `
   --pnpm '<DSH 自带 pnpm 的入口文件>'
 ```
 
@@ -42,13 +42,26 @@ node .\scripts\update-world.mjs `
 
 脚本先检查包名和编译入口，再把整个 profile（含依赖）、`worlds` 和 `sessions` 备份到 `<DSH_HOME>/backups/dsh-world-<profile>-<随机后缀>/`。符号链接保留为链接，不复制链接指向的外部目录。安装包也保存到备份目录，profile 长期引用这份副本，下载文件随后移动或删除不影响启动。**不要删除当前 profile 仍在引用的备份目录。** 完整备份所需空间约为上述目录总大小；首次复制可能较慢。
 
-更新只调用 pnpm 替换插件包，并单独执行已知的 SDK 修补；其他依赖安装脚本禁用。随后核对编译入口、更新脚本、profile 配置、其他插件和世界／会话文件摘要。她的人设、日记、提示词、原会话及原模块配置保持原样，不自动迁移旧 QQ 配置，也不解锁微信待核对消息。外置微信状态不在该备份内，更新脚本不操作它。
+更新只调用 pnpm 替换插件包，依赖安装脚本禁用，不安装或修补 SnowLuma SDK。随后核对编译入口、更新脚本、profile 配置、其他插件和世界／会话文件摘要。她的人设、日记、提示词、原会话及原模块配置保持原样，不自动迁移旧 QQ 配置，也不解锁微信待核对消息。外置微信状态不在该备份内，更新脚本不操作它。
 
 失败会恢复整个旧 profile，保留 `failed-profile` 和备份供排查。若恢复也失败，保持 DSH 关闭，按报错给出的备份路径人工恢复；世界与会话备份不自动覆盖当前目录。检查覆盖包内容、文件摘要和入口语法；桌面版依赖宿主自己的模块加载器，脚本不尝试在普通 Node 中加载宿主人设或会话服务。正常完成后再启动 DSH，检查世界控制台健康状态。脚本不会自动启动 DSH、发消息或改她的自定义提示词。更新过程中请保持 DSH 关闭；若更新进程异常终止后遗留锁文件，先确认没有更新进程，再按报错路径处理锁文件及备份。
 
 ---
 
 ## 第一步：把 dsh-world 装进 profile
+
+`dsh-world` 已发布到 npm，直接在 profile 目录安装，不用 clone、不用编译：
+
+```bash
+cd <DSH_HOME>/profiles/<你的 profile>
+node <pnpm.cjs 路径> add dsh-world@latest --ignore-scripts --registry=https://registry.npmjs.org/
+```
+
+`--registry` 指定官方源，避免镜像还没同步到新版本。这条命令也可将旧的本地 `.tgz` 引用切换到 npm 版本，之后更新继续执行同一命令；但它不做备份，操作前退出 DSH 并备份原 profile 和世界数据，完成后重启，保留后文的 bundle 登记及个人配置。需要自动备份和失败恢复时，改用前文的 `scripts/update-world.mjs`。
+
+QQ 功能额外依赖 **SnowLuma SDK（`@snowluma/sdk`）**。首次在控制台手动开启 QQ 时，若缺少 SDK，插件使用宿主提供的包管理器按需安装到当前 DSH profile，禁用安装脚本并检查 SDK 的 Node 要求；安装成功后提示重启 DSH，再启用 QQ。仅安装或启动 dsh-world 不会下载 SDK，不使用 QQ 时无需安装。插件不修补 SDK，也不自动升级 Node。
+
+想用仓库里的源码（例如尚未发布的改动），自己打包再装：
 
 ```bash
 git clone https://github.com/chenkezhen480/dsh-world.git
@@ -58,16 +71,18 @@ npm ci        # 仓库带 package-lock.json，能装全 devDependencies
 npm pack      # 会先 typecheck + build，产出 dsh-world-<版本>.tgz
 ```
 
-安装会自动执行 `scripts/patch-snowluma.mjs`，为固定的 SnowLuma SDK 1.x 补齐相对 ESM 导入的 `.js` 后缀，保留 Node 22 支持；不需要升级 DSH 的 Node。QQ 只在启用时加载，加载失败只显示 QQ 自身故障。
-
-拿到 `dsh-world-0.6.3.tgz` 的**绝对路径**，然后：
+拿到 `dsh-world-<版本>.tgz` 的**绝对路径**，然后：
 
 ```bash
 cd <DSH_HOME>/profiles/<你的 profile>
 node <pnpm.cjs 路径> add <tgz 的绝对路径>
 ```
 
-如果包管理器阻止了安装脚本（或使用了 `--ignore-scripts`），在 profile 目录执行 `node node_modules/dsh-world/scripts/patch-snowluma.mjs`，重新启动 DSH 后再开启 QQ。此命令只修补该 SDK 的相对导入，可重复执行，不改世界数据。
+也可以自行安装；宿主未提供按需安装能力时，在同一个 profile 目录安装满足声明范围的 SDK（当前为 `^2.2.1`），确认 DSH 使用的 Node 满足 SDK 要求后再重启：
+
+```bash
+node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
+```
 
 **不要用 `link:` 指向 clone 下来的目录。** 那样会加载项目自带的一份 Cordis，和 DSH 自己的打架。README 里也写了这句，别忽略。
 
@@ -105,8 +120,8 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 ```
 
 > 这一段**先照抄**：token、白名单、端口这些真值要等第二步人把 SnowLuma 装好才有，第五步再填。
-> `qqNative.enabled` 写 `false`（或者整段不写）= 不接 QQ，控制台里那张 QQ 卡整个不出现。这是刻意的。
-> 写 `true` 也只是**允许**接 QQ：还要在控制台「概览 → 接入」里把 QQ 拨开，才会加载它的代码、连上通道。`@snowluma/sdk` 是可选依赖，没装不影响插件本身。
+> `qqNative.enabled` 写 `false`（或者整段不写）= 不接 QQ，控制台「QQ」页提示通道未开启。
+> 写 `true` 也只是**允许**接 QQ：还要在控制台「概览 → 接入」把 QQ 拨开；缺少 SDK 时会按需安装并提示重启。没装 SDK 不影响插件的其他功能。
 > 示例里 `bindHomeSession` 写了 `none`，是为了第一次联调不往她真正生活着的家会话里写东西；通道顺了以后改回默认的 `owner`（群各自独立、主人私聊用她的家会话）。
 > 路径写 Windows 绝对路径，用正斜杠或单反斜杠都行。
 
@@ -145,9 +160,9 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 所以现在**重启 DSH**。重启后验证两件事：
 
 1. 打开 DSH 设置里的「世界控制台」，能看到世界卡——说明 dsh-world 起来了
-2. 按一次「开始」，控制台里能找到 **QQ 卡**，状态是 `● 她自己的通道没连上`——说明 `qqNative.enabled` 生效了、卡出来了，只是还没填对参数（第五步才填）
+2. 按一次「开始」，在「概览 → 接入」开启 QQ，再切到顶部 **QQ 页面**。状态是 `● 她自己的通道没连上`——说明 `qqNative.enabled` 生效了，只是还没填对参数（第五步才填）
 
-> QQ 卡只在 `qqNative.enabled: true` 且世界已经开始时出现。世界没开始跑，通道不连、卡也不出来。
+> QQ 页在 `qqNative.enabled: true`、接入开关已开启且世界已经开始时展示详细状态；其他时候页面提示未开启。
 
 ---
 
@@ -223,9 +238,9 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 
 她在家里自己开的那一轮（闹钟、世界线）说完的话，会推一份给主人的 QQ：`ownerQQ`，空着就取 `allowPrivate` 的第一个人（白名单不止一人时一定要填）。有人说话的轮次是在回那个人，不另推。静默（`mutedUntil`，或卡上「静默到这个点」）期间也不推。
 
-### 控制台那张 QQ 卡上有什么
+### 控制台 QQ 页面上有什么
 
-「世界控制台」里那张 QQ 卡写的是：`● 她自己连着 ws://…`（或「她自己的通道没连上」）+ `收 N 个会话 · 发 N 条[ · 失败 N][ · 挡下 N][ · 会自己回 / 只看不回]`，出问题会跟一句 `lastError`；下面一行是看门狗的状态（SnowLuma 通不通、拉起过几次、为什么拉不起来）。
+「世界控制台」顶部「QQ」页里的状态卡写的是：`● 她自己连着 ws://…`（或「她自己的通道没连上」）+ `收 N 个会话 · 发 N 条[ · 失败 N][ · 挡下 N][ · 会自己回 / 只看不回]`，出问题会跟一句 `lastError`；下面一行是看门狗的状态（SnowLuma 通不通、拉起过几次、为什么拉不起来）。
 
 下面是一排控件：
 
@@ -238,7 +253,7 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 
 这些都是**活的**：改完下一条消息就生效，不用重启。临时覆盖存在 `~/.dsh/worlds/<世界>/qq-native.json`；profile 里的值仍然是最底下的默认。
 
-设置页「模块」里的 QQ 那一行管的是**通道本身**：关掉就断开这条 OneBot 连接、QQ 卡隐藏；再打开就恢复。状态记在 `world.json`。配置里没写 `qqNative.enabled: true` 时，这个开关按不动（控制台会明说）。
+「概览 → 接入」里的 QQ 那一行管的是**通道本身**：关掉就断开这条 OneBot 连接，QQ 页提示未开启；再打开就恢复。状态记在 `world.json`。配置里没写 `qqNative.enabled: true` 时，这个开关按不动（控制台会明说）。
 
 ### SnowLuma 控制台那扇门
 
@@ -274,13 +289,13 @@ node <pnpm.cjs 路径> add <tgz 的绝对路径>
 2. DSH 里「世界控制台」→ QQ 卡：`● 她自己连着 ws://…`，`挡下 0`
 3. QQ 上用一个在白名单里的号给她私聊发一条 → 她回
 4. 群里 @ 她 → 她回；群里说一句没叫她的 → 她**不回**，但卡上的会话计数和上下文在走
-5. 设置页「模块」里关掉 QQ → 通道断开、QQ 卡隐藏 → 再打开 → 回来
+5. 「概览 → 接入」里关掉 QQ → 通道断开、QQ 页提示未开启 → 再打开 → QQ 页恢复详细状态
 
 ## 出问题看这里
 
 | 现象 | 真正的原因 |
 |---|---|
-| 世界卡在，但完全没有 QQ 卡 | ① `qqNative.enabled` 不是 `true`（或 `qqNative` 那一段缩进错了，没落在 `config:` 下面）——卡只在通道启用且世界已经开始时出现；② 装的是不含 QQ 模块的旧版本（0.5.2 及之前的上游 `main`）→ 按第一步用当前仓库重新打包安装 |
+| QQ 页提示通道未开启 | 检查 `qqNative.enabled: true` 是否位于正确的 `config:` 下、世界是否已开始，以及「概览 → 接入」的 QQ 开关是否已开启；若连 QQ 页入口都没有，再核对安装版本 |
 | 卡上写 `WS 错误: Unexpected server response: 401` | `accessToken` 填成了 HTTP 服务的 token。要用 **WS 服务端自己那个**：SnowLuma 的 `config/onebot_*.json` 里 `enableWebSocket` 为真的那个文件 |
 | 一直连不上，日志刷重连 | `wsUrl` 的端口填成了 HTTP API 那个。要填 WebSocket 服务端的端口，端口号以 SnowLuma 页面上显示的为准 |
 | 私聊发了没反应，卡上「挡下 N」在涨 | 那个 QQ 号不在 `allowPrivate` 里。白名单留空 = 谁都不理，抬手加上去 |

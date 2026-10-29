@@ -1,6 +1,7 @@
 """Windows adapter for the independent dsh-world WeChat module."""
 import argparse
 from contextlib import contextmanager
+from http.client import IncompleteRead
 import json
 import sqlite3
 import sys
@@ -9,6 +10,7 @@ from concurrent.futures import Future
 from threading import Thread
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from outgoing import deliverMessages, prepareMessages
 from snapshot import SnapshotBusy
@@ -22,14 +24,20 @@ from presence import GroupPresence, seedPresence, speakerName, unreadAfter
 from datetime import datetime, timezone
 
 IMAGE_BUFFER_SECONDS = 3
+IMAGE_BUFFER_POLL_SECONDS = 0.1
+MAX_PRIVATE_IMAGES = 2
+CONTROL_TIMEOUT_SECONDS = 5
+REPLY_TIMEOUT_SECONDS = 190
 # Exit code for "a person must check WeChat and run acknowledge"; the plugin stops restarting the adapter on it.
 EXIT_NEEDS_HUMAN = 2
 
 
 class NeedsHuman(RuntimeError):
     pass
-IMAGE_BUFFER_POLL_SECONDS = 0.1
-MAX_PRIVATE_IMAGES = 2
+
+
+class HomeRequestError(RuntimeError):
+    pass
 
 
 @contextmanager
@@ -229,15 +237,8 @@ class MessageStore:
             if result.rowcount != len(rows): raise RuntimeError('接收批次状态不一致，停止且不推进位置')
             self.db.execute('UPDATE cursors SET seq=MAX(seq,?) WHERE chatId=?', (max(int(row['sort_seq']) for row in rows), chatId))
 
-    def checkPending(self, activeIncoming=None):
-        excluded, parameters = '', ()
-        if activeIncoming:
-            chatId, keys = activeIncoming
-            keys = [keys] if isinstance(keys, str) else keys
-            if not keys: raise ValueError('活动接收批次不能为空')
-            excluded = ' AND NOT(chatId=? AND messageId IN (' + ','.join('?' for _ in keys) + '))'
-            parameters = (chatId, *keys)
-        row = self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending'" + excluded + ' ORDER BY rowid LIMIT 1', parameters).fetchone()
+    def checkPending(self):
+        row = self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending' ORDER BY rowid LIMIT 1").fetchone()
         if row:
             raise NeedsHuman(f'上次消息结果尚未确认：{row[0]} / {row[1]}。核对家和微信后使用 acknowledge，不自动重发。')
 
@@ -285,6 +286,26 @@ class MessageStore:
 
 
 def postHome(moduleFile, message):
+    retryable = len(message) == 1 and next(iter(message)) in ('receipt', 'outbox', 'status', 'readResult')
+    for attempt in range(5):
+        try:
+            return postHomeOnce(moduleFile, message, CONTROL_TIMEOUT_SECONDS if retryable else REPLY_TIMEOUT_SECONDS)
+        except HTTPError as error:
+            with error:
+                try: detail = error.read(1024).decode('utf-8', errors='replace')
+                except (IncompleteRead, URLError, TimeoutError, ConnectionError) as readError:
+                    detail = f'响应正文未读完：{readError}'
+            transient = error.code in (502, 503, 504)
+            failure = HomeRequestError if transient else RuntimeError
+            if not retryable or not transient or attempt == 4:
+                raise failure(f'DSH HTTP {error.code}: {detail or error.reason}') from error
+        except (IncompleteRead, URLError, TimeoutError, ConnectionError) as error:
+            if not retryable or attempt == 4:
+                raise HomeRequestError(f'DSH 请求未确认：{error}') from error
+        time.sleep(2 ** attempt)
+
+
+def postHomeOnce(moduleFile, message, timeout):
     connection = json.loads(Path(moduleFile).read_text(encoding='utf-8-sig'))
     if message.get('reference') and connection.get('references') is not True:
         raise RuntimeError('引用消息需要新版宿主支持，请更新并重载 DSH 的 dsh-world 插件')
@@ -296,7 +317,7 @@ def postHome(moduleFile, message):
     request = Request(connection['origin'].rstrip('/') + connection['path'],
                       data=json.dumps(message, ensure_ascii=False).encode(),
                       headers={'Content-Type': 'application/json', 'x-dsh-world-token': connection['token']}, method='POST')
-    with urlopen(request, timeout=190) as response:
+    with urlopen(request, timeout=timeout) as response:
         result = json.load(response)
     if result.get('accepted') is not True:
         raise RuntimeError('DSH 没有确认请求')
@@ -366,9 +387,8 @@ def flushReading(config, database, request, store=None):
                                 [messageKey(row) for row in boundaryRows])
 
 
-def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=reportReceipt, activeIncoming=None):
+def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=reportReceipt):
     for _ in range(config.get('pageSize', 50)):
-        store.checkPending(activeIncoming)
         if config.get('_presence') is not None:
             config['_presence']['groups'] = store.presence.snapshot(config)
         work = poll(config)
@@ -390,8 +410,6 @@ def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=re
         if previous:
             report(config['moduleFile'], previous)
             store.receiptPosted(previous)
-            if previous['status'] == 'uncertain':
-                raise NeedsHuman('此前发送结果不明，只补报回执，不能重复发送')
             continue
         baselineChat(database, store, chat['id'], config.get('pageSize', 50))
         seq, key = store.cursor(chat['id']), 'outgoing:' + replyId
@@ -419,7 +437,7 @@ def baselineChat(database, store, chatId, pageSize):
     store.baseline(chatId, seq, rows)
 
 
-def askWhileSending(config, message, database, store, send, ask, report, poll, activeIncoming):
+def askWhileSending(config, message, database, store, send, ask, report, poll):
     result = Future()
     def request():
         try: result.set_result(ask(config['moduleFile'], message))
@@ -428,7 +446,9 @@ def askWhileSending(config, message, database, store, send, ask, report, poll, a
     Thread(target=request, daemon=True).start()
     while True:
         try:
-            flushOutgoing(config, database, store, send, poll=poll, report=report, activeIncoming=activeIncoming)
+            flushOutgoing(config, database, store, send, poll=poll, report=report)
+        except HomeRequestError as error:
+            print(f'微信发送队列暂时无法同步，继续等待本轮结果：{error}', file=sys.stderr, flush=True)
         except SnapshotBusy:
             pass
         if result.done():
@@ -438,11 +458,13 @@ def askWhileSending(config, message, database, store, send, ask, report, poll, a
 
 def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll=pollOutgoing):
     pageSize = config.get('pageSize', 50)
+    paused = None
     while True:
-        flushReceipts(config['moduleFile'], store, report)
-        store.checkPending()
         try:
+            flushReceipts(config['moduleFile'], store, report)
             flushOutgoing(config, database, store, send, poll=poll, report=report)
+            store.checkPending()
+            paused = None
             for chat in config['chats']:
                 baselineChat(database, store, chat['id'], pageSize)
                 seedPresence(database, store, config, chat)
@@ -472,10 +494,14 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                         if extra.get('media'): message.setdefault('media', []).extend(extra['media'])
                     store.beginBatch(chat['id'], rows)
                     if message:
-                        askWhileSending(config, message, database, store, send, ask, report, poll, (chat['id'], [messageKey(member) for member in rows]))
+                        askWhileSending(config, message, database, store, send, ask, report, poll)
                     store.finishBatch(chat['id'], rows)
                     flushOutgoing(config, database, store, send, poll=poll, report=report)
             config['_presence'] = dict(observedAt=datetime.now(timezone.utc).isoformat(), groups=store.presence.snapshot(config))
+        except (NeedsHuman, HomeRequestError) as error:
+            if paused != str(error):
+                print(f'微信入站处理暂缓，继续轮询独立发送任务：{error}', file=sys.stderr, flush=True)
+                paused = str(error)
         except SnapshotBusy:
             # Re-read an unstable snapshot next poll; no message is re-sent here.
             pass
@@ -485,7 +511,6 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
 def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=reportReceipt, poll=pollOutgoing, sleep=time.sleep, status=reportStatus):
     waiting = False
     while True:
-        store.checkPending()
         try:
             database, send = connect(config, stateDir)
             try:
@@ -496,7 +521,6 @@ def watchConnected(config, stateDir, store, connect, *, ask=askHome, report=repo
             finally:
                 send.close()
         except WechatOffline:
-            store.checkPending()
             status(config, 'offline')
             if not waiting:
                 print('指定微信账号已离线，暂停收发，等待原账号重新登录；无需重启 DSH。', flush=True)

@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type {} from '@deepseek-ai/dsh-agent-loop';
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
@@ -27,6 +28,8 @@ import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
 import { createToolRegistry } from './toolRegistry.ts';
 import { alarmDescriptions, lifeTools } from './tools.ts';
+import type { PhotoStore } from './photos.ts';
+import { photoTools } from './photoTools.ts';
 import type { Alarm, Greeting, LifeOptions, PendingWake, Review, WakeRecord } from './types.ts';
 
 /** How long a word may sit in her home without its turn starting a step before the console says so. */
@@ -38,6 +41,7 @@ export interface LifeDeps {
   dailyBudget?: () => number | undefined;
   /** Read-only facts appended after the user's alarm template is rendered. */
   alarmContext?: (now: Date) => string | undefined;
+  photos?: () => PhotoStore;
   /** Her room's workspace; the life line reaches only its sessions. Absent, every session of hers. */
   inWorkspace?: (sessionId: string) => boolean;
 }
@@ -321,7 +325,10 @@ export function createLifeRuntime(deps: LifeDeps) {
     faults, logger: ctx.logger,
     inWorld: agent => !stopped && includes(agent.session),
     isHome: agent => agent.id === state.homeSessionId,
-    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+    tools: agent => [
+      ...lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+      ...deps.photos ? photoTools({ agent, store: deps.photos, attachments: () => ctx.get('attachments') as AttachmentStore | undefined, inside: () => !stopped && agent.id === state.homeSessionId && includes(agent.session) }) : [],
+    ],
   });
   const attach = (agent: Agent) => !stopped && includes(agent.session) ? tools.attach(agent) : tools.detach(agent);
   const home = createHome({

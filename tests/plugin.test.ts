@@ -135,6 +135,26 @@ test('memory loads through pre-step, host time stays last, and tool-step compact
   assert.ok(textOf(requests[1]).includes('memory from yesterday'));
   assert.equal(resumed.filter(kind => kind === 'dsh-world-history').length, 1);
 });
+test('memory refresh failures reach world health and clear after a successful retry', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  const store = createArchiveStore({ ...config, root });
+  const readPage = store.readPage;
+  let broken = true;
+  store.readPage = query => broken ? Promise.reject(new Error('memory read failed')) : readPage(query);
+  const world = createWorldRuntime(ctx, config, store);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('refresh-failure'), meta: { agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('first attempt')); await agent.whenIdle();
+  assert.equal(requests.length, 0);
+  assert.equal(errors.length, 1);
+  assert.ok(world.faults().some(fault => /refresh-failure.*记忆刷新失败.*memory read failed/.test(fault)), world.faults().join('|'));
+  broken = false;
+  agent.followup(user('retry')); await agent.whenIdle();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(world.faults(), []);
+});
+
 test('proactive assistant text is archived without turning its scheduler prompt into a user message', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('proactive hello'));
   const store = createArchiveStore({ ...config, root }); const world = createWorldRuntime(ctx, config, store);
@@ -401,6 +421,59 @@ function provideLifeHost(ctx: Context) {
   });
   return { routes, unregistered };
 }
+test('apply saved prompts waits for the home turn, compacts once and refreshes before queued input resumes', async t => {
+  const requests: GenerateOptions[] = [];
+  let summaries = 0, blockTurn = false, releaseTurn!: () => void, releaseSummary!: () => void;
+  const turnGate = new Promise<void>(resolve => { releaseTurn = resolve; });
+  const summaryGate = new Promise<void>(resolve => { releaseSummary = resolve; });
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { summaries++; await summaryGate; yield* textResponse('家会话摘要'); return; }
+    requests.push(request);
+    if (blockTurn) { blockTurn = false; await turnGate; }
+    yield* textResponse('reply ' + 'detail '.repeat(100));
+  });
+  isolateHome(t, root);
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, headroomTokens: 0, maxTokens: 128 }).await();
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 2, 'console');
+  await consolePost(routes, '/dsh-world/console/persona', { 名字: '小鱼', 性格: 'OLD_PERSONA' });
+  await consolePost(routes, '/dsh-world/console/world-prompt', { text: 'OLD_WORLD {{name}} {{homeTitle}} {{self}}' });
+  await consolePost(routes, '/dsh-world/console/start');
+  const { homeSessionId } = await firstWakeDone(ctx, root);
+  const home = ctx.agents.get(SessionId(homeSessionId!))!;
+  const before = requests.length;
+  blockTurn = true; home.followup(user('busy turn'));
+  await until(async () => requests.length === before + 1, 'busy home turn');
+  await consolePost(routes, '/dsh-world/console/persona', { 名字: '鲸鲸', 性格: 'NEW_PERSONA' });
+  await consolePost(routes, '/dsh-world/console/world-prompt', { text: 'NEW_WORLD {{name}} {{homeTitle}} {{self}}' });
+  await writeFile(join(root, 'worlds/fish/room/我是谁.md'), 'NEW_SELF');
+  await consolePost(routes, '/dsh-world/console/apply-home');
+  await consolePost(routes, '/dsh-world/console/apply-home');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).homeApply.status, 'waiting');
+  assert.equal(summaries, 0); assert.match(textOf(requests.at(-1)!), /OLD_PERSONA/);
+  releaseTurn();
+  await until(async () => summaries === 1, 'manual compaction');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).homeApply.status, 'compacting');
+  home.followup(user('queued behind compaction'));
+  assert.equal(requests.length, before + 1, 'maintenance holds new input');
+  releaseSummary(); await home.whenIdle();
+  await until(async () => (await consoleGet(routes, '/dsh-world/console/snapshot')).homeApply.status === 'done', 'application result');
+  const after = requests.at(-1)!;
+  const system = after.messages.filter(message => message.role === 'system').flatMap(message => message.content).filter(block => block.type === 'text').map(block => block.text).join('\n');
+  assert.match(system, /NEW_PERSONA/); assert.match(system, /NEW_WORLD 鲸鲸 鲸鲸的家/); assert.match(system, /NEW_SELF/);
+  assert.doesNotMatch(system, /OLD_PERSONA|OLD_WORLD/);
+  assert.equal(summaries, 1); assert.equal(errors.length, 0);
+  let releaseStop!: () => void;
+  const held = home.runMaintenance(() => new Promise<void>(resolve => { releaseStop = resolve; }));
+  await consolePost(routes, '/dsh-world/console/apply-home');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).homeApply.status, 'waiting');
+  await consolePost(routes, '/dsh-world/console/stop');
+  assert.equal((await consoleGet(routes, '/dsh-world/console/snapshot')).homeApply.status, 'cancelled');
+  releaseStop(); await held;
+  assert.equal(summaries, 1, 'stopping never leaves a pending compaction behind');
+});
 async function until(check: () => Promise<boolean>, what: string) {
   for (let i = 0; i < 200; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.fail(`timed out waiting for ${what}`);

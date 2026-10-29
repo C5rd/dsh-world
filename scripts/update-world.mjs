@@ -123,9 +123,6 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
       const { stdout } = await run('tar', ['-xOzf', savedArchive, 'package/' + entry], { encoding: 'buffer' });
       if (createHash('sha256').update(stdout).digest('hex') !== await digest(join(installedRoot, entry))) throw new Error(`Installed package content does not match: ${entry}`);
     }
-    // Run only the known SDK repair; other dependency lifecycle scripts remain disabled.
-    const patch = join(installedRoot, 'scripts', 'patch-snowluma.mjs');
-    if (await exists(patch)) await run(process.execPath, [await realpath(patch)], { cwd: profile });
     await run(process.execPath, ['--check', join(installedRoot, 'lib', 'index.js')], { cwd: profile });
     const updated = await json(join(profile, 'package.json'));
     const expected = structuredClone(original);

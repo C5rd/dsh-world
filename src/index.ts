@@ -8,6 +8,7 @@ import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
 import { bridgeRoute } from './ecosystem/bridge/route.ts';
 import { consoleRoute, type ConsoleActions } from './console/routes.ts';
 import { consoleSources } from './console/snapshot.ts';
+import { createHomeApply } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
@@ -31,6 +32,8 @@ import { createChannelSessions } from './ecosystem/shared/sessions.ts';
 import { createArchiveSelection, createWorkspaceMembership } from './archiveSelection.ts';
 import { inWorld } from './sourceArchive.ts';
 import { createWorkspacePermissions } from './workspacePermissions.ts';
+import { createPhotoStore, type PhotoStore } from './life/photos.ts';
+import { createQqSdkInstaller, type QqSdkProfile } from './ecosystem/qq-native/sdkInstall.ts';
 
 export { createWorldRuntime } from './runtime.ts';
 export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor } from './types.ts';
@@ -106,6 +109,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace');
   const memoryConfig = { ...config, archiveScope: power.archiveScope() };
   const faults = new Faults();
+  let photoStore: PhotoStore | undefined;
+  const photos = () => {
+    try { photoStore ??= createPhotoStore(worldDir); faults.clear('photos'); return photoStore; }
+    catch (error) { faults.set('photos', `相册打不开：${errorText(error)}`); throw error; }
+  };
+  ctx.effect(() => () => photoStore?.close(), 'dsh-world album');
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
@@ -131,7 +140,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession, inWorkspace }, power.memoryTurns);
+    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace }, power.memoryTurns);
     await memory.start({ fresh });
   }
   async function stopMemory(): Promise<void> {
@@ -162,6 +171,19 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     );
     lifeCtx.effect(() => () => unregisterQq(), 'dsh-world qq route');
     let life: LifeRuntime | undefined;
+    const sdkAbort = new AbortController();
+    const sdkAvailable = () => { try { import.meta.resolve('@snowluma/sdk'); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') return false; throw error; } };
+    const qqSdk = createQqSdkInstaller({ available: sdkAvailable, profile: () => lifeCtx.get('profileContext') as QqSdkProfile | undefined, signal: sdkAbort.signal });
+    lifeCtx.effect(() => () => sdkAbort.abort(new Error('世界插件已卸载')), 'dsh-world SDK installation');
+    let qqChange = 0;
+    const homeApply = createHomeApply({
+      ctx: lifeCtx,
+      home: async () => { if (!life) throw new Error('请先启动世界生活线'); return life.home(); },
+      isHome: agent => !!life?.isHome(agent.id) && ctx.agents.get(agent.id) === agent && !host.isArchived(agent.id) && inWorldSession(agent.session),
+      compaction: () => lifeCtx.get('compaction'),
+      refresh: session => { if (!memory) throw new Error('世界记忆线已停止'); memory.refreshPrompt(session); },
+      changed: () => sources.invalidate(),
+    });
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
     let qqNative: QqNativeModule | undefined;
@@ -195,6 +217,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const q = config.qqNative;
       if (qqNative || !q?.enabled || !power.qqEnabled()) return;
       try {
+        if (qqSdk.needsRestart()) throw new Error('SDK 已安装，请重启 DSH 后启用 QQ');
+        if (!sdkAvailable()) throw new Error('QQ 缺少 SnowLuma SDK，请关闭再开启 QQ，按需安装依赖');
         const { createQqNativeModule } = await import('./ecosystem/qq-native/index.ts');
         if (qqNative || life !== current || !power.running() || !power.qqEnabled()) return;
         const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
@@ -249,7 +273,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         await lifeStop;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
-        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, alarmContext: now => wechat?.presence(now) });
+        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => wechat?.presence(now) });
         life = current; isHome = current.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(current);
@@ -268,7 +292,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const closingWechat = stopWechat();
       stopQqNative();
       bridge = undefined; life = undefined;
-      return lifeStop = Promise.all([lifeStop, closingWechat]).then(() => {});
+      return lifeStop = Promise.all([lifeStop, closingWechat, homeApply.cancel()]).then(() => {});
     }
     stopLifeLine = stopLife;
     lifeCtx.effect(() => () => stopLife(), 'dsh-world life line');
@@ -276,8 +300,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
-      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
+      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
         if (power.running()) return;
@@ -290,6 +314,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         await stopLife();
         try { await stopMemory(); } finally { sources.invalidate(); }
       },
+      applyHome: () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(),
       prompts: () => ({
         persona: readPersona(personaFile),
         worldPrompt: existsSync(worldPromptFile) ? { text: readFileSync(worldPromptFile, 'utf8'), custom: true } : { text: readFileSync(DEFAULT_TEMPLATE_FILE, 'utf8'), custom: false },
@@ -301,16 +326,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';
+        const change = patch.qq === undefined ? qqChange : ++qqChange;
+        let restartRequired = false;
+        if (patch.qq === true) {
+          try { restartRequired = await qqSdk.ensure(); sdkAbort.signal.throwIfAborted(); faults.clear('qq-sdk'); }
+          catch (error) { const message = `QQ 依赖安装失败：${errorText(error)}`; faults.set('qq-sdk', message); return message; }
+          if (change !== qqChange) return 'QQ 开关已被更新，本次安装不会重新开启 QQ';
+        }
         power.setModules(patch);
         try {
           if (patch.wechat === false) await stopWechat();
           if (patch.wechat === true && life) await startWechat(life);
           if (patch.qq === false) stopQqNative();
-          if (patch.qq === true && life) await startQqNative(life);
-          if (patch.qq === true && life && !qqNative) return 'QQ 模块没能启动，请查看健康状态';
+          if (patch.qq === true && life && !restartRequired) await startQqNative(life);
+          if (patch.qq === true && life && !restartRequired && !qqNative) return 'QQ 模块没能启动，请查看健康状态';
         } catch (error) { faults.set('wechat', `微信模块没能切换：${errorText(error)}`); lifeCtx.logger.error(error); return `切换失败：${errorText(error)}`; }
         finally { sources.invalidate(); }
         faults.clear('wechat');
+        if (restartRequired) return { restartRequired: true, message: 'SnowLuma SDK 已安装。请重启 DSH，QQ 会按已保存的开关启用。' };
         return undefined;
       },
       restartWechatAdapter: async () => { if (!adapter) return false; try { await adapter.restart(); } finally { sources.invalidate(); } return true; },

@@ -1,6 +1,6 @@
 // lib/snowluma.js —— QQ 桥的纯 SDK 侧实现：连接、事件归一化、发送。
 // 本文件是 P1 交付物；插件装配层（package.json / cordis.patch.yml / lib/index.js）不属于本文件职责。
-// 依赖：@snowluma/sdk@1.14.22（纯 ESM，零依赖；本模块只用 import）。
+// 依赖：由 profile 另行安装的 @snowluma/sdk（纯 ESM；本模块只用 import）。
 //
 // ────────────────────────────────────────────────────────────────
 // 一、createBridge 的契约（权威定义，外壳 lib/index.js 依赖它）
@@ -313,7 +313,7 @@ export function buildSegments(parts: Loose) {
         if (part.text) c = c.text(escapeOutgoingText(part.text));
         break;
       case 'at':
-        c = c.at(String(requireField(part, 'qq', 'at')));   // SDK 会把 qq String() 化，'all' 表示全体
+        c = c.raw('at', { qq: String(requireField(part, 'qq', 'at')) });
         break;
       case 'reply':
         // 一条消息里最多一次；第二次由 SDK 抛「can only appear once in a chain」

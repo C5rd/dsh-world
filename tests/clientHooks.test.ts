@@ -67,6 +67,7 @@ const filled = {
   enabled: true,
   dryRun: true,
   running: true,
+  homeApply: { status: 'waiting' },
   timeZone: 'Asia/Shanghai',
   policy: { maxCallsPerDay: 60, maxPerDay: 3 },
   today: { dayKey: '2026-10-26', calls: 2, messages: 1, sent: 1, suppressed: 0, pending: 0 },
@@ -97,14 +98,14 @@ const filled = {
   },
 };
 
-const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Modules', 'Wechat', 'WorkspacePermission'] as const;
+const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'HomeApply', 'PhotoAlbum', 'Modules', 'Wechat', 'WorkspacePermission'] as const;
 
 for (const name of components) {
   test(`${name} 在两帧之间不会换 hook 顺序`, () => {
     // 第一帧：什么都还没读到（第一个 useState 给 null，其余用组件自己的初始值）
-    const empty = name === 'WorkspacePermission' ? runtime([]).run(name, { workspace: null }) : runtime([null]).run(name);
+    const empty = name === 'WorkspacePermission' ? runtime([]).run(name, { workspace: null }) : name === 'PhotoAlbum' ? runtime([]).run(name) : runtime([null]).run(name);
     // 第二帧：数据到了（第一个 useState 给满的假数据，其余仍是初始值）
-    const full = name === 'WorkspacePermission' ? runtime([]).run(name) : runtime([filled]).run(name);
+    const full = name === 'WorkspacePermission' ? runtime([]).run(name) : name === 'Modules' ? runtime(['SDK 已安装，请重启 DSH']).run(name) : name === 'PhotoAlbum' ? runtime([{ photos: [{ id: 'p', description: '窗边', tags: [], width: 2, height: 2, savedAt: '2026-10-29T00:00:00Z' }], total: 1, hasMore: false }]).run(name) : runtime([filled]).run(name);
     assert.deepEqual(
       full.hooks,
       empty.hooks,

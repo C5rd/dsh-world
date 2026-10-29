@@ -6,15 +6,17 @@ import { readPersona, renderPersona } from './persona.ts';
 import { renderSelf } from './self.ts';
 import { belongsToWorld, inWorld } from './sourceArchive.ts';
 import type { WorldConfig } from './types.ts';
-import { readTemplate, renderWorldPrompt, type WorldPrompt } from './worldPrompt.ts';
+import { readTemplate, renderWorldPrompt, type WorldNames, type WorldPrompt } from './worldPrompt.ts';
 import { reassembleOnChange } from './worldScope.ts';
 
 export interface WorldPromptSource {
   prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean;
+  /** Resolved with the saved prompt text, so renaming does not change an existing cached prefix. */
+  names?(): WorldNames;
   /** Her room's workspace; her world (all but the persona) reaches only its sessions. Absent, every session of hers. */
   inWorkspace?(sessionId: string): boolean;
 }
-interface PromptText { template: string; self?: { file: string; text: string }; persona: string }
+interface PromptText { template: string; self?: { file: string; text: string }; persona: string; names: WorldNames }
 /** `active`: the world prompt is placed (the session is in her workspace); the persona is placed either way. */
 interface Entry { text: PromptText; active: boolean; dispose: () => void; persona?: () => void }
 /** The host's persona section; a preset may also register it for its own agents. */
@@ -24,7 +26,7 @@ const HOST_PERSONA = 'deployment:persona-prefix';
  * Her persona follows the configured preset; the world prompt is limited to the world's workspace.
  * Both are sections of the session's system prompt so she sees them on every
  * request. They are read when the session opens and again after each successful compaction (the host assembles
- * the system prompt before pre-step, so the refresh happens on compaction/end), never in between, so the prompt
+ * the system prompt before pre-step, so the refresh happens on compaction/end) or explicit console application, so the prompt
  * stays in the provider-cached prefix. Whether the session is her home is asked per request.
  *
  * Her persona takes the place of the host's: registered under the host persona's name for her agent, it shadows
@@ -36,13 +38,14 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
   const agents = new WeakMap<Session, Agent>();
   function read(includeWorld: boolean): PromptText {
     const persona = world.prompt.persona ? renderPersona(readPersona(world.prompt.persona)) : '';
-    if (!includeWorld) return { template: '', persona };
+    const names = world.names?.() ?? world.prompt.names;
+    if (!includeWorld) return { template: '', persona, names };
     const template = readTemplate(world.prompt.file);
     if (template.error) deps.logger.warn(`dsh-world: ${template.error}`);
     return {
       template: template.text,
       ...(config.selfFile ? { self: { file: config.selfFile, text: renderSelf(config.selfFile) } } : {}),
-      persona,
+      persona, names,
     };
   }
   /** Registers her persona when she has one and drops it when she has none. */
@@ -68,7 +71,7 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
         entry.active = !entry.active;
         if (!entry.active) { disposeWorld?.(); disposeWorld = undefined; return true; }
         entry.text = read(true);
-        disposeWorld = agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt(world.prompt, entry.text.template, entry.text.self, world.isHome(agent.id)) });
+        disposeWorld = agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt({ ...world.prompt, names: entry.text.names }, entry.text.template, entry.text.self, world.isHome(agent.id)) });
         placePersona(agent, entry);
         return true;
       };

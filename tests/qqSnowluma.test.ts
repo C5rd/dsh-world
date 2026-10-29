@@ -169,6 +169,11 @@ test('出站：字符串等价 text；数字 qq/id 可用', () => {
   assert.deepEqual(segs[1], { type: 'face', data: { id: '14' } });
 });
 
+test('出站：@全体和字符串账号保持原值，不经过数字转换', () => {
+  const segments = buildSegments([{ type: 'at', qq: 'all' }, { type: 'at', qq: '9007199254740993' }]);
+  assert.deepEqual(segments, [{ type: 'at', data: { qq: 'all' } }, { type: 'at', data: { qq: '9007199254740993' } }]);
+});
+
 test('出站：两个 reply 抛错（SDK 契约）、未知类型/缺字段/空 parts 抛错', () => {
   assert.throws(() => buildSegments([{ type: 'reply', id: '1' }, { type: 'reply', id: '2' }, { type: 'text', text: 'x' }]), /can only appear once/);
   assert.throws(() => buildSegments([{ type: 'poke', id: '1' }]), /不支持的 parts 段类型/);

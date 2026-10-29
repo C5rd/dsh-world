@@ -1,8 +1,12 @@
 {
   "name": "dsh-world",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Cross-session memory, persona and life routines for DSH, with a world console, tool-free compaction, native QQ and Windows WeChat messaging, group history and quoted replies",
   "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chenkezhen480/dsh-world.git"
@@ -35,18 +39,17 @@
     "CHANGELOG.md",
     "assets",
     "scripts/enable-tool-free-compaction.ps1",
-    "scripts/update-world.mjs",
-    "scripts/patch-snowluma.mjs"
+    "scripts/update-world.mjs"
   ],
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=22.16.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test",
     "test:package": "node scripts/check-package.mjs",
-    "postinstall": "node scripts/patch-snowluma.mjs",
     "prepack": "npm run typecheck && npm run build"
   },
   "dsh": {
@@ -69,10 +72,10 @@
   "dependencies": {
     "ws": "^8.18.0"
   },
-  "optionalDependencies": {
-    "@snowluma/sdk": "1.14.22"
-  },
   "peerDependencies": {
+    "@snowluma/sdk": "^2.2.1",
+    "@deepseek-ai/dsh-plugin-manager": ">=0.2.1-rc.3 <0.3.0-0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.1-rc.3 <0.3.0-0",
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-attachment": ">=0.2.1-rc.2 <0.3.0-0",
@@ -85,7 +88,19 @@
     "@deepseek-ai/schemastery": "~3.18.5",
     "@deepseek-ai/dsh-commands": ">=0.2.1-rc.2 <0.3.0-0"
   },
+  "peerDependenciesMeta": {
+    "@snowluma/sdk": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-plugin-manager": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-atomic-write": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@snowluma/sdk": "2.2.1",
     "@deepseek-ai/dsh-agent-loop": "0.2.1-rc.2",
     "@deepseek-ai/dsh-compaction-basic": "0.2.1-rc.2",
     "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.1-rc.2",

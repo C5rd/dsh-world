@@ -29,4 +29,4 @@ try {
   await bridge.stop();
   await new Promise(resolve => server.close(resolve));
 }
-process.stdout.write('Packed plugin entry, SDK install repair and local QQ connection passed.\n');
+process.stdout.write('Packed plugin entry, externally installed SDK and local QQ connection passed without install scripts.\n');

@@ -38,7 +38,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const archived = (sessionId: string) => { try { return archivedByScope(sessionId); } catch { undecided = true; return false; } };
   const archive = createSourceArchive(ctx, config, store, archived);
   const history = createHistory(store);
-  const names = world?.prompt.names ?? worldNames(config);
+  const names = () => world?.names?.() ?? world?.prompt.names ?? worldNames(config);
   const included = (session: Session) => inWorld(session, config, world?.inWorkspace);
   const faults = new Faults();
   const prompts = world && createPromptSections(config, world, { faults, logger: ctx.logger });
@@ -109,7 +109,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     const turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
     if (!included(session)) { retireMemory(session, state); return undefined; }
     const present = new Set(messages.map(message => message.id));
-    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
+    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
     const oldBlocks = messages.filter(message => message.source.kind === memorySource);
     for (const [index, message] of oldBlocks.entries()) {
       if (!included(session)) { retireMemory(session, state); return undefined; }
@@ -164,7 +164,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         await archive.schedule(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
         if (!state.reload) return decision;
-        const block = await freshBlock(agent.session, state);
+        let block: UserMessage | undefined;
+        await faults.track(`memory:${agent.id}`, `会话 ${agent.id} 记忆刷新失败`, async () => { block = await freshBlock(agent.session, state); });
         if (!included(agent.session)) return leave();
         if (!block) { state.reload = false; return decision; }
         state.pendingId = block.id;
@@ -205,5 +206,5 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       await archive.flush();
     })();
   }
-  return { start, retryCatchUp, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
+  return { start, retryCatchUp, refreshPrompt: (session: Session) => prompts?.refresh(session), flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }

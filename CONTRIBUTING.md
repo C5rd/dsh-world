@@ -91,8 +91,9 @@ dsh-world 养的是一个伙伴，不是一个按日程执行的助手。**她�
 插件主体必须在只装必要依赖的情况下装得上、跑得起来。生态模块一律按“可选”设计：
 
 - **默认不加新依赖。** 能用宿主服务、Node 内置模块或已有依赖完成的，不引入新包。确实需要时，先开 Issue 说明用途、体积、许可证和替代方案，得到同意再提交。
-- **平台 SDK 只能是可选依赖。** 放进 `optionalDependencies`，只在模块被拨开时动态 `import`；模块默认关闭，没装 SDK 时只显示该模块不可用，不能影响插件本身和其他模块。`postinstall` 等安装脚本在依赖缺失时必须正常退出。
+- **平台 SDK 只能是可选依赖。** 由使用者另行安装的 SDK 声明为可选 peer（`peerDependenciesMeta.optional: true`），开发测试所需版本放在 `devDependencies`。只在模块被拨开时动态 `import`；模块默认关闭，没装 SDK 时只显示该模块不可用，不能影响插件本身和其他模块。不要通过安装脚本修补 SDK 文件。
 - **不自动安装或部署第三方程序。** 涉及启动外部程序（例如 SnowLuma）的功能，在模块文档和 PR 中写明其许可条款允许的方式，以及是否默认开启。
+- **SDK 按需安装必须由使用者明确开启模块触发。** 复用宿主包管理操作与 profile 写锁，禁用生命周期脚本，不修改 SDK 文件或自动升级 Node；安装失败保留原 profile 配置，安装后需要重启时明确提示。客户端程序的安装与登录仍由使用者处理。
 
 ## 实现与验证
 
@@ -104,12 +105,12 @@ dsh-world 养的是一个伙伴，不是一个按日程执行的助手。**她�
 
 ## CI 与安装包验证
 
-[CI](.github/workflows/ci.yml) 在 PR、`main` 推送和手动触发时运行 Windows / Linux 两条任务，使用最低支持的 Node 22.16.0。两端执行干净安装、类型检查、全部 Node 回归测试、编译和安装包验证；Windows 另用 Python 3.11 安装固定的微信适配器依赖并跑离线测试。相同分支的新运行会取消旧运行，两端独立报告结果。
+[CI](.github/workflows/ci.yml) 在 PR、`main` 推送和手动触发时运行 Windows / Linux 两条完整检查任务，使用满足开发测试 SDK 要求的 Node 24.22.1。两端执行禁用安装脚本的干净安装、类型检查、全部 Node 回归测试、编译和安装包验证；Windows 另用 Python 3.11 安装固定的微信适配器依赖并跑离线测试。另有 Node 22.16.0 核心入口检查，确认 SDK 不可用时核心仍能加载。相同分支的新运行会取消旧运行，各项独立报告结果。
 
 本机可按以下 PowerShell 命令复现 Node 与安装包检查：
 
 ```powershell
-npm ci
+npm ci --ignore-scripts
 npm run typecheck
 npm test
 npm run build
@@ -118,7 +119,24 @@ npm pack --ignore-scripts --pack-destination artifacts
 npm run test:package
 ```
 
-这里的 `--ignore-scripts` 只用于打包，前面的类型检查和编译已经完成；依赖安装仍执行 SDK 修补。`test:package` 在本仓库 `.host/` 下创建临时消费项目，安装真实 `.tgz` 及其生产依赖，复用父目录提供的 DSH 宿主依赖，核对入口加载、SDK 修补和编译后 QQ 驱动的本地 WebSocket 连接，结束后清理临时项目。检查不需要 DSH profile、微信进程或真实账号。
+安装与打包均禁用生命周期脚本，类型检查和编译由前面的命令显式执行。`test:package` 在本仓库 `.host/` 下创建临时消费项目，安装真实 `.tgz` 及其生产依赖，复用父目录提供的 DSH 宿主依赖；先确认未安装 SDK 时核心入口可加载，再另行安装 SDK，检查编译后 QQ 驱动的本地 WebSocket 连接，全程不修补 SDK 文件，结束后清理临时项目。检查不需要 DSH profile、微信进程或真实账号。
+
+### npm 发布（维护者）
+
+使用上述检查生成的同一个 `.tgz` 发布，避免发布时重新构建出不同内容。包已通过 `publishConfig` 指定 npm 官方源和公开访问；先完成发布预检：
+
+```powershell
+npm publish .\artifacts\dsh-world-0.6.4.tgz --dry-run --ignore-scripts --registry=https://registry.npmjs.org/
+```
+
+确定发布后，用有包发布权限的 npm 账号登录，按 npm 提示完成浏览器和二次验证，再执行：
+
+```powershell
+npm login --registry=https://registry.npmjs.org/
+npm publish .\artifacts\dsh-world-0.6.4.tgz --ignore-scripts --access public --registry=https://registry.npmjs.org/
+```
+
+首次发布会创建该包；之后每次发布都要提升版本号，同一个包名和版本不能覆盖。发布成功后使用者可按 [安装说明](INSTALL.md#第一步把-dsh-world-装进-profile) 从 npm 安装或更新。后续版本替换示例中的版本号。流程依据 [npm 发布文档](https://docs.npmjs.com/cli/v11/commands/npm-publish/)；npm 登录信息和令牌不要写进仓库。
 
 每个平台检查通过后，CI 上传 `artifacts/` 中的 `.tgz` 供下载。CI 不替代桌面端和真实账号验收。
 

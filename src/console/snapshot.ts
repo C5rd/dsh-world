@@ -9,6 +9,8 @@ import type { WorldConfig } from '../types.ts';
 import type { WorldNames } from '../worldPrompt.ts';
 import type { MemoryArchiveScope } from '../archiveSelection.ts';
 import type { ConsoleSources } from './routes.ts';
+import type { HomeApplyState } from './homeApply.ts';
+import type { PhotoStore } from '../life/photos.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
@@ -24,6 +26,8 @@ export interface SnapshotDeps {
   lifeStore?: LifeStore;
   /** The running life line; undefined while her world is stopped. */
   life(): LifeRuntime | undefined;
+  homeApply?(): HomeApplyState;
+  photos?(): PhotoStore;
   diaryDir: string;
   running(): boolean;
   /** CNY a day for her home; undefined is no limit. */
@@ -66,6 +70,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
       workspace: deps.workspacePermissions?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
+      homeApply: deps.homeApply?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,
@@ -87,5 +92,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     invalidate() { cached = undefined; },
     activity: (day, outsideOnly) => lifeStore?.activity(day).filter(record => !outsideOnly || record.outside).reverse() ?? [],
     diary: date => diary.read(date),
+    photos: (limit, offset) => { if (!deps.photos) throw new Error('相册不可用'); return deps.photos().list(limit, offset); },
+    photo: id => deps.photos?.().image(id),
   };
 }

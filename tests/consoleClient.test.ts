@@ -79,6 +79,59 @@ test('the client registers the world console settings section under the bundle i
   assert.doesNotMatch(nothing, /收 0 个会话/, '没开的时候不该画一行零');
 });
 
+test('WeChat and QQ controls open on separate pages and stay out of the overview', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [];
+  let at = 0;
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) {
+      const index = at++;
+      if (!(index in states)) states[index] = init;
+      return [states[index], (value: unknown) => { states[index] = value; }];
+    },
+    useEffect() {}, useRef: () => ({ current: null }),
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: Record<string, any> } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), { window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const ui = loaded!.factory(() => react).__test;
+  const nodes = (node: unknown): El[] => {
+    if (Array.isArray(node)) return node.flatMap(nodes);
+    if (!node || typeof node !== 'object') return [];
+    const element = node as El;
+    return [element, ...element.children.flatMap(nodes)];
+  };
+  const text = (node: unknown): string => Array.isArray(node) ? node.map(text).join('') : node && typeof node === 'object' ? text((node as El).children) : node == null || typeof node === 'boolean' ? '' : String(node);
+  const snap = { running: true, worldId: 'test', timeZone: 'UTC', now: '2026-10-29T00:00:00Z', life: null, memory: {}, health: [], wechat: { accountId: 'bot' }, native: { connected: true } };
+  const refresh = () => {};
+  const render = () => { at = 0; return nodes(ui.View({ snap, refresh })); };
+  const open = (label: string) => {
+    const button = render().find(node => node.type === 'button' && text(node) === label);
+    assert.ok(button, `missing ${label} page`);
+    button.props!.onClick();
+    return render();
+  };
+  const overview = nodes(ui.Overview({ snap, refresh }));
+  assert.ok(!overview.some(node => node.type === ui.Wechat || node.type === ui.Qq));
+  const wechat = open('微信').find(node => node.type === ui.Wechat);
+  assert.ok(wechat);
+  assert.equal(wechat.props!.wechat, snap.wechat);
+  assert.equal(wechat.props!.zone, snap.timeZone);
+  assert.equal(wechat.props!.onSaved, refresh);
+  const qq = open('QQ').find(node => node.type === ui.Qq);
+  assert.ok(qq);
+  assert.equal(qq.props!.native, snap.native);
+  qq.props!.onNeedPassword('snowluma');
+  assert.ok(render().some(node => node.type === ui.Panel && node.props!.kind === 'snowluma'));
+  const stopped = { ...snap, running: false, wechat: null, native: null };
+  at = 0;
+  states[0] = 'wechat';
+  assert.match(text(ui.View({ snap: stopped, refresh })), /微信.*未开启/);
+  at = 0;
+  states[0] = 'qq';
+  assert.match(text(ui.View({ snap: stopped, refresh })), /QQ.*未开启/);
+});
+
 test('workspace permissions render host options, preserve dirty drafts on polls and save the selected value with errors shown', async () => {
   type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
   const states: unknown[] = [], effectDeps: unknown[][] = [];
@@ -159,6 +212,80 @@ test('workspace permissions render host options, preserve dirty drafts on polls 
   assert.match(text(tree), /保存失败：未知工作区权限：custom-read-only/);
   assert.equal(refreshed, 1); assert.equal(select().props!.value, 'custom-read-only');
   workspace = null; render(); assert.deepEqual(tree, []);
+});
+
+test('home apply submits only the explicit action and shows backend progress and failures', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [];
+  let at = 0, refreshed = 0, error = '';
+  const requests: { url: string; options: any }[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { HomeApply: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+    fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
+  });
+  const component = loaded!.factory(() => react).__test.HomeApply;
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand(el.type({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  let snap = { running: true, life: {}, homeApply: { status: 'idle', message: '' } };
+  let tree: El[] = [];
+  const render = () => { at = 0; tree = expand(component({ snap, refresh: () => { refreshed++; } })); };
+  const button = () => tree.find(el => el.type === 'button')!;
+  render(); assert.equal(requests.length, 0); assert.equal(button().props!.disabled, false);
+  assert.match(text(tree), /先保存人设和世界提示词/);
+  button().props!.onClick(); render(); assert.equal(button().props!.disabled, true);
+  await new Promise(setImmediate); render();
+  assert.equal(refreshed, 1); assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/dsh-world/console/apply-home'); assert.equal(requests[0].options.headers['x-dsh-world'], '1');
+  assert.deepEqual(JSON.parse(requests[0].options.body), {}, 'the action does not save drafts');
+  for (const status of ['waiting', 'compacting']) { snap = { ...snap, homeApply: { status, message: '' } }; render(); assert.equal(button().props!.disabled, true); }
+  snap = { ...snap, homeApply: { status: 'failed', message: '应用并压缩失败：summary unavailable' } }; render();
+  assert.equal(button().props!.disabled, false); assert.match(text(tree), /summary unavailable/);
+  error = '未加载压缩服务'; button().props!.onClick(); await new Promise(setImmediate); render();
+  assert.match(text(tree), /未加载压缩服务/); assert.equal(refreshed, 1);
+  snap = { ...snap, running: false }; render(); assert.equal(button().props!.disabled, true);
+});
+
+test('album shows metadata first, loads one selected image and paginates with the backend shape', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: any[] = [], effects: { deps: unknown[] }[] = []; let at = 0, effectAt = 0;
+  const calls: string[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
+    useEffect(effect: () => unknown, deps: unknown[]) { const index = effectAt++; if (!effects[index] || deps.some((value, i) => value !== effects[index].deps[i])) { effects[index] = { deps }; effect(); } },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { PhotoAlbum: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+    fetch: async (url: string) => { calls.push(url); return { ok: true, json: async () => ({ photos: [{ id: 'photo-1', description: '窗边', width: 2, height: 2, savedAt: '2026-10-29T00:00:00Z', tags: ['家'] }], total: 13, hasMore: true }) }; },
+  });
+  const component = loaded!.factory(() => react).__test.PhotoAlbum;
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand(el.type({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  let tree: El[] = [];
+  const render = () => { at = 0; effectAt = 0; tree = expand(component({ zone: 'UTC', tick: 0 })); };
+  render(); await new Promise(setImmediate); render();
+  assert.match(calls[0], /photos\?limit=12&offset=0/); assert.match(text(tree), /窗边/);
+  assert.equal(tree.some(el => el.type === 'img'), false);
+  tree.find(el => el.type === 'button' && text(el) === '查看照片')!.props!.onClick(); render();
+  assert.equal(tree.find(el => el.type === 'img')!.props!.src, '/dsh-world/console/photo?id=photo-1');
+  tree.find(el => el.type === 'button' && text(el) === '下一页')!.props!.onClick(); render();
+  assert.match(calls.at(-1)!, /offset=12/); assert.equal(tree.some(el => el.type === 'img'), false);
 });
 
 test('the module switches say what is on, what is off and what the config does not provide', async () => {
