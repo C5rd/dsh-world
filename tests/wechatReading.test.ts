@@ -58,3 +58,16 @@ test('an absent or old adapter times out instead of hanging the model turn', asy
   t.mock.timers.tick(30_000); await failed;
   assert.equal(reading.poll(), undefined);
 });
+
+test('only consumed successful reads acknowledge clearing; duplicate deliveries keep the same result', async t => {
+  const f = fixture(); t.after(f.reading.stop);
+  const pending = f.run(); const job = f.reading.poll()!;
+  const result = { id: job.id, accountId: 'bot', chatId: job.chatId, messages: [entry] };
+  assert.equal(f.reading.accept(result), true); await pending;
+  assert.equal(f.reading.accept(result), true, 'a lost HTTP acknowledgement may be retried');
+  assert.equal(f.reading.accept({ ...result, messages: [] }), false);
+  const g = fixture(); t.after(g.reading.stop);
+  const cancelled = g.run(); const old = g.reading.poll()!;
+  g.controller.abort(new Error('cancelled')); await assert.rejects(cancelled);
+  assert.equal(g.reading.accept({ ...result, id: old.id }), false, 'a late ignored result must not clear unread');
+});

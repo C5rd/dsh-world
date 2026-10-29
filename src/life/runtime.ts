@@ -36,6 +36,8 @@ export interface LifeDeps {
   ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
   /** CNY her home may spend a day; undefined or absent is no limit. */
   dailyBudget?: () => number | undefined;
+  /** Read-only facts appended after the user's alarm template is rendered. */
+  alarmContext?: (now: Date) => string | undefined;
   /** Her room's workspace; the life line reaches only its sessions. Absent, every session of hers. */
   inWorkspace?: (sessionId: string) => boolean;
 }
@@ -258,7 +260,9 @@ export function createLifeRuntime(deps: LifeDeps) {
       // Cleared before steering, so a turn that ends quickly already sees "no alarm" and gets the fallback.
       delete state.alarm;
       const now = clock();
-      const message = lifeMessage(wakeText(alarm, now, timeZone, options.fallbackWakeTime, alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) }));
+      const text = wakeText(alarm, now, timeZone, options.fallbackWakeTime, alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) });
+      const context = deps.alarmContext?.(now);
+      const message = lifeMessage(context ? `${text}\n\n${context}` : text);
       expect(agent, message, '闹钟', alarm.at, alarm.source, { alarm }, now);
       await say(agent, message);
     } catch (error) {

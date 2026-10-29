@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { channelContext } from '../shared/context.ts';
 import type { SpeakerIdentity } from '../shared/identity.ts';
@@ -10,6 +10,7 @@ interface Pending { request: ReadRequest; identity: SpeakerIdentity; resolve(val
 /** Reads use the existing adapter poll; cancellation drops only the request, never a receive cursor. */
 export function createWechatReading(deps: { target(chatId: string): SpeakerIdentity }) {
   const pending = new Map<string, Pending>();
+  const completed = new Map<string, string>();
   let stopped = false;
   function isBound(item: Pending): boolean {
     try {
@@ -45,23 +46,27 @@ export function createWechatReading(deps: { target(chatId: string): SpeakerIdent
       for (const item of pending.values()) if (isBound(item)) return item.request;
       return undefined;
     },
-    accept(value: unknown): void {
+    accept(value: unknown): boolean {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的群消息读取结果');
       const input = value as Record<string, unknown>;
       if (typeof input.id !== 'string' || !/^[a-f0-9]{32}$/.test(input.id)) throw new Error('无效的群消息读取 ID');
       const item = pending.get(input.id);
-      if (!item) return; // A cancelled or timed-out read may finish on the adapter later.
+      const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      if (!item) return completed.get(input.id) === digest;
       if (input.accountId !== item.request.accountId || input.chatId !== item.request.chatId) throw new Error('读取结果不属于请求的账号或群聊');
-      if (!isBound(item)) return;
+      if (!isBound(item)) return false;
       if (input.error !== undefined) {
         if (typeof input.error !== 'string' || !input.error || input.error.length > 1000) throw new Error('无效的群消息读取错误');
-        item.reject(new Error(input.error)); return;
+        item.reject(new Error(input.error)); return false;
       }
       if (!Array.isArray(input.messages) || (input.nextCursor !== undefined && (typeof input.nextCursor !== 'string' || !input.nextCursor || input.nextCursor.length > 1024))) throw new Error('无效的群消息分页结果');
       const messages = channelContext(input.messages, item.identity, item.request.limit);
       if (new Set(messages.map(message => message.id)).size !== messages.length) throw new Error('群消息读取结果重复');
       item.resolve(JSON.stringify({ accountId: item.request.accountId, chatId: item.request.chatId, messages, ...(input.nextCursor === undefined ? {} : { nextCursor: input.nextCursor }) }));
+      completed.set(input.id, digest);
+      if (completed.size > 128) completed.delete(completed.keys().next().value!);
+      return true;
     },
-    stop() { stopped = true; for (const item of pending.values()) item.reject(new Error('微信模块已停止')); },
+    stop() { stopped = true; completed.clear(); for (const item of pending.values()) item.reject(new Error('微信模块已停止')); },
   };
 }

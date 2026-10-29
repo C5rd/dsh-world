@@ -13,6 +13,7 @@ import { admitContextImages } from './images.ts';
 import { dirname, join } from 'node:path';
 import { createWechatSending } from './sending.ts';
 import { createWechatReading } from './reading.ts';
+import { createWechatPresence } from './presence.ts';
 import { reassembleOnChange, scopedTool, type InWorld } from '../../worldScope.ts';
 
 export const WECHAT_PATH = '/dsh-world/wechat/ask';
@@ -21,6 +22,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
   const token = randomBytes(32).toString('hex');
   const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default' });
   const reading = createWechatReading({ target: sending.target });
+  const presence = createWechatPresence();
   const attached = new Map<Agent, (() => void)[]>();
   const requests = new Set<Promise<JsonResult>>();
   let closing: Promise<void> | undefined;
@@ -78,14 +80,14 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (body && 'status' in body) {
       const reported = (body.status as { wechat?: unknown } | null)?.wechat;
       if (reported !== 'online' && reported !== 'offline') return { status: 400, body: { error: 'bad status' } };
-      accountState = reported; return { status: 200, body: { accepted: true } };
+      accountState = reported; if (reported === 'offline') presence.clear(); return { status: 200, body: { accepted: true } };
     }
     if (body && 'outbox' in body) {
-      try { const job = await sending.poll(body.outbox); const read = reading.poll(); accountState = 'online'; return { status: 200, body: { accepted: true, settings: settings(), ...(job ? { job } : {}), ...(read ? { read } : {}) } }; }
-      catch (error) { deps.ctx.logger.warn('dsh-world WeChat outbox failed:', error); return { status: 400, body: { error: 'invalid WeChat outbox binding or pending job; check adapter configuration' } }; }
+      try { const job = await sending.poll(body.outbox); presence.accept(body.outbox); const read = reading.poll(); accountState = 'online'; return { status: 200, body: { accepted: true, settings: settings(), ...(job ? { job } : {}), ...(read ? { read } : {}) } }; }
+      catch (error) { presence.clear(); deps.ctx.logger.warn('dsh-world WeChat outbox failed:', error); return { status: 400, body: { error: 'invalid WeChat outbox binding or pending job; check adapter configuration' } }; }
     }
     if (body && 'readResult' in body) {
-      try { reading.accept(body.readResult); return { status: 200, body: { accepted: true } }; }
+      try { const readAccepted = reading.accept(body.readResult); return { status: 200, body: { accepted: true, readAccepted } }; }
       catch (error) { deps.ctx.logger.warn('dsh-world WeChat read failed:', error); return { status: 400, body: { error: 'invalid WeChat history result' } }; }
     }
     if (body && 'receipt' in body) {
@@ -106,6 +108,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     catch (error) { deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } }; }
   }
   return {
+    presence: (now: Date) => !stopped && accountState === 'online' ? presence.summary(now) : undefined,
     status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
     start() {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 4, references: true }, null, 2));

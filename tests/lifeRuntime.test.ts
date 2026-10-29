@@ -41,7 +41,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean }
+interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -68,7 +68,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
   const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), fallbackWakeTime: '09:00', timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace });
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -667,6 +667,24 @@ test('a world alarm.md shapes the wake messages and the tool descriptions; an un
   await broken.start();
   assert.match(textOf(broken.requests[0]!), /【我的时间】这是我的家。/);
   assert.ok(broken.faults().some(fault => /闹钟模板 .* 读不了，先用默认的/.test(fault)), broken.faults().join('|'));
+});
+test('group facts follow a custom alarm section without rewriting the file or waking an extra turn', async t => {
+  const own = '## 闹钟响了\n我自己的闹钟措辞。\n';
+  let facts: string | undefined = '微信：「家人」37 条未读，最后是爸爸（20 分钟前）';
+  const s = await setup(t, () => textResponse('嗯'), { before: dir => writeFile(join(dir, 'alarm.md'), own), alarmContext: () => facts });
+  await s.start();
+  assert.doesNotMatch(textOf(s.requests.at(-1)!), /37 条未读/, 'the greeting is not a group wake');
+  const before = s.requests.length;
+  s.life.planNext({ after_minutes: 1 }, '读一会书');
+  assert.equal(s.requests.length, before);
+  s.timers.advance(60_000); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.match(textOf(s.requests.at(-1)!), /我自己的闹钟措辞。[\s\S]*微信：「家人」37 条未读/);
+  assert.equal(await readFile(join(s.worldDir, 'alarm.md'), 'utf8'), own);
+  facts = undefined; s.life.planNext({ after_minutes: 1 }, '接着读');
+  s.timers.advance(60_000); await s.idle();
+  const latest = s.requests.at(-1)!.messages.at(-1)!;
+  assert.doesNotMatch(JSON.stringify(latest), /微信：/);
 });
 test('an alarm set from a chat session rings at home, not in the chat', async t => {
   const sessionOf = (request: GenerateOptions) => (request as { sessionId?: string }).sessionId;

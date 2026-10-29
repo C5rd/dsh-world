@@ -18,6 +18,8 @@ from binding import WechatOffline
 from messages import messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
 from quotes import MessageContentError, isAppMessage
 from reading import readHistory
+from presence import GroupPresence, seedPresence, speakerName, unreadAfter
+from datetime import datetime, timezone
 
 IMAGE_BUFFER_SECONDS = 3
 # Exit code for "a person must check WeChat and run acknowledge"; the plugin stops restarting the adapter on it.
@@ -184,6 +186,7 @@ class MessageStore:
           CREATE TABLE IF NOT EXISTS messageFaults(chatId TEXT, messageId TEXT, error TEXT NOT NULL,
             PRIMARY KEY(chatId,messageId));
         ''')
+        self.presence = GroupPresence(self.db)
 
     def cursor(self, chatId):
         row = self.db.execute('SELECT seq FROM cursors WHERE chatId=?', (chatId,)).fetchone()
@@ -324,7 +327,9 @@ def flushReceipts(moduleFile, store, report=reportReceipt):
 
 
 def pollOutgoing(config):
-    result = postHome(config['moduleFile'], dict(outbox=dict(accountId=config['selfId'], chats=[dict(id=chat['id'], name=chat['name']) for chat in config['chats']])))
+    binding = dict(accountId=config['selfId'], chats=[dict(id=chat['id'], name=chat['name']) for chat in config['chats']])
+    if config.get('_presence') is not None: binding['presence'] = config['_presence']
+    result = postHome(config['moduleFile'], dict(outbox=binding))
     syncSettings(config, result.get('settings'))
     return result
 
@@ -343,22 +348,32 @@ def syncSettings(config, settings):
     if isinstance(buffer, (int, float)) and not isinstance(buffer, bool) and 0 <= buffer <= 30: config['bufferSeconds'] = buffer
 
 
-def flushReading(config, database, request):
+def flushReading(config, database, request, store=None):
     if not isinstance(request, dict) or not isinstance(request.get('id'), str):
         raise ValueError('无效的群消息读取任务')
     result = dict(id=request['id'], accountId=config['selfId'], chatId=request.get('chatId'))
     try: result.update(readHistory(database, config, request))
     except (SnapshotBusy, WechatOffline): raise
     except Exception as error: result['error'] = str(error)[:1000] or type(error).__name__
-    postHome(config['moduleFile'], dict(readResult=result))
+    through = result.pop('readThrough', None)
+    boundaryRows = result.pop('readRows', [])
+    accepted = postHome(config['moduleFile'], dict(readResult=result))
+    if store is not None and through is not None and accepted.get('readAccepted') is True:
+        latest = boundaryRows[-1]
+        store.presence.observe(config['selfId'], request['chatId'], latest, speakerName(database, config, latest), unread=False)
+        store.presence.markRead(config['selfId'], request['chatId'], through,
+                                lambda after, until: unreadAfter(database, config, request['chatId'], after, until),
+                                [messageKey(row) for row in boundaryRows])
 
 
 def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=reportReceipt, activeIncoming=None):
     for _ in range(config.get('pageSize', 50)):
         store.checkPending(activeIncoming)
+        if config.get('_presence') is not None:
+            config['_presence']['groups'] = store.presence.snapshot(config)
         work = poll(config)
         if work.get('read') is not None:
-            flushReading(config, database, work['read'])
+            flushReading(config, database, work['read'], store)
         job = work.get('job')
         if job is None:
             if work.get('read') is not None: continue
@@ -430,13 +445,21 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
             flushOutgoing(config, database, store, send, poll=poll, report=report)
             for chat in config['chats']:
                 baselineChat(database, store, chat['id'], pageSize)
+                seedPresence(database, store, config, chat)
                 for row in newMessages(database, chat['id'], store.cursor(chat['id']), pageSize):
                     if store.seen(chat['id'], messageKey(row)):
                         continue
+                    if chat['id'].endswith('@chatroom') and row['type'] != '系统消息':
+                        store.presence.observe(config['selfId'], chat['id'], row, speakerName(database, config, row))
                     rows = bufferImageMessages(config, database, store, chat, row) if not chat['id'].endswith('@chatroom') and row['type'] == '图片' and row.get('sender_username') != config['selfId'] else [row]
                     try: message = incomingMessage(database, chat, row, config)
                     except MessageContentError as error:
                         store.fault(chat['id'], row, error, rejected=True)
+                        continue
+                    if chat['id'].endswith('@chatroom') and message is None:
+                        # No delivery to track: retain only the group's counter and receive position.
+                        store.finish(chat['id'], messageKey(row), int(row['sort_seq']))
+                        flushOutgoing(config, database, store, send, poll=poll, report=report)
                         continue
                     if message and message.get('reference', {}).get('error'):
                         store.fault(chat['id'], row, message['reference']['error'])
@@ -452,6 +475,7 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                         askWhileSending(config, message, database, store, send, ask, report, poll, (chat['id'], [messageKey(member) for member in rows]))
                     store.finishBatch(chat['id'], rows)
                     flushOutgoing(config, database, store, send, poll=poll, report=report)
+            config['_presence'] = dict(observedAt=datetime.now(timezone.utc).isoformat(), groups=store.presence.snapshot(config))
         except SnapshotBusy:
             # Re-read an unstable snapshot next poll; no message is re-sent here.
             pass
