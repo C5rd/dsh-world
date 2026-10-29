@@ -50,6 +50,18 @@ export function createLifeRuntime(deps: LifeDeps) {
   let stopped = false;
   let delivery: Promise<void> | undefined;
 
+  // 2026-10-29 之前，计价只看 agent preset、不看工作目录，`D:\DSH\PP\P0` 那扇窗的钱也记进了这个世界
+  // （见 DEVLOG 同日条目）。那一条现在从账上退回去：认的是那个会话 id，只做一次，`life.json` 里的
+  // 数字跟着修正，误顶响的那次预算提醒一并撤掉。
+  const stray = state.spend?.sessions?.['session-b14f73f8-386b-4037-942f-25021fc6663d'];
+  if (stray !== undefined && state.spend?.sessions) {
+    state.spend.yuan = Math.max(0, state.spend.yuan - stray);
+    delete state.spend.sessions['session-b14f73f8-386b-4037-942f-25021fc6663d'];
+    const budget = deps.dailyBudget?.();
+    if (budget === undefined || state.spend.yuan < budget) delete state.spend.reminded;
+    record(() => store.write(state));
+  }
+
   /** Bookkeeping after the fact: a failure is a fault, never a broken turn. */
   function record(work: () => void): void {
     try { work(); faults.clear('state'); }
@@ -217,6 +229,20 @@ export function createLifeRuntime(deps: LifeDeps) {
     void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
   }
 
+  // Read once here: inside `start` the name `options` belongs to its own parameter, and reading it there is a lie.
+  const worldRoot = options.worldDir;
+
+  // A window bills this world only if it lives inside the world directory: the same preset opened in another
+  // folder is another story, and its money must not reach this budget.
+  function inWorldDir(cwd: string | undefined, worldDir: string): boolean {
+    // No recorded cwd means we cannot tell where it lives — keep the old rule and count it, rather than
+    // silently dropping money that was really spent.
+    if (typeof cwd !== 'string' || cwd === '') return true;
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const a = norm(cwd); const b = norm(worldDir);
+    return a === b || a.startsWith(`${b}/`);
+  }
+
   // What this world spends: each model step priced as it lands and filed under the window that spent it;
   // past the daily budget she is told once that day.
   function spent(usage: Parameters<typeof stepCost>[0], model: string, sessionId: string): void {
@@ -279,8 +305,9 @@ export function createLifeRuntime(deps: LifeDeps) {
       ctx.on('session/event', (session, event) => {
         if (!belongsToWorld(session, config)) return;
         journal.world(session, event);
-        // Every session in this world bills one account, so every step is counted — not only her home's.
-        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model, session.id);
+        // Every window that lives inside this world bills one account, so every step is counted — not only her
+        // home's. A window opened elsewhere with the same preset keeps its own money.
+        if (event.type === 'assistant/message' && event.data.usage && inWorldDir(session.header?.cwd, worldRoot)) spent(event.data.usage, event.data.message.source.model, session.id);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
         if (event.type === 'user/message' && event.data.source.kind === 'user') earlyStop.partnerSpoke();

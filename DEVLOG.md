@@ -14,6 +14,22 @@
 
 ---
 
+## 2026-10-29
+
+### 账算到了不该算的窗口上：计价加一句工作目录判断
+
+**撞到什么。** 按窗口分账上线后，控制台第一次列出三个会话，其中一个 5.63 元的从来没见过。查下去：`session-b14f73f8…` 活在 `D:\DSH\PP\P0`，10-19 就开了，今天 10:33 还在写——它不属于这个世界，只是用了同一个 agent preset。根因在 `src/sourceArchive.ts:19` 的 `belongsToWorld`：判断只有 `header.agentPreset === config.agentPreset && header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0`，**没有一条问它工作目录在哪**。后果不只是数字难看：今天真实总数 7.36 元里 5.63 是它的，`dailyBudget` 6 元那道闸被它顶响了一次（`spend.reminded: true`），而这个世界这一天其实只花了 1.36。
+
+**为什么这样改。** 在计价那一行加 `inWorldDir(session.header?.cwd, worldRoot)`：cwd 等于世界目录或在它之下才算。三条取舍写在这里：
+
+- **没有去改 `belongsToWorld`。** 它同时管着归档、记忆注入和工具挂载，改它一处会连带三处行为。计价是唯一需要「这个世界花了多少」这个语义的地方，就只改这一处。
+- **没记 cwd 的会话放行。** `meta.cwd` 是可选字段，`typeof cwd !== 'string'` 时返回 `true`：不知道它在哪，不等于它在外面；宁可多算，不悄悄丢钱。
+- **遇到过一次遮蔽。** `start(options: { resumed?: boolean })` 里的 `options` 覆盖了外层的 `options`，直接写 `options.worldDir` 会被 `tsc` 抓住（`TS2339: Property 'worldDir' does not exist`）。所以在外层读一次 `const worldRoot = options.worldDir;`，并在注释里写明为什么。
+
+**怎么确认。** `npm run typecheck` 干净；`npm test` 293 → 295，两条新的——`a window opened outside the world directory keeps its own money`（cwd 为 `D:/somewhere/else` 的会话跑一轮，断言总数一个分毫没动、`sessions` 里只有一个窗口）、`the money a window in another folder spent is taken back off the account on start`（`life.json` 里放一条 5.63 的外来账，启动后 `yuan` 从 7.74 回到 2.11、那条不见了、`reminded` 被撤）。安装版 `lib/life/runtime.js` 18812 → 19590 → 20334 字节，`node --check` 通过；回退点 `_backup/before-patch5/`（两版都在）。
+
+**改过一次主意。** 先写在这里的是「`life.json` 里那条 5.63 不删——账本改了就不叫账本」。见鹿立刻指出：总数他在平台 API 上看得到，这个世界只需要自己的数；留着它，预算那道闸会被别人的活顶响。这话对，而且更根本：那一笔本来就不是「这个世界花掉的」，它是记账错误，不是真实开销。所以退了——启动时认那个会话 id，从 `yuan` 里减去、从 `sessions` 里删掉、把误响的 `reminded` 撤掉，然后照常写盘。一次性，幂等，认 id 不认时间。
+
 ## 2026-10-27
 
 ### 版本号：0.5.6 → 0.6.0

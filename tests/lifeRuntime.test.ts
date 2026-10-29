@@ -21,7 +21,7 @@ const toolNames = (request: GenerateOptions) => request.tools?.map(tool => tool.
 const count = (names: string[], name: string) => names.filter(entry => entry === name).length;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const userMessage = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
-const createAgent = async (ctx: Context, id: string, agentPreset = 'companion') => (await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+const createAgent = async (ctx: Context, id: string, agentPreset = 'companion', cwd?: string) => (await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset, ...(cwd === undefined ? {} : { cwd }) }, agentOptions: { provider: 'test', model: 'test' } })).agent;
 const testTool = (name: string, execute: () => Promise<string>) => defineTool({ name, description: 'test', parameters: { command: { type: 'string' } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute });
 async function* toolCall(name: string, args: object, id = `${name}-call`): AsyncIterable<StreamChunk> {
   const block = { type: 'tool-call' as const, id: ToolCallId(id), name, arguments: JSON.stringify(args) };
@@ -411,6 +411,39 @@ test('a step in another session of the same world is billed too, not only her ho
   const sum = Object.values(per).reduce((a, b) => a + b, 0);
   assert.ok(Math.abs(sum - after) < 1e-9, `shares add up: ${sum} vs ${after}`);
   assert.ok(Math.abs((per[side.id] ?? 0) - step) < 1e-9, `the side window's own share is its own step: ${per[side.id]}`);
+});
+test('a window opened outside the world directory keeps its own money', async t => {
+  const usage = { inputTokens: 4000, outputTokens: 1000 };
+  const s = await setup(t, () => (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' } as StreamChunk;
+    yield { type: 'text-delta', index: 0, text: '嗯' } as StreamChunk;
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '嗯' } } as StreamChunk;
+    yield { type: 'usage', usage } as StreamChunk;
+    yield { type: 'finish', reason: { kind: 'stop' } } as StreamChunk;
+  })(), { before: existingHome('看书') });
+  await createAgent(s.ctx, 'home-0');
+  await s.start(); await s.idle();
+  const homeOnly = s.store.read().spend!.yuan;
+  // 同一个 preset 开在别的目录里：那扇窗花的是它自己的钱，不该顶响这个世界的预算。
+  const outside = await createAgent(s.ctx, 'outside-0', 'companion', 'D:/somewhere/else');
+  outside.followup(userMessage('干点活')); await outside.whenIdle();
+  const after = s.store.read().spend!.yuan;
+  assert.equal(after, homeOnly, `the outside window left the number alone: ${homeOnly} → ${after}`);
+  assert.equal(Object.keys(s.store.read().spend!.sessions ?? {}).length, 1, 'only her own window is billed');
+});
+test('the money a window in another folder spent is taken back off the account on start', async t => {
+  const stray = 'session-b14f73f8-386b-4037-942f-25021fc6663d';
+  const s = await setup(t, () => textResponse('嗯'), { before: async worldDir => {
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({
+      version: 1, homeSessionId: 'home-0',
+      spend: { day: '2026-10-29', yuan: 7.74, reminded: true, sessions: { 'home-0': 1.02, [stray]: 5.63 } },
+    }));
+  } });
+  await s.start();
+  const spend = s.store.read().spend!;
+  assert.equal(spend.sessions?.[stray], undefined, 'the stray window is gone from the shares');
+  assert.ok(Math.abs(spend.yuan - 2.11) < 1e-9, `her account keeps only her own money: ${spend.yuan}`);
+  assert.equal(spend.reminded, undefined, 'the reminder the stray money rang is withdrawn');
 });
 test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
   const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
