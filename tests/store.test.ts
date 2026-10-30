@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, appendFile, writeFile, mkdir, truncate } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, truncate } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';

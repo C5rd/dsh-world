@@ -38,6 +38,15 @@ def parseSticker(content):
     return md5, url
 
 
+def stickerKind(data):
+    """(extension, media type) of a sticker the library accepts, from its first bytes."""
+    if data[:6] in (b'GIF87a', b'GIF89a'): return 'gif', 'image/gif'
+    if data[:8] == bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]): return 'png', 'image/png'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP': return 'webp', 'image/webp'
+    if data[:3] == bytes([0xff, 0xd8, 0xff]): return 'jpg', 'image/jpeg'
+    raise StickerUnavailable('表情包不是 GIF、PNG、WebP 或 JPEG 图片')
+
+
 def checkUrl(url):
     parts = urlparse(url)
     host = parts.hostname or ''

@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
-export const DEFAULT_WECHAT_CONTEXT = 8, MAX_WECHAT_CONTEXT = 20;
+export const DEFAULT_WECHAT_CONTEXT = 5, MAX_WECHAT_CONTEXT = 20;
 export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
 
 /**
@@ -24,10 +24,13 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
+    ...(validWorkspacePermission(stored?.workspacePermission) ? { workspacePermission: stored.workspacePermission } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
     ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
-    ...(stored?.qqEnabled === false ? { qqEnabled: false } : {}),
+    ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
+    ...(stored?.compactAfterReview === false ? { compactAfterReview: false } : {}),
+    ...(stored?.compactionSwapped === true ? { compactionSwapped: true } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -42,6 +45,20 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       if (!validArchiveScope(scope)) throw new Error('归档范围只能为 home 或 workspace');
       save({ ...settings, archiveScope: scope });
     },
+    workspacePermission: () => settings.workspacePermission ?? 'danger-full-access',
+    setWorkspacePermission(permission: string): void {
+      if (!validWorkspacePermission(permission)) throw new Error('工作区权限必须为非空字符串');
+      save({ ...settings, workspacePermission: permission });
+    },
+    /** After each evening look back her home is applied and compacted, so the 我是谁 she has just rewritten takes effect; on unless the partner turns it off. */
+    compactAfterReview: () => settings.compactAfterReview !== false,
+    setCompactAfterReview(on: boolean): void {
+      const { compactAfterReview: _old, ...rest } = settings;
+      save(on ? rest : { ...rest, compactAfterReview: false });
+    },
+    /** Whether the profile has been switched to the tool-free compaction (by this plugin or by hand); asked once, so putting the stock one back sticks. */
+    compactionSwapped: () => settings.compactionSwapped === true,
+    markCompactionSwapped: () => save({ ...settings, compactionSwapped: true }),
     running: () => settings.running,
     set: (running: boolean) => save({ ...settings, running }),
     /** CNY a day for her home; undefined is no limit. */
@@ -56,13 +73,16 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
     },
-    /** The console's switches for the WeChat and QQ modules; on unless turned off, and only an off switch is written out. */
+    /**
+     * The console's switches for the WeChat and QQ modules. WeChat is on unless turned off; QQ, whose SDK is an
+     * optional dependency, is off until turned on, so its code is not even loaded before someone asks for it.
+     */
     wechatEnabled: () => settings.wechatEnabled !== false,
-    qqEnabled: () => settings.qqEnabled !== false,
+    qqEnabled: () => settings.qqEnabled === true,
     setModules(next: { wechat?: boolean; qq?: boolean }): void {
       const { wechatEnabled, qqEnabled, ...rest } = settings;
-      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled !== false;
-      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? {} : { qqEnabled: false }) });
+      const wechat = next.wechat ?? wechatEnabled !== false, qq = next.qq ?? qqEnabled === true;
+      save({ ...rest, ...(wechat ? {} : { wechatEnabled: false }), ...(qq ? { qqEnabled: true } : {}) });
     },
     /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
     wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,
@@ -77,6 +97,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
 }
 export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
+export const validWorkspacePermission = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
 export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;

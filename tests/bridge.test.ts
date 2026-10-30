@@ -138,6 +138,34 @@ test('a home that cannot be opened rejects the words and is a fault', async t =>
   await s.bridge.say('在吗'); await s.idle();
   assert.deepEqual(s.bridge.faults(), []);
 });
+test('the bridge rechecks workspace membership after resolving an idle or running home', async t => {
+  for (const running of [false, true]) await t.test(running ? 'running' : 'idle', async t => {
+    const s = await setup(t, (_request, index) => running && index === 0 ? toolOnly('play_game') : textResponse('忙完了'));
+    if (running) await s.busy();
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let resolving!: () => void; const opening = new Promise<void>(resolve => { resolving = resolve; });
+    const members = new Set<string>([s.home.id]);
+    const messages: string[] = [];
+    s.ctx.on('session/event', (session, event) => { if (session.id === s.home.id && event.type === 'user/message') messages.push(event.data.id); });
+    const bridge = createBridge({
+      ctx: s.ctx, home: async () => { resolving(); await gate; return s.home; },
+      inWorld: agent => members.has(agent.id),
+      outlets: [], origin: () => 'http://127.0.0.1:5173', file: join(s.root, 'guarded-bridge.json'),
+    });
+    bridge.start(); t.after(bridge.stop);
+    const answer = bridge.say('不能进入原会话');
+    await opening;
+    members.delete(s.home.id);
+    const rejected = assert.rejects(answer, HomeUnavailable);
+    release();
+    try { await rejected; } finally { s.release(); await s.idle(); }
+
+    assert.deepEqual(messages, []);
+    assert.equal(s.requests.length, running ? 2 : 0);
+    assert.match(bridge.faults()[0]!, /工作区/);
+  });
+});
+
 test('bridge.json carries the origin, a fresh token, the pid and the start time, and is removed on stop', async t => {
   const s = await setup(t, () => textResponse('嗯'));
   const written = JSON.parse(await readFile(s.file, 'utf8'));

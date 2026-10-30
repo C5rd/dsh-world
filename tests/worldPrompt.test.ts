@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
@@ -15,6 +15,8 @@ import { readTemplate, renderTemplate, renderWorldPrompt, worldNames } from '../
 import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
 import { record } from './fixtures.ts';
+import { defineTool } from '@deepseek-ai/dsh-tools';
+import { createHomeApply } from '../src/console/homeApply.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
 const life = { worldDir: 'W', roomDir: 'R', diaryDir: 'D', selfFile: 'S', fallbackWakeTime: '07:30', timeZone: 'UTC' };
@@ -126,6 +128,43 @@ test('every world session carries the world prompt in its system prompt; templat
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
+test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { yield* textResponse('摘要'); return; }
+    requests.push(request); yield* textResponse('reply ' + 'detail '.repeat(100));
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '早上的我');
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: id => id === 'home' });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('早上好 ' + 'words '.repeat(100))); await agent.whenIdle();
+  assert.match(systemOf(requests[0]!), /早上的我/);
+  // The same wiring the world uses after the evening look back.
+  const apply = createHomeApply({ ctx, home: async () => agent, isHome: () => true, compaction: () => ctx.compaction, refresh: session => world.refreshPrompt(session), changed() {} });
+  const lookBack = async () => {
+    apply.request();
+    for (let i = 0; i < 300 && ['waiting', 'compacting'].includes(apply.snapshot().status); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    return apply.snapshot();
+  };
+
+  const compactionsBefore = agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length;
+
+  await writeFile(selfFile, '晚上改过的我'); // she rewrote it during the look back
+  agent.followup(user('晚安 ' + 'words '.repeat(100))); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /早上的我/, 'until applied, the prompt keeps the old 我是谁 so the cached prefix stays whole');
+  const applied = await lookBack();
+  assert.equal(applied.status, 'done');
+  assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length, compactionsBefore + 1);
+  agent.followup(user('第二天')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /晚上改过的我/); assert.doesNotMatch(systemOf(requests.at(-1)!), /早上的我/);
+  assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
 test('archiveScope home: only her home is archived, and every world session still gets the memory block', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
@@ -154,11 +193,21 @@ test('her persona is written in layers, kept only where filled, and read as one 
   writePersona(file, { 名字: '', 她是谁: '', 性格: '', 愿景: '' });
   assert.equal(existsSync(file), false, 'an empty persona removes the file');
 });
+test('Markdown headings inside vision and supplement remain part of those persona fields', async t => {
+  const file = join(await tempDir(t), 'persona.md');
+  const vision = '长期愿景\n\n## 一起完成的事\n完整保留这段愿景';
+  const supplement = '补充开头\n\n## 其他约定\n完整保留这段补充';
+  writePersona(file, { 愿景: vision, 补充: supplement });
+  const persona = readPersona(file);
+  assert.equal(persona.愿景, vision); assert.equal(persona.补充, supplement);
+  assert.match(renderPersona(persona), /## 一起完成的事\n完整保留这段愿景/);
+  assert.match(renderPersona(persona), /## 其他约定\n完整保留这段补充/);
+});
 test('her persona takes the place of the host persona at the top; where her preset has its own, hers follows it and the console says so', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   const personaFile = join(root, 'persona.md');
-  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软' });
+  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软', 愿景: 'VISION_IN_SYSTEM', 补充: 'SUPPLEMENT_IN_SYSTEM' });
   const store = createArchiveStore({ ...config, root });
   const world = createWorldRuntime(ctx, config, store, { prompt: { file: join(root, 'none.md'), persona: personaFile, names, life }, isHome: () => false });
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
@@ -166,6 +215,10 @@ test('her persona takes the place of the host persona at the top; where her pres
   own.agent.followup(user('hi')); await own.agent.whenIdle();
   const system = systemOf(requests[0]!);
   assert.ok(system.indexOf('我是小鱼。') >= 0 && system.indexOf('我是小鱼。') < system.indexOf('# 我的世界'), system);
+  assert.match(system, /# 愿景\nVISION_IN_SYSTEM\n\nSUPPLEMENT_IN_SYSTEM/);
+  assert.ok(system.indexOf('SUPPLEMENT_IN_SYSTEM') < system.indexOf('# 我的世界'));
+  const otherMessages = textOf(requests[0]!.messages.filter(message => message.role !== 'system'));
+  assert.ok(!otherMessages.includes('VISION_IN_SYSTEM') && !otherMessages.includes('SUPPLEMENT_IN_SYSTEM'), 'persona layers belong to the system prompt, not user context');
   assert.deepEqual(world.faults(), []);
 
   // A preset that registers its own persona for her agent first.
@@ -198,4 +251,99 @@ test('without a world prompt source nothing is added to the system prompt', asyn
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();
   assert.ok(!systemOf(requests[0]!).includes('# 我的世界'));
   assert.ok(kinds(requests[0]!).includes('dsh-world-history'));
+});
+
+test('persona mapping follows the preset while world context stays inside the workspace', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { yield* textResponse('ordinary conversation'); return; }
+    requests.push(request); yield* textResponse('reply ' + 'ordinary detail '.repeat(60));
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
+  const persona = join(root, 'persona.md'); writePersona(persona, { 性格: 'PERSONA_SCOPE_MARKER' });
+  const file = join(root, 'world-prompt.md'); await writeFile(file, 'WORLD_SCOPE_MARKER\n{{self}}');
+  const selfFile = join(root, 'self.md'); await writeFile(selfFile, 'SELF_SCOPE_MARKER');
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  await store.commitRecords([record('seed', { content: 'MEMORY_SCOPE_MARKER' })]);
+  let membership: boolean | undefined;
+  const runtime = createWorldRuntime(ctx, { ...config, selfFile }, store, {
+    prompt: { file, persona, names }, isHome: () => false,
+    // Until the host's workspaces start, membership is unknown and counts as outside.
+    inWorkspace: () => membership ?? false,
+  });
+  cleanup.push(() => runtime.stop()); await runtime.start();
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('moving'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('before attachment')); await agent.whenIdle();
+  const hostSystem = systemOf(requests.at(-1)!);
+  assert.match(hostSystem, /PERSONA_SCOPE_MARKER/);
+  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  membership = true;
+  agent.followup(user('attached now')); await agent.whenIdle();
+  for (const marker of ['MEMORY_SCOPE_MARKER', 'WORLD_SCOPE_MARKER', 'SELF_SCOPE_MARKER', 'PERSONA_SCOPE_MARKER']) assert.ok(textOf(requests.at(-1)!.messages).includes(marker), marker);
+  membership = false;
+  agent.followup(user('moved away')); await agent.whenIdle();
+  assert.equal(systemOf(requests.at(-1)!), hostSystem);
+  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  writePersona(persona, { 性格: 'PERSONA_REFRESHED_OUTSIDE' });
+  assert.ok(await ctx.compaction.compactNow(agent, new AbortController().signal));
+  agent.followup(user('after external compaction')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);
+  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  const foreign = await ctx.agents.create({ sessionId: SessionId('different-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
+  foreign.agent.followup(user('another preset')); await foreign.agent.whenIdle();
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);
+  assert.deepEqual(errors, []);
+});
+
+for (const toolUpdate of ['in-history', 'addition-only'] as const) for (const restart of [false, true]) test(`leaving workspace ${restart ? 'across restart' : 'live'} clears in-history prompts and ${toolUpdate} tool declarations with no memory block`, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  class Adapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const, toolUpdate }; }
+    override stream(request: GenerateOptions) { requests.push(request); return textResponse('reply'); }
+  }
+  ctx.llm.registerAdapter(['history'], new Adapter());
+  ctx.systemPrompt.section({ name: 'host-core', order: 5, text: 'HOST_CONTEXT_PRESERVED' });
+  const definition = (name: string) => defineTool({ name, description: name, parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'ok' });
+  ctx.tools.register(definition('host_tool_preserved'));
+  const removeWorldTool = ctx.tools.register(definition('world_private_tool'));
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  let membership = true;
+  const source = { prompt: { names }, isHome: () => false, inWorkspace: () => membership };
+  let runtime = createWorldRuntime(ctx, config, store, source); await runtime.start(); cleanup.push(() => runtime.stop());
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('history-route'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'history', model: 'test' } });
+  agent.followup(user('ORIGINAL_WITHOUT_MEMORY')); await agent.whenIdle();
+  assert.match(systemOf(requests[0]), /我的世界/);
+  assert.ok(!kinds(requests[0]).includes('dsh-world-history'));
+  membership = false; removeWorldTool();
+  if (restart) { await runtime.stop(); runtime = createWorldRuntime(ctx, config, store, source); await runtime.start(); }
+  agent.followup(user('outside request')); await agent.whenIdle();
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests[1]), /我的世界|world_private_tool/);
+  assert.match(JSON.stringify(requests[1]), /HOST_CONTEXT_PRESERVED/);
+  assert.match(JSON.stringify(requests[1]), /host_tool_preserved/);
+  assert.match(textOf(requests[1].messages), /ORIGINAL_WITHOUT_MEMORY/);
+  assert.deepEqual(errors, []);
+});
+
+test('removal after prompt assembly rejects the stale request before the adapter and preserves ordinary history for retry', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  let membership = true;
+  const runtime = createWorldRuntime(ctx, config, store, { prompt: { names }, isHome: () => false, inWorkspace: () => membership });
+  await runtime.start(); cleanup.push(() => runtime.stop());
+  let entered!: () => void; const waiting = new Promise<void>(resolve => { entered = resolve; });
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const removeWait = ctx.on('agent/pre-step', async (_payload, next) => { const decision = await next(); entered(); await gate; return decision; }, { prepend: true });
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('prompt-race'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('ORIGINAL_BEFORE_SCOPE_CHANGED'));
+  await waiting; membership = false; release(); await agent.whenIdle(); removeWait();
+  assert.equal(requests.length, 0, 'stale world prompt must never reach the adapter');
+  assert.ok(agent.session.snapshotEvents().some(event => event.type === 'turn/end' && event.data.reason.kind === 'error' && event.data.reason.error.code === 'DSH_WORLD_SCOPE_CHANGED'));
+  agent.followup(user('retry outside')); await agent.whenIdle();
+  assert.equal(requests.length, 1);
+  assert.match(textOf(requests[0].messages), /ORIGINAL_BEFORE_SCOPE_CHANGED/);
+  assert.doesNotMatch(systemOf(requests[0]), /我的世界/);
 });

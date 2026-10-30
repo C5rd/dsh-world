@@ -41,13 +41,13 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined }
+interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
   const worldDir = join(root, 'world'); await mkdir(worldDir, { recursive: true }); await setupOptions.before?.(worldDir);
   const clock = { now: new Date('2026-10-23T03:00:00.000Z') }; const timers = fakeTimers(clock);
-  const archived = new Set<string>(); const renamed = new Map<string, string>(); const fullAccess = new Set<string>(); let created = 0;
+  const archived = new Set<string>(); const renamed = new Map<string, string>(); let created = 0;
   /** The host's workspaces by path; a session created in one is listed in it. */
   const workspaces = new Map<string, { id: string; title: string; sessionIds: string[]; attachSession(id: string): Promise<void> }>();
   const baseHost: LifeHost = {
@@ -61,14 +61,14 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
       return workspaces.get(path);
     },
     resolveAgent: async id => ctx.agents.get(SessionId(id)),
-    isArchived: id => archived.has(id), setFullAccess: session => fullAccess.add(session.id),
+    isArchived: id => archived.has(id),
     rename: async (id, title) => { renamed.set(id, title); }, origin: () => 'http://127.0.0.1:0',
   };
   const host = setupOptions.host?.(baseHost) ?? baseHost;
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
   const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), fallbackWakeTime: '09:00', timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}) });
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -92,7 +92,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   };
   const alarm = () => { const pending = life.snapshot().alarm; return pending && { at: pending.at, source: pending.source }; };
   const faults = () => life.snapshot().faults;
-  return { ctx, get life() { return life; }, store, requests, errors, clock, timers, archived, renamed, fullAccess, worldDir, idle, start, restart, untilMorning, alarm, faults, workspaces, created: () => created };
+  return { ctx, get life() { return life; }, store, requests, errors, clock, timers, archived, renamed, worldDir, idle, start, restart, untilMorning, alarm, faults, workspaces, created: () => created };
 }
 /** life.json for an existing home `home-0` (create it before start), optionally with an alarm of her own due at start. */
 const existingHome = (note?: string) => (worldDir: string) => writeFile(join(worldDir, 'life.json'), JSON.stringify({
@@ -110,11 +110,11 @@ function holdResolve(nth: number) {
   return { held, patch };
 }
 
-test('first start builds the home with full access, a title and reach_out at home, alarm tools everywhere', async t => {
+test('first start builds the home with a title and reach_out at home, alarm tools in world sessions', async t => {
   const s = await setup(t, () => textResponse('我到家了'));
   await s.start();
   const home = s.life.snapshot().homeSessionId!;
-  assert.equal(s.renamed.get(home), '鲸鲸的家'); assert.ok(s.fullAccess.has(home));
+  assert.equal(s.renamed.get(home), '鲸鲸的家');
   assert.equal(s.requests.length, 1);
   assert.match(textOf(s.requests[0]), /这是我的家/);
   assert.deepEqual(toolNames(s.requests[0]).filter(name => ['plan_next', 'reach_out', 'read_diary'].includes(name)).sort(), ['plan_next', 'reach_out']);
@@ -140,16 +140,16 @@ test('a home built before her room was a workspace moves into it', async t => {
   assert.deepEqual(s.workspaces.get(join(s.worldDir, 'room'))!.sessionIds, ['home-0']);
   assert.equal(s.created(), 0);
 });
-test('without host workspaces the home just gets the room as its cwd; a failing registration is a fault and the home still opens', async t => {
+test('without her room as a workspace no home is built anywhere else, and the console says why', async t => {
   const plain = await setup(t, () => textResponse('嗯'), { host: host => ({ ...host, workspace: async () => undefined }) });
   await plain.start();
-  assert.ok(plain.life.snapshot().homeSessionId); assert.deepEqual(plain.faults(), []);
+  assert.equal(plain.life.snapshot().homeSessionId, undefined); assert.equal(plain.created(), 0); assert.equal(plain.requests.length, 0);
+  assert.ok(plain.faults().some(fault => fault.startsWith('家打不开：宿主没有工作区服务')), plain.faults().join('|'));
 
   const failing = await setup(t, () => textResponse('嗯'), { host: host => ({ ...host, workspace: async () => { throw new Error('registry busy'); } }) });
   await failing.start();
-  assert.ok(failing.life.snapshot().homeSessionId);
-  assert.ok(failing.faults().some(fault => fault === '房间没能成为工作区：registry busy'), failing.faults().join('|'));
-  assert.match(textOf(failing.requests[0]!), /这是我的家/);
+  assert.equal(failing.life.snapshot().homeSessionId, undefined); assert.equal(failing.requests.length, 0);
+  assert.ok(failing.faults().some(fault => fault === '家打不开：registry busy'), failing.faults().join('|'));
 });
 test('a new home is renamed again after its first turn ends (the host retitles from the first prompt), and not after later turns', async t => {
   const titles: string[] = [];
@@ -283,11 +283,42 @@ test('an archived home is replaced, keeps the pending alarm, and the old home lo
   assert.ok(!names.includes('read_diary') && !names.includes('reach_out') && count(names, 'plan_next') === 1, 'the old home keeps the alarm tools like any session, and loses reach_out');
   assert.doesNotMatch(textOf(s.requests.at(-1)!), /你现在在自己的家里/);
 });
-test('an existing home gets full access again whenever it is resolved', async t => {
+test('life tools are limited to the workspace and removed when membership ends', async t => {
+  const included = new Set(['inside']);
+  const s = await setup(t, () => textResponse('ok'), { inWorkspace: id => id.startsWith('home-') || included.has(id) });
+  const inside = await createAgent(s.ctx, 'inside');
+  const outside = await createAgent(s.ctx, 'outside');
+  inside.ctx.tools.register(testTool('unrelated_tool', async () => 'ok'));
+  await s.start();
+  inside.followup(userMessage('inside workspace')); await inside.whenIdle();
+  assert.ok(toolNames(s.requests.at(-1)!).includes('plan_next'));
+  outside.followup(userMessage('outside workspace')); await outside.whenIdle();
+  assert.ok(!toolNames(s.requests.at(-1)!).some(name => ['plan_next', 'check_alarm', 'cancel_alarm', 'reach_out'].includes(name)));
+  included.delete('inside');
+  inside.followup(userMessage('no longer inside')); await inside.whenIdle();
+  const names = toolNames(s.requests.at(-1)!);
+  assert.ok(!names.includes('plan_next')); assert.ok(names.includes('unrelated_tool'));
+});
+
+test('life tools cannot execute or remain in schemas after leaving the workspace during a request', async t => {
+  let allowed = true;
+  const s = await setup(t, request => {
+    if (request.sessionId === 'inside' && allowed) { allowed = false; return toolCall('plan_next', { after_minutes: 90, note: 'outside plan' }); }
+    return textResponse('ok');
+  }, { inWorkspace: id => id.startsWith('home-') || (id === 'inside' && allowed) });
+  const inside = await createAgent(s.ctx, 'inside');
+  await s.start();
+  inside.followup(userMessage('scope changes while the request is in flight')); await inside.whenIdle();
+  assert.notEqual(s.life.snapshot().alarm?.note, 'outside plan');
+  const last = s.requests.at(-1)!;
+  assert.ok(!toolNames(last).includes('plan_next'));
+});
+
+test('an existing home is reused when it is resolved', async t => {
   const s = await setup(t, () => textResponse('回来了'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0' })); } });
   await createAgent(s.ctx, 'home-0');
   await s.life.start();
-  assert.equal(s.created(), 0); assert.ok(s.fullAccess.has('home-0'));
+  assert.equal(s.created(), 0); assert.equal(s.life.snapshot().homeSessionId, 'home-0');
 });
 test('a restart with an idle home and no pending alarm sets the fallback alarm, and it rings', async t => {
   const s = await setup(t, () => textResponse('醒了'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0' })); } });
@@ -306,6 +337,25 @@ test('a rebuilt home with no pending alarm gets a first wake', async t => {
   assert.notEqual(s.life.snapshot().homeSessionId, 'gone');
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first']);
   assert.match(textOf(s.requests[0]), /这是我的家/);
+});
+test('the world is told when the evening look back has been handed to her, and for nothing else', async t => {
+  const told: string[] = [];
+  let held: { ctx: Awaited<ReturnType<typeof setup>>['ctx']; requests: unknown[] } | undefined, requestsWhenIdle = -1;
+  const s = await setup(t, () => textResponse('想想今天'), {
+    // What the console's apply-and-compact relies on: asked for right now, whenIdle still holds until her look back has run.
+    afterReview: () => { told.push('review'); void held!.ctx.agents.get(SessionId('home-0'))!.whenIdle().then(() => { requestsWhenIdle = held!.requests.length; }); },
+    before: async worldDir => {
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', alarm: { at: '2026-10-24T00:30:00.000Z', note: '睡觉', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' } }));
+  } });
+  held = s;
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.deepEqual(told, [], 'starting up and the first alarm are not a look back');
+  s.timers.advance(11 * 3_600_000); await s.idle();
+  assert.deepEqual(told, ['review']);
+  assert.equal(requestsWhenIdle, 1, 'her look back had already run when the home reported idle');
+  s.timers.advance(2 * 3_600_000); await s.idle();
+  assert.deepEqual(told, ['review'], 'her own alarm ringing afterwards is not a look back either');
 });
 test('every evening at 23:00 she looks back on the day: its records, her diary, and a kept copy of her 我是谁', async t => {
   const s = await setup(t, () => textResponse('想想今天'), { before: async worldDir => {
@@ -580,19 +630,17 @@ test('a fallback alarm that cannot be saved becomes a fault instead of breaking 
   assert.equal(s.requests.length, 4);
   assert.match(textOf(s.requests.at(-1)!), /没说接下来做什么/, 'the unsaved fallback still rings in this run');
 });
-test('a failing rename is a fault, and a failing full-access grant retries on the same session', async t => {
-  // The rename on creation and the one after the first turn both fail; the next resolve tries again.
-  let renameFails = 2; let accessFails = 1;
+test('a failing rename is a fault and retries on the same session', async t => {
+  // Creation, the greeting's reopen and its first-turn rename fail; the next resolve retries.
+  let renameFails = 3;
   const s = await setup(t, () => textResponse('嗯'), { host: host => ({
     ...host,
-    setFullAccess: session => { if (accessFails-- > 0) throw new Error('preset refused'); host.setFullAccess(session); },
     rename: async (id, title) => { if (renameFails-- > 0) throw new Error('rename refused'); await host.rename(id, title); },
   }) });
   await s.life.start();
-  assert.ok(s.faults().some(fault => fault.startsWith('家打不开：')));
   s.timers.advance(0); await s.idle();
   const home = s.life.snapshot().homeSessionId!;
-  assert.equal(s.created(), 1); assert.ok(s.fullAccess.has(home));
+  assert.equal(s.created(), 1);
   assert.ok(s.faults().some(fault => fault.startsWith('家改名失败：')));
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first']);
   await s.untilMorning();
@@ -698,6 +746,24 @@ test('a world alarm.md shapes the wake messages and the tool descriptions; an un
   assert.match(textOf(broken.requests[0]!), /【我的时间】这是我的家。/);
   assert.ok(broken.faults().some(fault => /闹钟模板 .* 读不了，先用默认的/.test(fault)), broken.faults().join('|'));
 });
+test('group facts follow a custom alarm section without rewriting the file or waking an extra turn', async t => {
+  const own = '## 闹钟响了\n我自己的闹钟措辞。\n';
+  let facts: string | undefined = '微信：「家人」37 条未读，最后是爸爸（20 分钟前）';
+  const s = await setup(t, () => textResponse('嗯'), { before: dir => writeFile(join(dir, 'alarm.md'), own), alarmContext: () => facts });
+  await s.start();
+  assert.doesNotMatch(textOf(s.requests.at(-1)!), /37 条未读/, 'the greeting is not a group wake');
+  const before = s.requests.length;
+  s.life.planNext({ after_minutes: 1 }, '读一会书');
+  assert.equal(s.requests.length, before);
+  s.timers.advance(60_000); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.match(textOf(s.requests.at(-1)!), /我自己的闹钟措辞。[\s\S]*微信：「家人」37 条未读/);
+  assert.equal(await readFile(join(s.worldDir, 'alarm.md'), 'utf8'), own);
+  facts = undefined; s.life.planNext({ after_minutes: 1 }, '接着读');
+  s.timers.advance(60_000); await s.idle();
+  const latest = s.requests.at(-1)!.messages.at(-1)!;
+  assert.doesNotMatch(JSON.stringify(latest), /微信：/);
+});
 test('an alarm set from a chat session rings at home, not in the chat', async t => {
   const sessionOf = (request: GenerateOptions) => (request as { sessionId?: string }).sessionId;
   let asked = false;
@@ -716,4 +782,66 @@ test('an alarm set from a chat session rings at home, not in the chat', async t 
   assert.equal(rung.length, 1);
   assert.match(textOf(rung[0]!), /【我的时间】[^ ]+ 到了，这是我说好做到的时间：「提醒伙伴喝水」/);
   assert.ok(!s.requests.slice(before).some(request => sessionOf(request) === 'chat'));
+});
+
+/** A pre-step that holds (or fails) the first step carrying a word of the plugin's own, like a host still starting. */
+function holdLifeStep(ctx: Context) {
+  let release!: (outcome: 'run' | 'fail') => void;
+  let reach!: () => void;
+  const reached = new Promise<void>(resolve => { reach = resolve; });
+  const outcome = new Promise<'run' | 'fail'>(resolve => { release = resolve; });
+  let held = false;
+  const dispose = ctx.on('agent/pre-step', async (payload, next) => {
+    if (held || !payload.messages.some(message => message.source.kind === 'dsh-world-life')) return next();
+    held = true; reach();
+    if (await outcome === 'fail') throw new Error('host still starting');
+    return next();
+  }, { prepend: true });
+  return { reached, release, dispose };
+}
+const lifeJson = async (worldDir: string) => JSON.parse(await readFile(join(worldDir, 'life.json'), 'utf8'));
+
+test('an alarm whose turn takes it in but never starts a step goes back on the schedule and is sent again', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: existingHome('写日记') });
+  await createAgent(s.ctx, 'home-0');
+  const hold = holdLifeStep(s.ctx); t.after(hold.dispose);
+  hold.release('fail');
+  await s.start();
+  assert.deepEqual(s.store.wakes(), [], 'not counted as delivered');
+  assert.deepEqual(s.alarm(), { at: '2026-10-23T03:00:00.000Z', source: 'plan' }, 'her alarm is back, not replaced by the morning fallback');
+  assert.ok(s.faults().some(fault => /^闹钟没开始，1 分钟后重新送：那一轮没开始就结束了（error）/.test(fault)), s.faults().join('|'));
+  s.timers.advance(60_000); await s.idle();
+  assert.deepEqual(s.store.wakes().map(wake => wake.source), ['plan']);
+  assert.ok(!s.faults().some(fault => /闹钟/.test(fault)), s.faults().join('|'));
+  assert.equal((await lifeJson(s.worldDir)).delivering, undefined);
+  assert.match(textOf(s.requests.at(-1)!), /「写日记」/);
+});
+
+test('a word stuck before its first step is reported, and after a restart it is sent again unless it ran', async t => {
+  for (const ran of [false, true]) {
+    const s = await setup(t, () => textResponse('嗯'), { before: existingHome('看书') });
+    const home = await createAgent(s.ctx, 'home-0');
+    const hold = holdLifeStep(s.ctx); t.after(hold.dispose);
+    await s.life.start(); s.timers.advance(0); await hold.reached;
+    assert.equal((await lifeJson(s.worldDir)).delivering.what, '闹钟', 'written before the steer, so a crash still finds it');
+    assert.deepEqual(s.store.wakes(), []);
+    s.timers.advance(5 * 60_000);
+    assert.ok(s.faults().some(fault => /^闹钟在 12:00 送进了家，5 分钟了这一轮还没开始$/.test(fault)), s.faults().join('|'));
+    // The app goes away with the turn still open; whatever happens next is seen only from the log.
+    const next = s.restart();
+    hold.release(ran ? 'run' : 'fail'); await home.whenIdle();
+    const before = s.requests.length;
+    await next.start(); s.timers.advance(0); await s.idle();
+    if (ran) {
+      assert.deepEqual(s.store.wakes().map(wake => wake.source), ['plan'], 'counted once it is known to have run');
+      assert.equal(s.requests.length, before, 'not sent twice');
+    } else {
+      assert.deepEqual(s.store.wakes(), []);
+      assert.ok(s.faults().some(fault => /^闹钟没开始，1 分钟后重新送：上次那一轮没开始就中断了/.test(fault)), s.faults().join('|'));
+      s.timers.advance(60_000); await s.idle();
+      assert.deepEqual(s.store.wakes().map(wake => wake.source), ['plan']);
+      assert.match(textOf(s.requests.at(-1)!), /「看书」/);
+    }
+    assert.ok(!s.faults().some(fault => /这一轮还没开始/.test(fault)));
+  }
 });

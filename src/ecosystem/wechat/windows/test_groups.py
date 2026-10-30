@@ -62,14 +62,17 @@ class GroupTest(unittest.TestCase):
         class Database:
             def get_messages(self, _chat, limit, offset=0):
                 return rows[offset:offset+limit]
-        result = recentContext(Database(), 'group', rows[3], lambda row: dict(id=str(row['local_id']), text='x'), pageSize=2)
+        result = recentContext(Database(), 'group', rows[3], lambda row: dict(id=str(row['local_id']), text='x'), pageSize=2, limit=8)
         self.assertEqual([r['id'] for r in result], [str(n) for n in range(4, 12)])
+        # With no limit given, the default of five applies.
+        result = recentContext(Database(), 'group', rows[3], lambda row: dict(id=str(row['local_id']), text='x'), pageSize=2)
+        self.assertEqual([r['id'] for r in result], [str(n) for n in range(7, 12)])
 
     def test_nontext_rows_do_not_displace_the_recent_text_context(self):
         rows = [dict(local_id=i, shard='m.db', sort_seq=i) for i in range(20, 0, -1)]
         class Database:
             def get_messages(self, _chat, limit, offset=0): return rows[offset:offset+limit]
-        result = recentContext(Database(), 'group', rows[0], lambda row: dict(id=str(row['local_id'])) if row['local_id'] <= 8 else None, pageSize=3)
+        result = recentContext(Database(), 'group', rows[0], lambda row: dict(id=str(row['local_id'])) if row['local_id'] <= 8 else None, pageSize=3, limit=8)
         self.assertEqual([r['id'] for r in result], [str(n) for n in range(1, 9)])
 
 

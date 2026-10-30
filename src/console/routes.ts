@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validTurns, validWechatBuffer, validWechatContext, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
+import { validTurns, validWechatBuffer, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
+import type { PhotoStore } from '../life/photos.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
@@ -12,12 +13,15 @@ export interface ConsoleSources {
   snapshot(): Promise<unknown>;
   activity(day: string, outsideOnly: boolean): unknown;
   diary(date: string): string | undefined;
-  /** The pictures she kept with `keep_photo`, newest first. */
+  photos?(limit: number, offset: number): ReturnType<PhotoStore['list']>;
+  photo?(id: string): ReturnType<PhotoStore['image']>;
 }
 /** What the console can change: whether her world runs, and her persona and world prompt. */
 export interface ConsoleActions {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /** Enqueue one application of saved prompts and idle-home compaction; returns a refusal, if any. */
+  applyHome(): string | undefined;
   prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean } };
   savePersona(persona: Partial<Persona>): void;
   /** An empty text goes back to the shipped template. */
@@ -27,9 +31,12 @@ export interface ConsoleActions {
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
+  setWorkspacePermission(permission: string): void;
+  /** Whether the evening look back is followed by applying and compacting her home (on unless turned off). */
+  setCompactAfterReview(on: boolean): void;
   /** A field left out stays as it is; null goes back to its default. */
   /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
-  setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | undefined>;
+  setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
@@ -48,6 +55,7 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
   switch (path) {
     case '/console/start': await actions.start(); return ok();
     case '/console/stop': await actions.stop(); return ok();
+    case '/console/apply-home': { const refused = actions.applyHome(); return refused ? bad(refused) : ok(); }
     case '/console/persona': { const layers = persona(body); if (!layers) return bad('persona layers must be strings'); actions.savePersona(layers); return ok(); }
     case '/console/budget': {
       const daily = body?.daily;
@@ -71,12 +79,21 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       if ((wechat !== undefined && typeof wechat !== 'boolean') || (qq !== undefined && typeof qq !== 'boolean')) return bad('wechat 和 qq 必须是 true 或 false');
       if (wechat === undefined && qq === undefined) return bad('nothing to change');
       const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }) });
-      return refused ? bad(refused) : ok();
+      return typeof refused === 'string' ? bad(refused) : ok({ ok: true, ...refused });
     }
     case '/console/wechat-adapter': return await actions.restartWechatAdapter() ? ok() : bad('适配器不是由插件管理的，请在配置里写 wechatAdapter');
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
       return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });
+    }
+    case '/console/compact-after-review': {
+      if (typeof body?.on !== 'boolean') return bad('on must be true or false');
+      actions.setCompactAfterReview(body.on); return ok();
+    }
+    case '/console/workspace-permission': {
+      if (!validWorkspacePermission(body?.permission)) return bad('工作区权限必须为非空字符串');
+      try { actions.setWorkspacePermission(body.permission); return ok(); }
+      catch (error) { return bad(error instanceof Error ? error.message : String(error)); }
     }
     case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };
@@ -102,6 +119,11 @@ export async function handleConsole(sources: ConsoleSources, actions: ConsoleAct
       return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : ok({ date, text });
     }
     case '/console/prompts': return ok(actions.prompts());
+    case '/console/photos': {
+      const limit = Number(url.searchParams.get('limit') ?? 20), offset = Number(url.searchParams.get('offset') ?? 0);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) return bad('相册分页参数无效');
+      return sources.photos ? ok(sources.photos(limit, offset)) : { status: 404, body: { error: '相册不可用' } };
+    }
     default: return { status: 404, body: { error: 'not found' } };
   }
 }
@@ -114,6 +136,13 @@ export function consoleRoute(sources: ConsoleSources, actions: ConsoleActions, a
         if (req.headers['sec-fetch-site'] === 'cross-site' || !knownHost(req.headers.host, allowedHosts)) result = { status: 403, body: { error: 'cross-site requests are not allowed' } };
         else {
           const method = req.method ?? 'GET';
+          const url = new URL(req.url ?? '/', 'http://localhost');
+          if (method === 'GET' && url.pathname === CONSOLE_PREFIX + '/console/photo') {
+            const image = sources.photo?.(url.searchParams.get('id') ?? '');
+            if (!image) { sendJson(res, { status: 404, body: { error: '找不到这张照片' } }); return; }
+            res.writeHead(200, { 'content-type': image.ref.mediaType, 'content-length': image.data.byteLength, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox" });
+            res.end(image.data); return;
+          }
           const write = method === 'POST' && req.headers[WRITE_HEADER] === '1' && String(req.headers['content-type'] ?? '').startsWith('application/json');
           const body = write ? jsonObject(await readBody(req, MAX_BODY_BYTES)) : undefined;
           result = write && body === undefined ? bad('a JSON object body is required') : await handleConsole(sources, actions, { method, url: req.url ?? '/', write, body });

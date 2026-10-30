@@ -3,6 +3,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from snapshot import NotSent
 
 
 def serverConfirmed(row):
@@ -34,14 +35,15 @@ def prepareMessages(messages, config, stateDir):
         if kind not in ('image', 'sticker'):
             raise ValueError('只支持文字、图片和表情包')
         if kind == 'sticker' and message.get('stickerId'):
-            root = Path(config['stickerDir']).resolve()
-            catalog = json.loads((root / 'catalog.json').read_text(encoding='utf-8-sig'))
-            sticker = next((sticker for pack in catalog['packs'] for sticker in pack['stickers']
-                            if sticker['id'] == message['stickerId']), None)
+            root = (Path(config['moduleFile']).parent / 'stickers').resolve()
+            try: stickers = json.loads((root / 'index.json').read_text(encoding='utf-8-sig'))['stickers']
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ValueError('表情库还没有可用的索引') from error
+            sticker = next((sticker for sticker in stickers if sticker.get('id') == message['stickerId']), None)
             if not sticker:
-                raise ValueError('表情包 ID 不在现有目录中')
-            path = (root / 'assets' / sticker['file']).resolve()
-            if not path.is_relative_to(root / 'assets'):
+                raise ValueError('表情包 ID 不在表情库中，请先用 sticker_search 查')
+            path = (root / 'files' / str(sticker.get('file'))).resolve()
+            if not path.is_relative_to(root / 'files'):
                 raise ValueError('表情包路径越界')
         else:
             if not isinstance(message.get('path'), str) or not Path(message['path']).is_absolute():
@@ -89,6 +91,11 @@ def deliverMessages(messages, send, confirmed=None):
     for index, message in enumerate(messages):
         try:
             send(message)
+        except NotSent:
+            # Nothing of this reply has reached WeChat yet, so the whole job may be tried again; once an earlier
+            # message went out, a later one that did not start is part of a half-sent reply and stays uncertain.
+            if index == 0: raise
+            raise RuntimeError(f'第 {index+1}/{len(messages)} 条发送未开始；停止整批，不重发已处理消息')
         except Exception as error:
             raise RuntimeError(f'第 {index+1}/{len(messages)} 条发送未确认；停止整批，不重发已处理消息：{error}') from error
         if confirmed:

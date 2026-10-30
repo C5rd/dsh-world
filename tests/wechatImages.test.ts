@@ -12,6 +12,8 @@ import { createWechatModule } from '../src/ecosystem/wechat/index.ts';
 import { channelContext } from '../src/ecosystem/shared/context.ts';
 import { conversationKey } from '../src/ecosystem/shared/identity.ts';
 import { extractConversationRecords } from '../src/archive.ts';
+import { createPhotoStore } from '../src/life/photos.ts';
+import { photoTools } from '../src/life/photoTools.ts';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 
@@ -67,7 +69,12 @@ test('image admission refuses traversal, another group and changed bytes before 
 
 for (const caption of ['', '这张图里有什么']) test(`private images reach the model and only real caption text is archived: ${caption || 'image only'}`, async t => {
   const requests: GenerateOptions[] = [];
-  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('看到了'); });
+  let savePhoto: (() => Promise<unknown>) | undefined;
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return (async function* () {
+    if (requests.length === 1) await savePhoto!();
+    else await assert.rejects(savePhoto!(), /最新用户消息/);
+    yield* textResponse('看到了');
+  })(); });
   const privateIdentity = { ...identity, conversationType: 'private' as const, conversationId: 'owner' };
   const media = [{ ...previous, identity: privateIdentity }];
   const incoming = join(root, 'incoming');
@@ -80,11 +87,16 @@ for (const caption of ['', '这张图里有什么']) test(`private images reach 
       assert.deepEqual(inputs[0].data, png); saved = true;
       return [{ attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }];
     },
+    readImage: async () => ({ ref: { attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }, data: png }),
   } as never);
   const agent = (await ctx.agents.create({ sessionId: SessionId('private'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const album = createPhotoStore(root); cleanup.push(() => album.close());
+  const collect = photoTools({ agent, store: () => album, attachments: () => ctx.get('attachments'), inside: () => true }).find(tool => tool.name === 'keep_photo')!;
+  savePhoto = () => collect.execute({}, { signal: new AbortController().signal } as never);
   const channel = createWechatHome({ ctx, home: async () => agent, images: (source, context) => admitContextImages(ctx, incoming, source, context) }); cleanup.push(channel.stop);
   await channel.ask(caption, privateIdentity, undefined, media);
   assert.equal(saved, true, 'the image must be saved before the model request');
+  assert.equal(album.list().total, 1, 'the current WeChat image can be explicitly collected during this turn');
   assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'image')));
   const log = await ctx.sessionPersistence.open(agent.id, 'read');
   try {
@@ -101,7 +113,7 @@ for (const caption of ['', '这张图里有什么']) test(`private images reach 
   }
 });
 
-test('protocol 3 accepts an image-only private request and rejects another conversation or sender', async t => {
+test('the current protocol accepts an image-only private request and rejects another conversation or sender', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('看到了'); });
   const privateIdentity = { ...identity, conversationType: 'private' as const, conversationId: 'owner' };
@@ -117,7 +129,7 @@ test('protocol 3 accepts an image-only private request and rejects another conve
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const { token, path, protocol } = JSON.parse(await readFile(file, 'utf8')); assert.equal(protocol, 3);
+  const { token, path, protocol } = JSON.parse(await readFile(file, 'utf8')); assert.equal(protocol, 4);
   const post = (media: unknown, text = '') => fetch(`http://127.0.0.1:${address.port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-world-token': token }, body: JSON.stringify({ identity: privateIdentity, text, media }) });
   assert.equal((await post([])).status, 400);
   assert.equal((await post([{ ...previous, identity }])).status, 400);

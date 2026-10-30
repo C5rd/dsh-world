@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
-test('enable script changes only the compaction plugin, backs up and remains idempotent', async t => {
+// 这条跑的是 scripts/enable-tool-free-compaction.ps1，要 PowerShell。
+test('enable script changes only the compaction plugin, backs up and remains idempotent', { skip: process.platform !== 'win32' }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-world-config-')); t.after(() => rm(root, { recursive: true, force: true }));
   const before = "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n- id: compaction-basic\n  name: '@deepseek-ai/dsh-compaction-basic'\n- id: command-compact\n  name: '@deepseek-ai/dsh-command-compact'\n";
   await writeFile(join(root, 'package.json'), '{"dependencies":{"dsh-world":"file:example"}}');

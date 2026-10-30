@@ -1,18 +1,21 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { durableWrite } from '../../life/lifeStore.ts';
 
 /**
- * The two consoles her partner opens from the QQ card, both reached from this machine only.
+ * The one console her partner opens from the QQ card, reached from this machine only.
  *
- * qq-bridge writes its console token into `<bridge>/state/console-token`, so that door needs nothing from him:
- * read the file, put the token in the URL, done.
+ * SnowLuma's console answers on loopback, but it can not be framed (`X-Frame-Options: DENY`) and its session
+ * token lives in SnowLuma's own memory (a fresh 64-hex string per login, dead on restart). The only way to get
+ * one is `POST /api/login` with the panel password. So he types that password exactly once; it is kept in
+ * `<world>/panel.json` with mode 600 and used from then on to trade for a token behind his back. The page
+ * itself takes `?token=` and wipes it off the address bar.
  *
- * SnowLuma's console is different. Its session token lives in the bridge process's memory (a fresh 64-hex
- * string per login, dead on restart) and the only way to get one is `POST /api/login` with the panel password.
- * So he types that password exactly once; it is kept in `<world>/panel.json` with mode 600 and used from then
- * on to trade for a token behind his back. The page itself takes `?token=` and wipes it off the address bar.
+ * Where SnowLuma lives used to be read out of the standalone `qq-bridge` process's config. That process is
+ * gone, so the home now comes from `qqNative.snowlumaHome` in the plugin's own config, with a short list of
+ * usual install locations as a fallback for a machine that has never been told.
  */
 
 export const PANEL_FILE = 'panel.json';
@@ -44,6 +47,18 @@ export function findSnowlumaConsole(homeDir: string): { base: string; username?:
   const named = host === '0.0.0.0' || host === '::' || host === '' ? LOOPBACK : host;
   const scheme = parsed.webuiTls?.enabled === true ? 'https' : 'http';
   return { base: `${scheme}://${named}:${port}`, username: undefined };
+}
+
+/** 常见安装位置，按顺序试；只认「里面有 config/runtime.json」的那个。给 ，没有就返回空。 */
+export function discoverSnowlumaHome(configured = '', candidates?: readonly string[]): string {
+  const list = configured !== '' ? [configured] : (candidates ?? [
+    'D:\\SnowLuma', 'C:\\SnowLuma', 'E:\\SnowLuma',
+    join(homedir(), 'SnowLuma'), join(homedir(), 'snowluma'),
+  ]);
+  for (const dir of list) {
+    if (dir && existsSync(join(dir, 'config', 'runtime.json'))) return dir;
+  }
+  return '';
 }
 
 /** The panel password he typed once, kept beside her room rather than inside her world settings. */
@@ -94,32 +109,18 @@ export async function loginSnowluma(base: string, username: string, password: st
   return { url: `${root}/?token=${encodeURIComponent(token)}` };
 }
 
-/** qq-bridge's console token is a file next to its state; the page takes it in the URL too. */
-export function readBridgeToken(bridgeDir: string): string {
-  const file = join(bridgeDir, 'state', 'console-token');
-  try { return existsSync(file) ? readFileSync(file, 'utf8').trim() : ''; }
-  catch { return ''; }
-}
-
-export function bridgeConsoleUrl(bridgeDir: string, port: number): PanelResult {
-  const token = readBridgeToken(bridgeDir);
-  if (token === '') return { error: 'qq-bridge 还没有控制台令牌（它没启动过？）' };
-  return { url: `http://${LOOPBACK}:${port}/?token=${encodeURIComponent(token)}` };
-}
-
-/** The two doors the QQ card's buttons knock on. */
+/** The door the QQ card's button knocks on. */
 export interface ConsoleDoors {
-  qq(): PanelResult;
   snowluma(): Promise<PanelResult>;
   remember(username: string, password: string): Promise<PanelResult>;
-  /** Hand a console URL to the desktop's own browser; neither console allows being framed. */
-  open(kind: 'qq' | 'snowluma'): Promise<{ opened: true } | { error: string }>;
+  /** Hand a console URL to the desktop's own browser; it does not allow being framed. */
+  open(kind: 'snowluma'): Promise<{ opened: true } | { error: string }>;
 }
 
 /**
- * Both consoles send `X-Frame-Options: DENY` (SnowLuma also `frame-ancestors 'none'`), so no page of ours can
- * hold them in a frame. Opening the desktop's own browser is the honest way in: it is where these consoles were
- * meant to run, and the token rides in the URL so it lands already logged in.
+ * SnowLuma's console sends `X-Frame-Options: DENY` (and `frame-ancestors 'none'`), so no page of ours can hold
+ * it in a frame. Opening the desktop's own browser is the honest way in: it is where that console was meant to
+ * run, and the token rides in the URL so it lands already logged in.
  */
 export function openInBrowser(url: string, spawnImpl: typeof spawn = spawn): { opened: true } | { error: string } {
   try {
@@ -135,40 +136,28 @@ export function openInBrowser(url: string, spawnImpl: typeof spawn = spawn): { o
   }
 }
 
-/** Where SnowLuma itself lives, as the bridge already knows it (`snowluma.homeDir` in its config). */
-export function readSnowlumaHome(bridgeDir: string): string {
-  const file = join(bridgeDir, 'config.json');
-  try {
-    if (!existsSync(file)) return '';
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { snowluma?: { homeDir?: unknown }; dsh?: { snowluma?: { homeDir?: unknown } } };
-    const home = parsed.snowluma?.homeDir ?? parsed.dsh?.snowluma?.homeDir;
-    return typeof home === 'string' ? home : '';
-  } catch { return ''; }
-}
-
-export function createConsoleDoors(options: { worldDir: string; bridgeDir: string; port: number; snowlumaHome?: string }): ConsoleDoors {
+export function createConsoleDoors(options: { worldDir: string; snowlumaHome?: string }): ConsoleDoors {
   const secrets = createPanelSecrets(options.worldDir);
-  const home = options.snowlumaHome ?? readSnowlumaHome(options.bridgeDir);
+  const home = discoverSnowlumaHome(options.snowlumaHome ?? '');
   async function snowluma(): Promise<PanelResult> {
     const console = findSnowlumaConsole(home);
-    if (!console) return { error: '没找到 SnowLuma 的控制台配置（它在哪？）' };
+    if (!console) return { error: '没找到 SnowLuma 的控制台配置（它在哪？填 qqNative.snowlumaHome）' };
     const saved = secrets.read();
     if (!saved) return { needs: 'password', url: console.base, username: DEFAULT_USERNAME };
     return loginSnowluma(console.base, saved.username, saved.password);
   }
   return {
-    qq: () => bridgeConsoleUrl(options.bridgeDir, options.port),
     snowluma,
     async remember(username: string, password: string): Promise<PanelResult> {
       const console = findSnowlumaConsole(home);
-      if (!console) return { error: '没找到 SnowLuma 的控制台配置（它在哪？）' };
+      if (!console) return { error: '没找到 SnowLuma 的控制台配置（它在哪？填 qqNative.snowlumaHome）' };
       const result = await loginSnowluma(console.base, username.trim() || DEFAULT_USERNAME, password);
       // Only keep a password that works; a typo should not be remembered as the truth.
       if ('url' in result) secrets.remember(username, password);
       return result;
     },
-    async open(kind: 'qq' | 'snowluma') {
-      const door = kind === 'qq' ? bridgeConsoleUrl(options.bridgeDir, options.port) : await snowluma();
+    async open(kind: 'snowluma') {
+      const door = kind === 'snowluma' ? await snowluma() : { error: '现在只有 SnowLuma 一扇门' };
       // A door that still wants a password carries its base URL too; that is not something to open.
       if ('needs' in door) return { error: 'SnowLuma 还差一次面板密码' };
       if ('error' in door) return { error: door.error };

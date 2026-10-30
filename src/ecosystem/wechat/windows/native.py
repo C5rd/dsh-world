@@ -3,7 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
-from snapshot import SnapshotBusy, checkedSnapshot, fileStamp
+from snapshot import NotSent, SnapshotBusy, SnapshotTimeout, checkedSnapshot, fileStamp, hasCurrentWalFrames
 from binding import findAccountProcess, checkAccountProcess, WechatOffline
 
 
@@ -28,6 +28,12 @@ def connect(config, stateDir):
     checkProcess()
 
     class ScopedDatabase(WeChatDB):
+        def _merge_wal(self, dst, wal_path, key, from_frame):
+            # The dependency rewrites the page count even when every WAL frame is obsolete.
+            if not hasCurrentWalFrames(self, wal_path):
+                return 0
+            return super()._merge_wal(dst, wal_path, key, from_frame)
+
         def _open_unlocked(self, rel):
             checkProcess()
             try:
@@ -110,6 +116,7 @@ def connect(config, stateDir):
     images = IncomingImages(database, config, checkProcess)
     database.readImage = images.read
     database.readSticker = images.readSticker
+    database.readReference = images.readReference
 
     sender = None
     def getSender():
@@ -138,8 +145,9 @@ def connect(config, stateDir):
                     return database.get_messages(chat['id'], limit=50)
                 except SnapshotBusy:
                     time.sleep(0.2)
-            raise RuntimeError('未能获取稳定的目标聊天快照，请人工核对本次发送')
-        before = {(row['shard'], row['local_id']) for row in stableRows(time.monotonic() + 20)}
+            raise SnapshotTimeout('未能获取稳定的目标聊天快照，请人工核对本次发送')
+        try: before = {(row['shard'], row['local_id']) for row in stableRows(time.monotonic() + 20)}
+        except SnapshotTimeout as error: raise NotSent(str(error)) from error  # nothing has been sent yet
         getSender().send(chat['id'], kind, value)
         digest = None
         if kind != 1:
@@ -157,12 +165,17 @@ def connect(config, stateDir):
                 raw = database.get_message_row(chat['id'], row['local_id'], shard=row['shard'])
                 if raw is None or not serverConfirmed(raw):
                     continue
-                if (kind == 1 and str(row['content']) == value) or (kind != 1 and mediaDigestMatches(row, digest, raw)):
+                # WeChatDB strips text on read; normalize only the comparison, never the sent value.
+                if (kind == 1 and str(row['content']) == value.strip()) or (kind != 1 and mediaDigestMatches(row, digest, raw)):
                     return
             time.sleep(0.5)
         raise RuntimeError('原生操作已提交但目标聊天尚未确认，需人工核对；不自动重发')
 
-    send.probe = lambda: getSender().send(config['chats'][0]['id'], 0)
+    def probe():
+        nativeSender = getSender()
+        return dict(version=nativeSender.profile['version'], **nativeSender.send(config['chats'][0]['id'], 0))
+
+    send.probe = probe
     send.close = close
     send.processId = config['processId']
     return database, send

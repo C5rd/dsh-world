@@ -97,7 +97,7 @@ class PrivateImageTest(unittest.TestCase):
                 finally:
                     store.close()
 
-    def test_batch_pending_is_atomic_and_exempts_only_its_own_rows(self):
+    def test_batch_pending_is_atomic_and_survives_until_the_whole_batch_finishes(self):
         rows = [dict(local_id=1, shard='m.db', sort_seq=11), dict(local_id=2, shard='m.db', sort_seq=12)]
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'state.sqlite'
@@ -105,8 +105,7 @@ class PrivateImageTest(unittest.TestCase):
             store.baseline('owner', 10)
             try:
                 store.beginBatch('owner', rows)
-                store.checkPending(('owner', ['m.db:1', 'm.db:2']))
-                with self.assertRaises(RuntimeError): store.checkPending(('owner', ['m.db:1']))
+                with self.assertRaises(RuntimeError): store.checkPending()
                 store.close(); store = MessageStore(file)
                 with self.assertRaises(RuntimeError): store.checkPending()
                 store.finishBatch('owner', rows)
@@ -133,7 +132,7 @@ class PrivateImageTest(unittest.TestCase):
                 return dict(text='ok')
             def poll(_config):
                 if store.cursor('owner') == 12: raise StopIteration('done')
-                return None
+                return {}
             try:
                 with self.assertRaises(StopIteration): adapter.watch(config, database, store, lambda *_: None, ask=ask, report=lambda *_: None, poll=poll)
                 self.assertEqual(len(requests), 2)
@@ -162,7 +161,7 @@ class PrivateImageTest(unittest.TestCase):
                 return dict(text='ok')
             def poll(_config):
                 if store.cursor('owner') == 13: raise StopIteration('done')
-                return None
+                return {}
             try:
                 with self.assertRaises(StopIteration): adapter.watch(config, database, store, lambda *_: None, ask=ask, report=lambda *_: None, poll=poll)
                 self.assertEqual(len(requests), 1)
