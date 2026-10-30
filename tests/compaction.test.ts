@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createUserMessage, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, LlmAdapter, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import ToolFreeCompaction, { toolFreeMessages } from '../src/compaction.ts';
+import ToolFreeCompaction, { compactionThreshold, toolFreeMessages } from '../src/compaction.ts';
 
 test('compaction replays the conversation prefix minus tool calls and results, then commits one paragraph with no tool tail', async t => {
   const summaries: GenerateOptions[] = []; const conversation: GenerateOptions[] = []; let conversationCalls = 0;
@@ -83,6 +83,37 @@ test('automatic compaction immediately after a tool result removes the entire pa
   assert.equal(errors.length, 0, errors.map(error => String((error as { error: Error }).error)).join('\n'));
   assert.equal(resumed.length, 1);
   assert.ok(!resumed[0].messages.some(message => message.role === 'tool' || message.content.some(block => block.type === 'tool-call')));
+});
+test('compaction starts at 75% of the window, and earlier only when a reply would no longer fit', () => {
+  const million = 1_048_576;
+  assert.equal(compactionThreshold({ contextWindow: million, ratio: 0.75, reserved: 256_000 }), 786_432, 'the usual case: 75% of the window, however large the reply allowance');
+  assert.equal(compactionThreshold({ contextWindow: million, ratio: 0.75, reserved: 32_000 }), 786_432);
+  assert.equal(compactionThreshold({ contextWindow: 128_000, ratio: 0.75, reserved: 8_000 }), 96_000, 'no fixed headroom is taken off a small window');
+  assert.equal(compactionThreshold({ contextWindow: 128_000, ratio: 0.75, reserved: 64_000 }), 64_000, 'a reply allowance above a quarter of the window pulls the trigger down so prompt and reply still fit');
+  assert.equal(compactionThreshold({ contextWindow: million, ratio: 0.5, reserved: 0 }), 524_288, 'the ratio stays the one knob');
+  assert.throws(() => compactionThreshold({ contextWindow: 100_000, ratio: 0.75, reserved: 100_000 }), /leaves no room/);
+});
+
+test('a model that declares no context window is compacted by an assumed window instead of never', async t => {
+  const summaries: GenerateOptions[] = []; const conversation: GenerateOptions[] = [];
+  const { ctx, errors } = await hostFixture(t, () => textResponse('the fixture adapter is not used here'));
+  class Undeclared extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, defaultMaxTokens: 100 }; }
+    override stream(request: GenerateOptions) {
+      if (request.purpose === 'compaction') { summaries.push(request); return textResponse('摘要'); }
+      conversation.push(request); return textResponse('reply');
+    }
+  }
+  ctx.llm.registerAdapter(['undeclared'], new Undeclared());
+  await ctx.plugin(TokenMeter).await();
+  // The window is assumed to be 4000 tokens here, so 75% of it is 3000.
+  await ctx.plugin(ToolFreeCompaction, { auto: true, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128, defaultContextWindow: 4000 }).await();
+  const handle = await ctx.agents.create({ sessionId: SessionId('undeclared'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'undeclared', model: 'any' } });
+  handle.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'user facts '.repeat(1500) }] })); await handle.agent.whenIdle();
+  assert.equal(summaries.length, 0, 'the first request is below the assumed trigger');
+  handle.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'next' }] })); await handle.agent.whenIdle();
+  assert.equal(summaries.length, 1, 'with the conversation past 75% of the assumed window, it was compacted before the next request');
+  assert.equal(errors.length, 0, errors.map(error => String((error as { error: Error }).error)).join('\n'));
 });
 test('a later compaction replays the earlier paragraph for merging instead of the shadowed original', async t => {
   const summaries: GenerateOptions[] = [];

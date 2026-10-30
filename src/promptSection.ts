@@ -1,7 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-system-prompt';
-import { errorText, type Faults } from './faults.ts';
 import { readPersona, renderPersona } from './persona.ts';
 import { renderSelf } from './self.ts';
 import { belongsToWorld, inWorld } from './sourceArchive.ts';
@@ -19,8 +18,8 @@ export interface WorldPromptSource {
 interface PromptText { template: string; self?: { file: string; text: string }; persona: string; names: WorldNames }
 /** `active`: the world prompt is placed (the session is in her workspace); the persona is placed either way. */
 interface Entry { text: PromptText; active: boolean; dispose: () => void; persona?: () => void }
-/** The host's persona section; a preset may also register it for its own agents. */
-const HOST_PERSONA = 'deployment:persona-prefix';
+/** The stock "You are an AI agent powered by DeepSeek Harness." line; a section of the same name on her agent shadows it. */
+const HARNESS_IDENTITY = 'harness:identity';
 
 /**
  * Her persona follows the configured preset; the world prompt is limited to the world's workspace.
@@ -29,11 +28,11 @@ const HOST_PERSONA = 'deployment:persona-prefix';
  * the system prompt before pre-step, so the refresh happens on compaction/end) or explicit console application, so the prompt
  * stays in the provider-cached prefix. Whether the session is her home is asked per request.
  *
- * Her persona takes the place of the host's: registered under the host persona's name for her agent, it shadows
- * the deployment default. Where her preset already gave her agent a persona, that name is taken, so hers follows
- * it under its own name and the console says so.
+ * Her persona takes the place of DeepSeek Harness's stock identity line, but never of a persona someone has set: it is its own
+ * section placed right after the host's persona slot, so a system persona the deployment or her preset already has stays
+ * where it is and hers follows it.
  */
-export function createPromptSections(config: WorldConfig, world: WorldPromptSource, deps: { faults: Faults; logger: { warn(...args: unknown[]): void } }) {
+export function createPromptSections(config: WorldConfig, world: WorldPromptSource, deps: { logger: { warn(...args: unknown[]): void } }) {
   const entries = new Map<Agent, Entry>();
   const agents = new WeakMap<Session, Agent>();
   function read(includeWorld: boolean): PromptText {
@@ -55,11 +54,13 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
     const prompt = agent.ctx.systemPrompt;
     const order = prompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') ?? 0;
     const text = () => entry.text.persona;
-    try { entry.persona = prompt.section({ name: HOST_PERSONA, order, interpolate: false, text }); deps.faults.clear('persona'); }
-    catch (error) {
-      entry.persona = prompt.section({ name: 'dsh-world-persona', order: order + 1, interpolate: false, text });
-      deps.faults.set('persona', `她的预设自带人设，你写的人设排在它后面（${errorText(error)}）`);
-    }
+    const persona = prompt.section({ name: 'dsh-world-persona', order: order + 1, interpolate: false, text });
+    // DeepSeek Harness's own identity line gives way to hers; a persona someone set in DSH sits in its own slot and is left alone.
+    // If a preset already put its own words on that identity slot for this agent, they stay exactly as written.
+    let identity: (() => void) | undefined;
+    try { identity = prompt.section({ name: HARNESS_IDENTITY, order: prompt.getSectionOrder('HARNESS_IDENTITY'), interpolate: false, text: () => '' }); }
+    catch { /* the slot is already taken for this agent */ }
+    entry.persona = () => { persona(); identity?.(); };
   }
   return {
     add(agent: Agent): void {

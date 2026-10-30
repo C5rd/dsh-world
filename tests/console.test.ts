@@ -183,19 +183,23 @@ test('wechat settings validate their range and keep omitted fields', async () =>
   for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
   assert.deepEqual(calls, ['wechat:{"context":12,"bufferSeconds":1.5}', 'wechat:{"context":null}']);
 });
-test('WeChat starts on and QQ off; only a switch away from its default is written, and it survives a restart', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const power = createWorldSwitch(dir);
-  assert.deepEqual([power.wechatEnabled(), power.qqEnabled()], [true, false]);
+test('WeChat and QQ both start off in a new world; a world that already ran WeChat keeps it on; an explicit choice is written and survives a restart', t => {
+  const fresh = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(fresh, { recursive: true, force: true }));
+  assert.deepEqual([createWorldSwitch(fresh).wechatEnabled(), createWorldSwitch(fresh).qqEnabled()], [false, false], 'nothing is on until someone turns it on');
+
+  // A world from before the switch defaulted to off: it never stored a choice, but its WeChat module has run.
+  const used = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(used, { recursive: true, force: true }));
+  writeFileSync(join(used, 'wechat-outbox.sqlite'), '');
+  const power = createWorldSwitch(used);
+  assert.deepEqual([power.wechatEnabled(), power.qqEnabled()], [true, false], 'an upgrade does not switch off a WeChat that was in use');
   power.setModules({ wechat: false });
-  assert.deepEqual([createWorldSwitch(dir).wechatEnabled(), createWorldSwitch(dir).qqEnabled()], [false, false]);
+  assert.deepEqual([createWorldSwitch(used).wechatEnabled(), createWorldSwitch(used).qqEnabled()], [false, false], 'turning it off sticks although the module has run before');
   power.setModules({ qq: true });
-  assert.deepEqual([createWorldSwitch(dir).wechatEnabled(), createWorldSwitch(dir).qqEnabled()], [false, true], 'a switch left out keeps its value');
+  assert.deepEqual([createWorldSwitch(used).wechatEnabled(), createWorldSwitch(used).qqEnabled()], [false, true], 'a switch left out keeps its value');
   power.setModules({ wechat: true });
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), { running: false, qqEnabled: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(used, 'world.json'), 'utf8')), { running: false, wechatEnabled: true, qqEnabled: true });
   power.setModules({ qq: false });
-  const stored = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
-  assert.equal('wechatEnabled' in stored || 'qqEnabled' in stored, false);
+  assert.deepEqual(JSON.parse(readFileSync(join(used, 'world.json'), 'utf8')), { running: false, wechatEnabled: true });
 });
 test('wechat settings default to 8 and 3, persist, and return to default', t => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-world-wechat-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
