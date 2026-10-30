@@ -6,7 +6,7 @@ export interface Review { at: string; day: string }
 /** A word the plugin owes her home: `arrival` when a new home was built, `return` when her world was started again. */
 export interface Greeting { at: string; kind: 'arrival' | 'return' }
 /** What her home spent on the local `day`, in CNY, and whether she was told she went past her budget. */
-export interface Spend { day: string; yuan: number; reminded?: true; sessions?: Record<string, number> }
+export interface Spend { day: string; yuan: number; reminded?: true; sessions?: Record<string, number>; reclaimed?: string[] }
 /**
  * A word steered into her home whose turn has not been seen to start a step yet. It is written before the steer,
  * so a turn that never runs (a hang, a crash, a closed app) is found again and sent again instead of counted.

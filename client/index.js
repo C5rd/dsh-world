@@ -231,14 +231,14 @@ window.__ModuleLoader__.load({
       }
       var preview = renderPersona(persona)
       return h('div', { className: 'dw-pane' },
-        h(Card, { title: '她是谁' }, LAYERS.map(function (layer) {
+        h(Card, { title: '她是谁' }, h('div', { className: 'dw-muted' }, '这里写的会取代 DSH 自带的那句默认身份（“You are an AI agent powered by DeepSeek Harness.”）；如果你在 DSH 里已经设过系统人设，它原样保留，这里写的排在它后面。'), LAYERS.map(function (layer) {
           var common = { id: 'dw-' + layer.key, value: persona[layer.key] || '', onChange: function (e) { set(layer.key, e.target.value) } }
           return h('div', { className: 'dw-layer', key: layer.key },
             h('label', { htmlFor: common.id }, layer.key),
             layer.rows === 1 ? h('input', Object.assign({ type: 'text', className: 'dw-name', placeholder: '比如：鲸鲸' }, common)) : h('textarea', Object.assign({ rows: layer.rows }, common)),
             h('small', null, layer.hint))
         })),
-        h(Card, { title: '她读到的样子', delay: 80 }, preview ? h('pre', { className: 'dw-preview' }, preview) : h('div', { className: 'dw-muted' }, '还什么都没写。没写的时候，她用宿主默认的人设。')),
+        h(Card, { title: '她读到的样子', delay: 80 }, preview ? h('pre', { className: 'dw-preview' }, preview) : h('div', { className: 'dw-muted' }, '还什么都没写。没写的时候，她沿用 DSH 自带的默认身份和你在 DSH 里设的系统人设。')),
         h('div', { className: 'dw-bar' },
           h('button', { className: 'dw-btn primary', disabled: !dirty || busy, onClick: save }, busy ? '保存中…' : '保存人设'),
           h('span', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg || (dirty ? '有改动还没保存' : ''))))

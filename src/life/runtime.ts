@@ -66,13 +66,19 @@ export function createLifeRuntime(deps: LifeDeps) {
   let stopped = false;
   let delivery: Promise<void> | undefined;
 
-  // 2026-10-29 之前，计价只看 agent preset、不看工作目录，`D:\DSH\PP\P0` 那扇窗的钱也记进了这个世界
-  // （见 DEVLOG 同日条目）。那一条现在从账上退回去：认的是那个会话 id，只做一次，`life.json` 里的
-  // 数字跟着修正，误顶响的那次预算提醒一并撤掉。
-  const stray = state.spend?.sessions?.['session-b14f73f8-386b-4037-942f-25021fc6663d'];
-  if (stray !== undefined && state.spend?.sessions) {
+  // 2026-10-29 之前，计价只看 agent preset、不看工作目录，`D:\\DSH\\PP\\P0` 那扇窗的钱也记进了这个世界
+  // （见 DEVLOG 同日条目）。那一条现在从账上退回去：认的是那个会话 id，`life.json` 里的数字跟着修正，
+  // 误顶响的那次预算提醒一并撤掉。
+  //
+  // 只做一次。`reclaimed` 记着退过哪几笔——不然那个会话哪天被移进世界工作区、真花了钱，每次重启都会
+  // 再删一次。交付复审把这条列成 P2，它指对了。
+  const straySession = 'session-b14f73f8-386b-4037-942f-25021fc6663d';
+  const reclaimed = state.spend?.reclaimed ?? [];
+  const stray = state.spend?.sessions?.[straySession];
+  if (stray !== undefined && state.spend?.sessions && !reclaimed.includes(straySession)) {
     state.spend.yuan = Math.max(0, state.spend.yuan - stray);
-    delete state.spend.sessions['session-b14f73f8-386b-4037-942f-25021fc6663d'];
+    delete state.spend.sessions[straySession];
+    state.spend.reclaimed = [...reclaimed, straySession];
     const budget = deps.dailyBudget?.();
     if (budget === undefined || state.spend.yuan < budget) delete state.spend.reminded;
     record(() => store.write(state));

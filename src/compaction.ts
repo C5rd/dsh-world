@@ -28,7 +28,12 @@ interface SummaryAudit { policyVersion: 2; provider: string; model: string; maxT
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap { 'plugin:dsh-world/compaction-request': SummaryAudit }
 }
-interface Policy { thresholdRatio: number; headroomTokens: number; summarizationProvider: string; summarizationModel: string; maxTokens: number; maxOverflowRetries: number }
+/**
+ * `thresholdRatio`: compaction starts at this share of the context window. `defaultContextWindow`: the window assumed for a model
+ * whose adapter declares none. `headroomTokens` no longer takes anything off the trigger; it only sizes the summary reply when
+ * `maxTokens` is unset.
+ */
+interface Policy { thresholdRatio: number; defaultContextWindow: number; headroomTokens: number; summarizationProvider: string; summarizationModel: string; maxTokens: number; maxOverflowRetries: number }
 export interface ToolFreeCompactionConfig extends Partial<Policy> { timeZone?: string; auto?: boolean; modelPolicies?: (Partial<Policy> & { provider: string; model: string })[] }
 interface Target { provider: string; model: string }
 
@@ -63,10 +68,17 @@ function routedTarget(session: Session): Target | undefined {
 
 function resolvePolicy(config: ToolFreeCompactionConfig): Policy {
   return {
-    thresholdRatio: config.thresholdRatio ?? 0.9, headroomTokens: config.headroomTokens ?? 65536,
+    thresholdRatio: config.thresholdRatio ?? 0.75, defaultContextWindow: config.defaultContextWindow ?? 1_048_576, headroomTokens: config.headroomTokens ?? 65536,
     summarizationProvider: config.summarizationProvider ?? '', summarizationModel: config.summarizationModel ?? '',
     maxTokens: config.maxTokens ?? config.headroomTokens ?? 65536, maxOverflowRetries: config.maxOverflowRetries ?? 1,
   };
+}
+
+/** Compaction starts at `ratio` of the window, or earlier when a reply of `reserved` tokens would then no longer fit after the prompt. */
+export function compactionThreshold(input: { contextWindow: number; ratio: number; reserved: number }): number {
+  const fits = input.contextWindow - input.reserved;
+  if (fits <= 0) throw new Error(`a ${input.reserved}-token reply leaves no room in a ${input.contextWindow}-token window`);
+  return Math.floor(Math.min(input.contextWindow * input.ratio, fits));
 }
 
 /** Pressure failures specific to one routed model; warned once per target. */
@@ -84,14 +96,15 @@ export default class ToolFreeCompaction extends CompactionEngine {
   static inject = ['llm', 'tokenMeter', 'sessions'];
   static Config = z.object({
     timeZone: z.string(), auto: z.boolean(),
-    thresholdRatio: z.number(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(),
+    thresholdRatio: z.number(), defaultContextWindow: z.natural(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(),
     maxTokens: z.natural(), maxOverflowRetries: z.natural(),
-    modelPolicies: z.array(z.object({ provider: z.string().required(), model: z.string().required(), thresholdRatio: z.number(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(), maxTokens: z.natural(), maxOverflowRetries: z.natural() })),
+    modelPolicies: z.array(z.object({ provider: z.string().required(), model: z.string().required(), thresholdRatio: z.number(), defaultContextWindow: z.natural(), headroomTokens: z.natural(), summarizationProvider: z.string(), summarizationModel: z.string(), maxTokens: z.natural(), maxOverflowRetries: z.natural() })),
   });
   private readonly policy: Policy;
   private readonly overrides: (Policy & Target)[];
   private readonly timeZone: string;
   private readonly warnedTargets = new Set<string>();
+  private readonly assumedWindows = new Set<string>();
   private readonly overflowRetries = new WeakMap<object, number>();
   private readonly overflowAgents = new WeakMap<Session, object>();
 
@@ -173,12 +186,18 @@ export default class ToolFreeCompaction extends CompactionEngine {
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal);
     assertNoActiveCompaction(agent.session, 'automatic pressure compaction');
     const key = `${target.provider}/${target.model}`;
-    if (!info.context) throw new TargetConfigError(key, `dsh-world/compaction: no context capacity for ${key}; configure contextWindow on that adapter model`);
-    const { contextWindow } = info.context;
+    let contextWindow = info.context?.contextWindow;
+    if (contextWindow === undefined) {
+      contextWindow = policy.defaultContextWindow;
+      if (!this.assumedWindows.has(key)) {
+        this.assumedWindows.add(key);
+        this.ctx.logger.warn(`dsh-world/compaction: ${key} declares no contextWindow; assuming ${contextWindow} tokens, so compaction starts at ${Math.floor(contextWindow * policy.thresholdRatio)}. If its real window is smaller, set contextWindow on that adapter model, or defaultContextWindow for it in modelPolicies.`);
+      }
+    }
     const reserved = agent.session.requestHeader()?.config.maxTokens ?? info.defaultMaxTokens ?? 0;
-    const pressureBudget = contextWindow - reserved - policy.headroomTokens;
-    if (pressureBudget <= 0) throw new TargetConfigError(key, `dsh-world/compaction: ${key} reserves ${reserved} completion and ${policy.headroomTokens} headroom tokens of its ${contextWindow}-token window, leaving no pressure budget`);
-    const threshold = Math.floor(Math.min(contextWindow * policy.thresholdRatio, pressureBudget));
+    let threshold: number;
+    try { threshold = compactionThreshold({ contextWindow, ratio: policy.thresholdRatio, reserved }); }
+    catch (error) { throw new TargetConfigError(key, `dsh-world/compaction: ${key}: ${error instanceof Error ? error.message : String(error)}`); }
     if (meter.measure(agent.session).totalTokens < threshold) return null;
     const range = selectWholeRange(agent.session, meter.measure(agent.session));
     if (!range) return null;

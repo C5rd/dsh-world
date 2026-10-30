@@ -15,12 +15,13 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import BasicCompaction from '@deepseek-ai/dsh-compaction-basic';
 import type { TestContext } from 'node:test';
 
-export async function hostFixture(t: TestContext, stream: (request: GenerateOptions) => AsyncIterable<StreamChunk>) {
+/** `personaPrefix`: the deployment's own system persona, as DSH's settings would give the system prompt plugin. */
+export async function hostFixture(t: TestContext, stream: (request: GenerateOptions) => AsyncIterable<StreamChunk>, options: { personaPrefix?: string; includeHarnessIdentity?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-world-host-'));
   const ctx = new Context();
   const cleanup: (() => Promise<unknown> | unknown)[] = [];
   t.after(async () => { try { for (const stop of cleanup.reverse()) await stop(); await ctx.fiber.dispose(); } finally { await rm(root, { recursive: true, force: true }); } });
-  ctx.plugin(Sessions); ctx.plugin(Projections); ctx.plugin(Agents); ctx.plugin(SystemPrompt); ctx.plugin(Tools); ctx.plugin(LlmRuntime);
+  ctx.plugin(Sessions); ctx.plugin(Projections); ctx.plugin(Agents); ctx.plugin(SystemPrompt, { ...(options.personaPrefix === undefined ? {} : { personaPrefix: options.personaPrefix }), ...(options.includeHarnessIdentity === undefined ? {} : { includeHarnessIdentity: options.includeHarnessIdentity }) }); ctx.plugin(Tools); ctx.plugin(LlmRuntime);
   const storage = ctx.plugin(persistence, { root: join(root, 'sessions'), compression: 'none' });
   await storage.await();
   await ctx.plugin(Loop, { agents: [], maxParallelToolCalls: 10 }).await();

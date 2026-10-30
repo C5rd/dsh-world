@@ -495,6 +495,19 @@ test('the money a window in another folder spent is taken back off the account o
   assert.ok(Math.abs(spend.yuan - 2.11) < 1e-9, `her account keeps only her own money: ${spend.yuan}`);
   assert.equal(spend.reminded, undefined, 'the reminder the stray money rang is withdrawn');
 });
+test('the reclaim is not repeated: money that window spends later stays on the account', async t => {
+  const stray = 'session-b14f73f8-386b-4037-942f-25021fc6663d';
+  const s = await setup(t, () => textResponse('嗯'), { before: async worldDir => {
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({
+      version: 1, homeSessionId: 'home-0',
+      spend: { day: '2026-10-29', yuan: 3.5, sessions: { 'home-0': 3.0, [stray]: 0.5 }, reclaimed: [stray] },
+    }));
+  } });
+  await s.start();
+  const spend = s.store.read().spend!;
+  assert.ok(Math.abs(spend.yuan - 3.5) < 1e-9, `nothing is taken off a second time: ${spend.yuan}`);
+  assert.ok(Math.abs((spend.sessions?.[stray] ?? 0) - 0.5) < 1e-9, 'the shares keep what that window spent for real');
+});
 test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
   const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
     version: 1, homeSessionId: 'archived-home', alarm: { at: '2026-10-23T04:00:00.000Z', note: '歇着', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' },

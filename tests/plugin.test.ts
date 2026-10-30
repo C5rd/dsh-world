@@ -765,6 +765,7 @@ test('with the bridge and an outlet, words from a local app enter the home and t
 test('the independent WeChat module follows the world start/stop lifecycle', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
   isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true }); await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: false, wechatEnabled: true }));
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
@@ -783,6 +784,7 @@ test('the independent WeChat module follows the world start/stop lifecycle', asy
 test('the console switch takes the WeChat module down and up again while the world runs, and is remembered', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
   isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true }); await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: false, wechatEnabled: true }));
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
@@ -802,6 +804,22 @@ test('the console switch takes the WeChat module down and up again while the wor
   assert.equal(routes.filter(route => route.path === '/dsh-world/wechat/ask').length, 1, 'the route is registered again');
   assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
 });
+test('a configured WeChat module stays off until the console switch is turned on, then starts without a restart', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 2, 'console');
+  const file = join(root, 'worlds/fish/wechat.json');
+  await consolePost(routes, '/dsh-world/console/start');
+  await firstWakeDone(ctx, root);
+  assert.equal(existsSync(file), false, 'configured, but nobody has turned it on');
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: false, running: false });
+  await consolePost(routes, '/dsh-world/console/modules', { wechat: true });
+  assert.ok(existsSync(file), 'turning it on starts it');
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules.wechat, { available: true, enabled: true, running: true });
+});
 test('a module the config does not provide cannot be switched on from the console', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
   isolateHome(t, root);
@@ -811,7 +829,7 @@ test('a module the config does not provide cannot be switched on from the consol
   await until(async () => routes.length === 2, 'console');
   const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: true, running: false }, qq: { available: false, enabled: false, running: false } });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false } });
   assert.equal((await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
 });
 

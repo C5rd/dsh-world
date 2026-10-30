@@ -40,7 +40,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const names = () => world?.names?.() ?? world?.prompt.names ?? worldNames(config);
   const included = (session: Session) => inWorld(session, config, world?.inWorkspace);
   const faults = new Faults();
-  const prompts = world && createPromptSections(config, world, { faults, logger: ctx.logger });
+  const prompts = world && createPromptSections(config, world, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
   const attaching = new WeakMap<Session, Promise<void>>();
   const disposers: (() => void)[] = [];
@@ -82,6 +82,18 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     });
     if (state.retiring.length) state.restart = true;
     state.reload = true; state.pendingId = undefined;
+  }
+  /** Where memory blocks sit on a session's surface, for the log: positions and event types only, never message text. */
+  function memoryNodesOn(session: Session): string {
+    const found: string[] = [];
+    for (const seq of session.surface.nodes) {
+      const event = session.eventAt(seq);
+      if (!event) continue;
+      let message: ReturnType<Session['deriveEventMessage']>;
+      try { message = session.deriveEventMessage(event); } catch { continue; }
+      if (message?.source?.kind === memorySource) found.push(`#${seq}(${event.type})`);
+    }
+    return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
   /** Empty system nodes retire only our recalled blocks and derive no model message; original logs stay intact. */
   function flushRetired(session: Session, state: MemoryState, position: { turn: number; step: number }): void {
@@ -175,9 +187,13 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       disposers.push(ctx.on('llm/stream', async function* (request, next) {
         const agent = isAgentLoopRequest(request) && request.sessionId ? ctx.agents.get(request.sessionId) : undefined;
         const owned = agent && included(agent.session);
-        if (agent && !owned && (prompts?.active(agent.session) || request.messages.some(message => message.source?.kind === memorySource))) {
+        const inRequest = agent && !owned ? request.messages.filter(message => message.source?.kind === memorySource).length : 0;
+        const placed = !!agent && !owned && !!prompts?.active(agent.session);
+        if (agent && !owned && (placed || inRequest)) {
           const state = memory.get(agent.session);
           if (state) { retireMemory(agent.session, state); flushRetired(agent.session, state, state.position); state.restart = true; }
+          const reasons = [inRequest ? `请求里还带着 ${inRequest} 条世界记忆块` : '', placed ? '世界提示还挂在会话上' : ''].filter(Boolean).join('；');
+          ctx.logger.warn(`dsh-world: 阻止了会话 ${agent.id}（预设 ${agent.session.header.agentPreset ?? '无'}）的一次请求，它不在世界工作区里。原因：${reasons}。${state ? '已尝试退役记忆块' : '这个会话没有记忆状态，没法退役'}；退役后会话表面上仍有的记忆节点：${memoryNodesOn(agent.session)}。DSH_WORLD_SCOPE_CHANGED`);
           yield { type: 'finish', reason: { kind: 'error', failure: { code: 'DSH_WORLD_SCOPE_CHANGED', message: 'dsh-world: 会话已离开世界工作区，已阻止携带世界上下文的请求，请重新发送。' } } } satisfies StreamChunk;
           return;
         }
