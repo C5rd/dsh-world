@@ -39,6 +39,8 @@ export interface LifeDeps {
   ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
   /** CNY her home may spend a day; undefined or absent is no limit. */
   dailyBudget?: () => number | undefined;
+  /** Called once each evening look back has been handed to her home (not for alarms or greetings, and not when delivery failed). */
+  afterReview?: () => void;
   /** Read-only facts appended after the user's alarm template is rendered. */
   alarmContext?: (now: Date) => string | undefined;
   photos?: () => PhotoStore;
@@ -211,7 +213,7 @@ export function createLifeRuntime(deps: LifeDeps) {
    * A message of the plugin's own, taken off the schedule while it is sent and put back if it fails: it backs
    * off like an alarm, and its turn is never asked about as an early stop. It counts once its turn starts a step.
    */
-  async function sayOwn(what: string, source: WakeRecord['source'], scheduledAt: string, job: PendingWake['job'], take: () => void, putBack: () => void, text: (now: Date) => string): Promise<void> {
+  async function sayOwn(what: string, source: WakeRecord['source'], scheduledAt: string, job: PendingWake['job'], take: () => void, putBack: () => void, text: (now: Date) => string, delivered?: () => void): Promise<void> {
     try {
       const agent = await home.open();
       if (stopped) return;
@@ -221,6 +223,7 @@ export function createLifeRuntime(deps: LifeDeps) {
       expect(agent, message, what, scheduledAt, source, job, now);
       earlyStop.startsOwnTurn();
       await say(agent, message);
+      if (!stopped) delivered?.();
     } catch (error) {
       ctx.logger.error(error);
       if (stopped) return;
@@ -253,7 +256,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => reviewText(review, now, {
       ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
       diaryDir: options.diaryDir, selfFile: options.selfFile,
-    }, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+    }, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()), () => deps.afterReview?.());
   }
   async function send(alarm: Alarm): Promise<void> {
     try {

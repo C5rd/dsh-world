@@ -32,6 +32,8 @@ export interface ConsoleActions {
   setMemoryTurns(turns: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
   setWorkspacePermission(permission: string): void;
+  /** Whether the evening look back is followed by applying and compacting her home (on unless turned off). */
+  setCompactAfterReview(on: boolean): void;
   /** A field left out stays as it is; null goes back to its default. */
   /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
   setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
@@ -83,6 +85,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
       return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });
+    }
+    case '/console/compact-after-review': {
+      if (typeof body?.on !== 'boolean') return bad('on must be true or false');
+      actions.setCompactAfterReview(body.on); return ok();
     }
     case '/console/workspace-permission': {
       if (!validWorkspacePermission(body?.permission)) return bad('工作区权限必须为非空字符串');

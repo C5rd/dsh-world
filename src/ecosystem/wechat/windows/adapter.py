@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from outgoing import deliverMessages, prepareMessages
-from snapshot import SnapshotBusy
-from groups import MAX_CONTEXT_MESSAGES, mentionedIds, recentContext
+from snapshot import NotSent, SnapshotBusy
+from groups import DEFAULT_CONTEXT_MESSAGES, mentionedIds, recentContext
 from incoming import ImageUnavailable, admitReference
 from binding import WechatOffline
 from messages import messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
@@ -30,6 +30,8 @@ CONTROL_TIMEOUT_SECONDS = 5
 REPLY_TIMEOUT_SECONDS = 190
 # Exit code for "a person must check WeChat and run acknowledge"; the plugin stops restarting the adapter on it.
 EXIT_NEEDS_HUMAN = 2
+# A reply whose send never started (no stable snapshot of the chat) is handed out again this many times in all.
+SEND_ATTEMPTS = 3
 
 
 class NeedsHuman(RuntimeError):
@@ -83,8 +85,6 @@ def validateConfig(config, requireChats=True):
         raise ValueError('pageSize 应在 1–100 之间')
     if not 0.5 <= config.get('pollSeconds', 2) <= 60:
         raise ValueError('pollSeconds 应在 0.5–60 之间')
-    if 'stickerDir' in config and (not isinstance(config['stickerDir'], str) or not Path(config['stickerDir']).is_absolute()):
-        raise ValueError('stickerDir 需要绝对目录')
     if 'mediaRoots' in config and (not isinstance(config['mediaRoots'], list) or any(not isinstance(root, str) or not Path(root).is_absolute() for root in config['mediaRoots'])):
         raise ValueError('mediaRoots 需要绝对目录数组')
     return config
@@ -166,7 +166,7 @@ def incomingMessage(database, chat, row, config):
         if previous['type'] == '图片':
             entry['imageRow'] = {key: previous[key] for key in ('local_id','shard','sort_seq','create_time','type','sender_username')}
         return entry
-    message['context'] = recentContext(database, chat['id'], row, contextMessage, config.get('pageSize', 50), config.get('contextMessages', MAX_CONTEXT_MESSAGES))
+    message['context'] = recentContext(database, chat['id'], row, contextMessage, config.get('pageSize', 50), config.get('contextMessages', DEFAULT_CONTEXT_MESSAGES))
     imageCount = 0
     for entry in reversed(message['context']):
         picture = entry.pop('imageRow', None)
@@ -195,6 +195,7 @@ class MessageStore:
             PRIMARY KEY(chatId,messageId));
         ''')
         self.presence = GroupPresence(self.db)
+        self.notSent = {}  # replyId -> attempts that gave up before sending; in memory, a restart starts over
 
     def cursor(self, chatId):
         row = self.db.execute('SELECT seq FROM cursors WHERE chatId=?', (chatId,)).fetchone()
@@ -270,6 +271,12 @@ class MessageStore:
                                     (confirmed, confirmed, 'sent', 'uncertain', replyId, confirmed, confirmed))
             if result.rowcount != 1:
                 raise ValueError('回执进度无效')
+
+    def abandonReply(self, replyId, chatId):
+        """Undo `beginReply` for a reply that never started sending; the home still holds the job as claimed."""
+        with self.db:
+            self.db.execute("DELETE FROM receipts WHERE replyId=? AND confirmed=0 AND status='uncertain'", (replyId,))
+            self.db.execute("DELETE FROM messages WHERE chatId=? AND messageId=? AND status='pending'", (chatId, 'outgoing:' + replyId))
 
     def failReply(self, replyId):
         with self.db:
@@ -424,6 +431,18 @@ def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=re
         try:
             deliverMessages(prepared, lambda item: send(chat, item), lambda count: store.confirmReply(replyId, count))
             store.finish(chat['id'], key, seq)
+        except NotSent as error:
+            # Nothing was sent: forget this attempt and let the next poll hand the same job out again (#23),
+            # but only so many times; after that it stays as an unconfirmed send for a person to check.
+            attempts = store.notSent[replyId] = store.notSent.get(replyId, 0) + 1
+            if attempts >= SEND_ATTEMPTS:
+                store.notSent.pop(replyId, None)
+                raise RuntimeError(f'连续 {attempts} 次发送前都未能获取稳定的目标聊天快照，消息没有发出；请人工核对后处理') from error
+            store.abandonReply(replyId, chat['id'])
+            print(f'微信发送尚未开始（第 {attempts}/{SEND_ATTEMPTS} 次），稍后重试同一任务：{error}', file=sys.stderr, flush=True)
+            raise
+        else:
+            store.notSent.pop(replyId, None)
         finally:
             flushReceipts(config['moduleFile'], store, report)
 

@@ -13,6 +13,8 @@ import { admitContextImages } from './images.ts';
 import { dirname, join } from 'node:path';
 import { createWechatSending } from './sending.ts';
 import { createWechatReading } from './reading.ts';
+import { createStickerLibrary } from './stickerLibrary.ts';
+import { createStickerTools } from './stickerTools.ts';
 import { createWechatPresence } from './presence.ts';
 import { reassembleOnChange, scopedTool, type InWorld } from '../../worldScope.ts';
 
@@ -20,8 +22,14 @@ export const WECHAT_PATH = '/dsh-world/wechat/ask';
 
 export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const token = randomBytes(32).toString('hex');
-  const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default' });
-  const reading = createWechatReading({ target: sending.target });
+  const stickerDir = join(dirname(deps.file), 'stickers');
+  const stickers = createStickerLibrary(stickerDir);
+  const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default', hasSticker: id => stickers.has(id) });
+  const reading = createWechatReading({ target: sending.target, images: (identity, context) => {
+    if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
+    return admitContextImages(deps.ctx, deps.incomingDir, identity, context);
+  } });
+  const stickerTools = createStickerTools({ library: stickers, stagingDir: join(stickerDir, 'incoming'), target: sending.target, ask: reading.ask });
   const presence = createWechatPresence();
   const attached = new Map<Agent, (() => void)[]>();
   const requests = new Set<Promise<JsonResult>>();
@@ -30,7 +38,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
   let lastContactAt: string | undefined;
   /** What the adapter last said about the WeChat account itself; only the adapter knows whether it is logged in. */
   let accountState: 'online' | 'offline' | undefined;
-  const settings = () => deps.settings?.() ?? { contextMessages: 8, bufferSeconds: 3 };
+  const settings = () => deps.settings?.() ?? { contextMessages: 5, bufferSeconds: 3 };
   const { inWorld } = deps;
   const inside = (agent: Agent) => !inWorld || inWorld(agent.session);
   function detach(agent: Agent): boolean {
@@ -47,7 +55,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (attached.has(agent)) return false;
     const disposers: (() => void)[] = [];
     try {
-      for (const tool of [...sending.tools, reading.tool]) disposers.push(agent.ctx.tools.register(scopedTool(tool, () => inside(agent), () => detach(agent))));
+      for (const tool of [...sending.tools, reading.tool, reading.imageTool, ...stickerTools]) disposers.push(agent.ctx.tools.register(scopedTool(tool, () => inside(agent), () => detach(agent))));
       attached.set(agent, disposers);
     }
     catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }

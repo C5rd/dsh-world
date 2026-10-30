@@ -1,9 +1,12 @@
 import unittest
 import json
+import hashlib
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from reading import readHistory
+from stickers import StickerUnavailable
+from incoming import ImageUnavailable
 
 
 def row(number):
@@ -102,6 +105,100 @@ class ReadingTest(unittest.TestCase):
                 self.assertEqual(receipts[-1]['status'], 'sent'); self.assertEqual(store.cursor('family@chatroom'), 8)
                 store.checkPending()
             finally: store.close()
+
+
+class ImageReadingTest(unittest.TestCase):
+    def setUp(self):
+        owner = self
+        self.reads = []
+        self.raw = dict(local_id=7, local_type=3, sort_seq=7, create_time=1700000007, sender_username='dad')
+        class Database:
+            def get_messages(self, chatId, limit, offset=0):
+                return [dict(local_id=7, shard='m.db', sort_seq=7, create_time=1700000007, type='图片', sender_username='dad', content='<xml/>')]
+            def get_nickname(self, _): return '爸爸'
+            def get_message_row(self, chatId, localId, local_type=None, shard=None):
+                owner.reads.append((chatId, localId, local_type, shard))
+                return owner.raw if localId == 7 and shard == 'm.db' else None
+            def readImage(self, chatId, row):
+                if owner.unavailable: raise ImageUnavailable('图片尚未下载到这台电脑')
+                return dict(file='a' * 64 + '.png', quality='cached')
+        self.unavailable = False
+        self.database = Database()
+        self.config = dict(selfId='bot', chats=[dict(id='family@chatroom', name='家人')], pageSize=2)
+        self.request = dict(id='request', accountId='bot', chatId='family@chatroom', limit=1, imageId='m.db:7')
+
+    def test_history_tells_the_model_how_to_look_at_a_picture(self):
+        result = readHistory(self.database, self.config, {k: v for k, v in self.request.items() if k != 'imageId'})
+        self.assertIn('wechat_image', result['messages'][0]['text'])
+        self.assertNotIn('image', result['messages'][0])
+
+    def test_one_picture_is_read_by_the_id_history_gave(self):
+        result = readHistory(self.database, self.config, self.request)
+        [entry] = result['messages']
+        self.assertEqual((entry['id'], entry['image']['quality'], entry['identity']['speakerId']), ('m.db:7', 'cached', 'wechat:dad'))
+        self.assertEqual(self.reads, [('family@chatroom', 7, 3, 'm.db')])
+        self.assertNotIn('readThrough', result, 'looking at a picture does not clear the group unread count')
+
+    def test_only_a_picture_in_a_configured_group_can_be_read(self):
+        for bad in ('', 'm.db', 'm.db:x', 'm.db:8', ':7', 'm.db:7' + 'x' * 300):
+            with self.subTest(imageId=bad), self.assertRaises(ValueError):
+                readHistory(self.database, self.config, {**self.request, 'imageId': bad})
+        self.raw = {**self.raw, 'local_type': 1}
+        with self.assertRaisesRegex(ValueError, '不是本群里的图片'):
+            readHistory(self.database, self.config, self.request)
+        with self.assertRaises(ValueError):
+            readHistory(self.database, self.config, {**self.request, 'chatId': 'other@chatroom'})
+
+    def test_a_picture_that_is_not_on_this_computer_says_so(self):
+        self.unavailable = True
+        with self.assertRaisesRegex(ValueError, '尚未下载'):
+            readHistory(self.database, self.config, self.request)
+
+
+GIF = b'GIF89a' + b'x' * 30
+
+
+class StickerSavingTest(unittest.TestCase):
+    def setUp(self):
+        owner = self
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.raw = dict(local_id=5, local_type=47, content=b'<msg/>', sender_username='dad')
+        class Database:
+            def get_message_row(self, chatId, localId, local_type=None, shard=None):
+                return owner.raw if localId == 5 and shard == 'm.db' else None
+        self.database = Database()
+        self.config = dict(selfId='bot', moduleFile=str(Path(self.directory.name) / 'wechat.json'),
+                           chats=[dict(id='family@chatroom', name='家人'), dict(id='mom', name='妈妈')])
+        self.request = dict(id='r', accountId='bot', chatId='mom', limit=1, stickerId='m.db:5')
+
+    def save(self, request=None, data=GIF):
+        with patch('reading.fetchSticker', return_value=data):
+            return readHistory(self.database, self.config, request or self.request)
+
+    def test_a_sticker_from_a_private_or_group_chat_is_staged_with_its_md5(self):
+        for chat in ('mom', 'family@chatroom'):
+            result = self.save({**self.request, 'chatId': chat})
+            sticker = result['sticker']
+            self.assertEqual((sticker['md5'], sticker['mediaType'], sticker['bytes']), (hashlib.md5(GIF).hexdigest(), 'image/gif', len(GIF)))
+            staged = Path(self.directory.name) / 'stickers' / 'incoming' / sticker['file']
+            self.assertEqual(staged.read_bytes(), GIF)
+
+    def test_only_a_sticker_message_in_a_configured_chat_can_be_saved(self):
+        for bad in ('', 'm.db', 'm.db:x', 'm.db:6', ':5'):
+            with self.subTest(stickerId=bad), self.assertRaises(ValueError):
+                self.save({**self.request, 'stickerId': bad})
+        with self.assertRaises(ValueError): self.save({**self.request, 'chatId': 'stranger'})
+        with self.assertRaises(ValueError): self.save({**self.request, 'accountId': 'other'})
+        self.raw = {**self.raw, 'local_type': 1}
+        with self.assertRaisesRegex(ValueError, '不是聊天里的表情包'): self.save()
+
+    def test_a_download_that_fails_or_is_not_a_picture_is_refused(self):
+        with patch('reading.fetchSticker', side_effect=StickerUnavailable('下载内容与消息中的 md5 不符，已丢弃')):
+            with self.assertRaisesRegex(ValueError, 'md5'): readHistory(self.database, self.config, self.request)
+        with self.assertRaisesRegex(ValueError, 'GIF、PNG'): self.save(data=b'<html>not a picture</html>')
+        self.config['fetchStickers'] = False
+        with self.assertRaisesRegex(ValueError, 'fetchStickers'): self.save()
 
 
 if __name__ == '__main__': unittest.main()

@@ -11,6 +11,8 @@ export interface WorldConfig {
   archiveScope?: MemoryArchiveScope;
   /** The life line (home session, alarm, tools, console); on by default. */
   life?: boolean;
+  /** On the first start in a profile, switch its stock compaction row to the tool-free one (restart to load it); on by default. */
+  replaceCompaction?: boolean;
   /** Her diary directory; defaults to `<world>/diary`. */
   diaryDir?: string;
   /** Local HH:MM of the morning wake when no alarm is pending (she set none, or cancelled hers); 09:00 by default. */

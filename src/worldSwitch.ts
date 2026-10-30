@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
-export const DEFAULT_WECHAT_CONTEXT = 8, MAX_WECHAT_CONTEXT = 20;
+export const DEFAULT_WECHAT_CONTEXT = 5, MAX_WECHAT_CONTEXT = 20;
 export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
 
 /**
@@ -29,6 +29,8 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
     ...(stored?.wechatEnabled === false ? { wechatEnabled: false } : {}),
     ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
+    ...(stored?.compactAfterReview === false ? { compactAfterReview: false } : {}),
+    ...(stored?.compactionSwapped === true ? { compactionSwapped: true } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -48,6 +50,15 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       if (!validWorkspacePermission(permission)) throw new Error('工作区权限必须为非空字符串');
       save({ ...settings, workspacePermission: permission });
     },
+    /** After each evening look back her home is applied and compacted, so the 我是谁 she has just rewritten takes effect; on unless the partner turns it off. */
+    compactAfterReview: () => settings.compactAfterReview !== false,
+    setCompactAfterReview(on: boolean): void {
+      const { compactAfterReview: _old, ...rest } = settings;
+      save(on ? rest : { ...rest, compactAfterReview: false });
+    },
+    /** Whether the profile has been switched to the tool-free compaction (by this plugin or by hand); asked once, so putting the stock one back sticks. */
+    compactionSwapped: () => settings.compactionSwapped === true,
+    markCompactionSwapped: () => save({ ...settings, compactionSwapped: true }),
     running: () => settings.running,
     set: (running: boolean) => save({ ...settings, running }),
     /** CNY a day for her home; undefined is no limit. */

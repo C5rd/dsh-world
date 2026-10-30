@@ -41,7 +41,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined }
+interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -68,7 +68,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
   const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), fallbackWakeTime: '09:00', timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext });
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -337,6 +337,25 @@ test('a rebuilt home with no pending alarm gets a first wake', async t => {
   assert.notEqual(s.life.snapshot().homeSessionId, 'gone');
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first']);
   assert.match(textOf(s.requests[0]), /这是我的家/);
+});
+test('the world is told when the evening look back has been handed to her, and for nothing else', async t => {
+  const told: string[] = [];
+  let held: { ctx: Awaited<ReturnType<typeof setup>>['ctx']; requests: unknown[] } | undefined, requestsWhenIdle = -1;
+  const s = await setup(t, () => textResponse('想想今天'), {
+    // What the console's apply-and-compact relies on: asked for right now, whenIdle still holds until her look back has run.
+    afterReview: () => { told.push('review'); void held!.ctx.agents.get(SessionId('home-0'))!.whenIdle().then(() => { requestsWhenIdle = held!.requests.length; }); },
+    before: async worldDir => {
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', alarm: { at: '2026-10-24T00:30:00.000Z', note: '睡觉', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' } }));
+  } });
+  held = s;
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.deepEqual(told, [], 'starting up and the first alarm are not a look back');
+  s.timers.advance(11 * 3_600_000); await s.idle();
+  assert.deepEqual(told, ['review']);
+  assert.equal(requestsWhenIdle, 1, 'her look back had already run when the home reported idle');
+  s.timers.advance(2 * 3_600_000); await s.idle();
+  assert.deepEqual(told, ['review'], 'her own alarm ringing afterwards is not a look back either');
 });
 test('every evening at 23:00 she looks back on the day: its records, her diary, and a kept copy of her 我是谁', async t => {
   const s = await setup(t, () => textResponse('想想今天'), { before: async worldDir => {

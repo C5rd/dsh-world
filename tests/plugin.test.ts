@@ -135,6 +135,119 @@ test('memory loads through pre-step, host time stays last, and tool-step compact
   assert.ok(textOf(requests[1]).includes('memory from yesterday'));
   assert.equal(resumed.filter(kind => kind === 'dsh-world-history').length, 1);
 });
+
+for (const scenario of ['restored', 'stale-seq', 'invisible-replacement'] as const) test(`memory refresh appends one visible block after ${scenario}`, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  hostTime(ctx);
+  const options = { provider: 'test', model: 'test' };
+  const original = await ctx.agents.create({ sessionId: SessionId('restored-memory'), meta: { agentPreset: 'companion' }, agentOptions: options });
+  original.agent.followup(user('ORIGINAL_BEFORE_RESTORE')); await original.agent.whenIdle();
+  const oldEvents = ['OLD_MEMORY_ONE', 'OLD_MEMORY_TWO'].map(text => original.agent.session.append('user/message', createUserMessage({
+    source: { kind: 'dsh-world-history', form: 'recall' }, content: [{ type: 'text', text }],
+  }), { surfaceOp: 'append' }));
+  await ctx.sessions.flush(original.agent.session); await original.dispose();
+  const { agent } = await ctx.agents.resume({ resumeSessionId: SessionId('restored-memory'), agentOptions: options });
+  const store = createArchiveStore({ ...config, root });
+  await store.commitRecords([record('refresh-seed', { content: 'FRESH_ARCHIVED_MEMORY' })]);
+  const world = createWorldRuntime(ctx, config, store);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  if (scenario === 'stale-seq') {
+    const readPage = store.readPage;
+    let replaced = false;
+    store.readPage = async query => {
+      const page = await readPage(query);
+      if (!replaced) {
+        replaced = true;
+        const seq = oldEvents[0].seq;
+        agent.session.append('user/message', createUserMessage({ source: { kind: 'dsh-world-history', form: 'recall' }, content: [{ type: 'text', text: 'OLD_MEMORY_MOVED' }] }), {
+          surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq],
+        });
+      }
+      return page;
+    };
+  }
+  if (scenario === 'invisible-replacement') {
+    const derive = agent.session.deriveEventMessage.bind(agent.session);
+    t.mock.method(agent.session, 'deriveEventMessage', (event: Parameters<typeof derive>[0]) =>
+      event.type === 'user/message' && event.data.source.kind === 'dsh-world-history' && event.surfaceOp !== 'append' ? null : derive(event));
+  }
+  requests.length = 0;
+  agent.followup(user('REFRESH_TRIGGER')); await agent.whenIdle();
+  assert.equal(errors.length, 0, errors.map(error => String((error as { error: Error }).error)).join('\n'));
+  assert.deepEqual(world.faults(), []);
+  assert.equal(requests.length, 1);
+  const blocks = requests[0].messages.filter(message => message.source?.kind === 'dsh-world-history');
+  assert.equal(blocks.length, 1, 'only the fresh memory block reaches the adapter');
+  assert.match(textOf(requests[0]), /FRESH_ARCHIVED_MEMORY/);
+  assert.doesNotMatch(textOf(requests[0]), /OLD_MEMORY_/);
+  assert.equal((textOf(requests[0]).match(/ORIGINAL_BEFORE_RESTORE/g) ?? []).length, 1);
+  assert.equal(kinds(requests[0]).at(-1), 'time-context');
+  for (const old of oldEvents) assert.deepEqual(agent.session.eventAt(old.seq), old, 'original log events stay intact');
+  agent.followup(user('NEXT_TURN')); await agent.whenIdle();
+  assert.deepEqual(requests[1].messages.filter(message => message.source?.kind === 'dsh-world-history'), blocks, 'later turns retain the same block');
+});
+
+test('memory refresh in a long history lands the fresh block at the tail, not where the old block sat (#21)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  hostTime(ctx);
+  const options = { provider: 'test', model: 'test' };
+  const original = await ctx.agents.create({ sessionId: SessionId('long-history'), meta: { agentPreset: 'companion' }, agentOptions: options });
+  original.agent.followup(user('LONG_HISTORY_START')); await original.agent.whenIdle();
+  original.agent.session.append('user/message', createUserMessage({
+    source: { kind: 'dsh-world-history', form: 'recall' }, content: [{ type: 'text', text: 'OLD_MEMORY_EARLY' }],
+  }), { surfaceOp: 'append' });
+  for (let i = 0; i < 40; i++) { original.agent.followup(user(`LONG_HISTORY_TURN_${i}`)); await original.agent.whenIdle(); }
+  await ctx.sessions.flush(original.agent.session); await original.dispose();
+  const resumed = await ctx.agents.resume({ resumeSessionId: SessionId('long-history'), agentOptions: options });
+  const { agent } = resumed;
+  const store = createArchiveStore({ ...config, root });
+  await store.commitRecords([record('long-seed', { content: 'FRESH_ARCHIVED_MEMORY' })]);
+  const world = createWorldRuntime(ctx, config, store);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  requests.length = 0;
+  agent.followup(user('REFRESH_TRIGGER')); await agent.whenIdle();
+  assert.equal(errors.length, 0, errors.map(error => String((error as { error: Error }).error)).join('\n'));
+  assert.deepEqual(world.faults(), []);
+  const messages = requests[0].messages;
+  const at = messages.findIndex(message => message.source?.kind === 'dsh-world-history' && textOf({ messages: [message] } as GenerateOptions).includes('FRESH_ARCHIVED_MEMORY'));
+  assert.ok(at >= 0, 'fresh block reaches the adapter');
+  assert.doesNotMatch(textOf(requests[0]), /OLD_MEMORY_EARLY/);
+  assert.ok(messages.length - at <= 4, `fresh block sits at the tail (index ${at} of ${messages.length}), not buried mid-history`);
+  await ctx.sessions.flush(agent.session); await resumed.dispose();
+  const reloaded = await ctx.agents.resume({ resumeSessionId: SessionId('long-history'), agentOptions: options });
+  assert.ok(reloaded.agent.session.snapshotEvents().length > 0, 'the refreshed log reloads from disk');
+});
+
+test('attaching an out-of-scope copy that still carries a memory block leaves a log the host can reload, before and after its next turn (#22)', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('ok'));
+  const options = { provider: 'test', model: 'test' };
+  const id = SessionId('copied-home');
+  const original = await ctx.agents.create({ sessionId: id, meta: { agentPreset: 'companion' }, agentOptions: options });
+  original.agent.followup(user('BEFORE_COPY')); await original.agent.whenIdle();
+  original.agent.session.append('user/message', createUserMessage({
+    source: { kind: 'dsh-world-history', form: 'recall' }, content: [{ type: 'text', text: 'COPIED_MEMORY_BLOCK' }],
+  }), { surfaceOp: 'append' });
+  await ctx.sessions.flush(original.agent.session); await original.dispose();
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  const world = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '小鱼', partner: '伙伴' } }, isHome: () => false, inWorkspace: () => false });
+  await world.start(); cleanup.push(() => world.stop());
+  const attached = await ctx.agents.resume({ resumeSessionId: id, agentOptions: options });
+  const events = attached.agent.session.snapshotEvents();
+  const lastTurn = events.findLast(event => event.type === 'turn/end');
+  assert.ok(lastTurn, 'the copy ends on a finished turn');
+  assert.deepEqual(events.filter(event => event.type === 'system/message' && event.seq > lastTurn.seq), [], 'attach writes nothing outside an open turn');
+  await ctx.sessions.flush(attached.agent.session); await attached.dispose();
+  const reloaded = await ctx.agents.resume({ resumeSessionId: id, agentOptions: options });
+  reloaded.agent.followup(user('AFTER_COPY')); await reloaded.agent.whenIdle();
+  assert.ok(!reloaded.agent.session.deriveMessages().some(message => message.source.kind === 'dsh-world-history' && JSON.stringify(message.content).includes('COPIED_MEMORY_BLOCK')), 'the next turn retires the block');
+  await ctx.sessions.flush(reloaded.agent.session); await reloaded.dispose();
+  const again = await ctx.agents.resume({ resumeSessionId: id, agentOptions: options });
+  assert.ok(again.agent.session.snapshotEvents().length > 0);
+  assert.deepEqual(errors, []);
+});
+
 test('memory refresh failures reach world health and clear after a successful retry', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });

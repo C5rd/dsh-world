@@ -1,6 +1,8 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from snapshot import NotSent
 from outgoing import deliverMessages, mediaDigestMatches, prepareMessages, serverConfirmed
 
 
@@ -30,6 +32,42 @@ class OutgoingTest(unittest.TestCase):
             deliverMessages(items, send, confirmed.append)
         self.assertEqual(calls, items[:2])
         self.assertEqual(confirmed, [1])
+
+    def test_a_job_that_never_started_may_be_tried_again_but_a_half_sent_one_may_not(self):
+        items = [dict(type='text', text='一句'), dict(type='text', text='下一句')]
+        calls = []
+        def first(_message): calls.append(1); raise NotSent('busy')
+        with self.assertRaises(NotSent): deliverMessages(items, first, lambda _count: None)
+        self.assertEqual(calls, [1])
+        def second(message):
+            if message['text'] == '下一句': raise NotSent('busy')
+        confirmed = []
+        with self.assertRaisesRegex(RuntimeError, '第 2/2 条') as caught: deliverMessages(items, second, confirmed.append)
+        self.assertNotIsInstance(caught.exception, NotSent)
+        self.assertEqual(confirmed, [1])
+
+    def test_a_sticker_id_is_resolved_only_through_the_worlds_own_library(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            world = Path(directory) / 'world'
+            library = world / 'stickers'
+            (library / 'files').mkdir(parents=True)
+            Image.new('RGBA', (8, 8), (255, 0, 0, 255)).save(library / 'files' / 'st_aaaaaaaaaaaa.png')
+            (library / 'index.json').write_text(json.dumps(dict(version=1, stickers=[
+                dict(id='st_aaaaaaaaaaaa', name='x', tags=['x'], file='st_aaaaaaaaaaaa.png'),
+                dict(id='st_escape000000', name='x', tags=['x'], file='../../outside.png')])), encoding='utf-8')
+            config = dict(moduleFile=str(world / 'wechat.json'))
+            stateDir = Path(directory) / 'state'
+            prepared = prepareMessages([dict(type='sticker', stickerId='st_aaaaaaaaaaaa')], config, stateDir)
+            self.assertEqual(prepared[0]['type'], 'sticker')
+            self.assertTrue(Path(prepared[0]['path']).is_file())
+            with self.assertRaisesRegex(ValueError, '不在表情库'):
+                prepareMessages([dict(type='sticker', stickerId='st_missing00000')], config, stateDir)
+            with self.assertRaisesRegex(ValueError, '越界'):
+                prepareMessages([dict(type='sticker', stickerId='st_escape000000')], config, stateDir)
+            (library / 'index.json').unlink()
+            with self.assertRaisesRegex(ValueError, '没有可用的索引'):
+                prepareMessages([dict(type='sticker', stickerId='st_aaaaaaaaaaaa')], config, stateDir)
 
     def test_all_messages_are_validated_before_delivery(self):
         with tempfile.TemporaryDirectory() as directory:

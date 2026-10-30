@@ -70,7 +70,17 @@ function contextMessages(value: unknown, current: SpeakerIdentity, limit: number
 }
 
 /** The messages before this one as JSON for her to read, each marked as hers (`assistant`) or someone else's. */
+/** Context messages all belong to the conversation the triggering message names, so only what differs per speaker is repeated. */
+const CONVERSATION_FIELDS = ['channel', 'accountId', 'conversationId', 'conversationName', 'conversationType'] as const;
+
+/** Tells the model how to read `contextJson`; shared by every channel that renders it. */
+export const CONTEXT_IDENTITY_NOTE = 'identity 只列出每个发言人各自的来源（speakerId 等），渠道、账号和会话与触发这条消息的【消息来源】相同；speakerName 只是称呼';
+
 export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity): string {
   const self = `${current.channel}:${current.accountId}`;
-  return JSON.stringify(context.map(message => ({ ...message, role: message.identity.speakerId === self ? 'assistant' : 'user' })));
+  return JSON.stringify(context.map(message => {
+    const identity = Object.fromEntries(Object.entries(message.identity).filter(([key, value]) =>
+      !(CONVERSATION_FIELDS as readonly string[]).includes(key) && !(key === 'platformMessageId' && value === message.id)));
+    return { ...message, identity, role: message.identity.speakerId === self ? 'assistant' : 'user' };
+  }));
 }

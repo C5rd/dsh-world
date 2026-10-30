@@ -16,6 +16,7 @@ import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
 import { record } from './fixtures.ts';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { createHomeApply } from '../src/console/homeApply.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
 const life = { worldDir: 'W', roomDir: 'R', diaryDir: 'D', selfFile: 'S', fallbackWakeTime: '07:30', timeZone: 'UTC' };
@@ -125,6 +126,43 @@ test('every world session carries the world prompt in its system prompt; templat
   await world.flush();
   const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(r => r.content).join('\n');
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
+  assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
+test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { yield* textResponse('摘要'); return; }
+    requests.push(request); yield* textResponse('reply ' + 'detail '.repeat(100));
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '早上的我');
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: id => id === 'home' });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('早上好 ' + 'words '.repeat(100))); await agent.whenIdle();
+  assert.match(systemOf(requests[0]!), /早上的我/);
+  // The same wiring the world uses after the evening look back.
+  const apply = createHomeApply({ ctx, home: async () => agent, isHome: () => true, compaction: () => ctx.compaction, refresh: session => world.refreshPrompt(session), changed() {} });
+  const lookBack = async () => {
+    apply.request();
+    for (let i = 0; i < 300 && ['waiting', 'compacting'].includes(apply.snapshot().status); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    return apply.snapshot();
+  };
+
+  const compactionsBefore = agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length;
+
+  await writeFile(selfFile, '晚上改过的我'); // she rewrote it during the look back
+  agent.followup(user('晚安 ' + 'words '.repeat(100))); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /早上的我/, 'until applied, the prompt keeps the old 我是谁 so the cached prefix stays whole');
+  const applied = await lookBack();
+  assert.equal(applied.status, 'done');
+  assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length, compactionsBefore + 1);
+  agent.followup(user('第二天')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /晚上改过的我/); assert.doesNotMatch(systemOf(requests.at(-1)!), /早上的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
 test('archiveScope home: only her home is archived, and every world session still gets the memory block', async t => {

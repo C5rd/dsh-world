@@ -11,11 +11,12 @@ import { createWechatRecorder } from '../src/ecosystem/wechat/archive.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createWechatSending } from '../src/ecosystem/wechat/sending.ts';
+import { createStickerLibrary } from '../src/ecosystem/wechat/stickerLibrary.ts';
 import { hostFixture, textResponse } from './hostFixture.ts';
 
 const chats = [{ id: 'owner', name: '伙伴' }, { id: 'family@chatroom', name: '家庭群' }];
 const registration = { accountId: 'wxid_bot', chats };
-const words = [{ type: 'text', text: '想跟你说句话' }, { type: 'sticker', stickerId: 'st_hi' }, { type: 'text', text: '晚安' }];
+const words = [{ type: 'text', text: '想跟你说句话' }, { type: 'sticker', stickerId: 'st_hello' }, { type: 'text', text: '晚安' }];
 async function* call(name: string, args: object): AsyncIterable<StreamChunk> {
   const block = { type: 'tool-call' as const, id: ToolCallId(name), name, arguments: JSON.stringify(args) };
   yield { type: 'block-start', index: 0, blockType: 'tool-call' };
@@ -89,6 +90,7 @@ test('a desktop turn can send to either bound chat through persistent tools and 
   await world.start(); cleanup.push(() => world.stop());
   const agent = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   const file = join(root, 'wechat.json');
+  await createStickerLibrary(join(root, 'stickers')).add(Buffer.concat([Buffer.from('GIF89a'), Buffer.from('hello sticker....')]), { id: 'st_hello', tags: ['你好'] });
   const module = createWechatModule({ ctx, file, worldId: 'test', inWorld: candidate => candidate.id === agent.id, home: async () => agent, origin: () => 'http://127.0.0.1:1', allowedHosts: [], ...createWechatRecorder(store, 'test') });
   module.start(); cleanup.push(() => module.stop());
   assert.ok(agent.ctx.tools.get('wechat_send', agent), 'sending is available before any WeChat inbound message');
@@ -103,7 +105,7 @@ test('a desktop turn can send to either bound chat through persistent tools and 
   const post = (body: unknown) => fetch(`http://127.0.0.1:${address.port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-world-token': token }, body: JSON.stringify(body) });
   assert.equal(module.status().lastContactAt, null);
   const first = await (await post({ outbox: registration })).json();
-  assert.deepEqual(first.settings, { contextMessages: 8, bufferSeconds: 3 }, 'the adapter learns the defaults on its first poll');
+  assert.deepEqual(first.settings, { contextMessages: 5, bufferSeconds: 3 }, 'the adapter learns the defaults on its first poll');
   assert.equal(module.status().accountId, 'wxid_bot');
   assert.equal(module.status().account, 'online', 'a successful poll means the account is logged in');
   assert.equal((await post({ status: { wechat: 'offline' } })).status, 200);
@@ -124,7 +126,7 @@ test('a desktop turn can send to either bound chat through persistent tools and 
   assert.ok(agent.ctx.tools.get('wechat_send', agent), 'the tool survives the end of the turn');
   const record = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(item => item.recordId === result.job.id);
   assert.ok(record);
-  assert.match(record.content, /想跟你说句话[\s\S]*st_hi[\s\S]*晚安/);
+  assert.match(record.content, /想跟你说句话[\s\S]*st_hello[\s\S]*晚安/);
   assert.doesNotMatch(record.content, /arguments|tool-call/);
   assert.equal(record.speakerId, 'wechat:wxid_bot');
   assert.equal((await post({ receipt: { id: result.job.id, confirmed: 3, status: 'sent' } })).status, 200);
@@ -151,6 +153,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
   });
   const agent = (await ctx.agents.create({ sessionId: SessionId('reader'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const file = join(root, 'wechat.json');
+  await createStickerLibrary(join(root, 'stickers')).add(Buffer.concat([Buffer.from('GIF89a'), Buffer.from('hello sticker....')]), { id: 'st_hello', tags: ['你好'] });
   const module = createWechatModule({ ctx, file, worldId: 'test', inWorld: candidate => candidate.id === agent.id, home: async () => { assert.fail('history must not start an inbound home request'); }, origin: () => 'http://127.0.0.1:1', allowedHosts: [] });
   module.start(); cleanup.push(() => module.stop());
   const server = createServer((req, res) => { void module.route.handler(req, res); });
@@ -236,6 +239,20 @@ test('an unconfigured target is rejected without queuing or archiving words as s
   assert.equal(failed?.type === 'tool/result' && failed.data.message.isError, true);
   assert.ok(!agent.session.deriveMessages().some(message => message.source.kind === 'dsh-world-wechat-outgoing'));
   assert.equal(await sending.poll(registration), undefined);
+});
+
+test('a sticker the library does not have is refused when queued, not discovered later as a failed send', async t => {
+  let calls = 0;
+  const { ctx, root, cleanup } = await hostFixture(t, () => calls++ === 0 ? call('wechat_send', { chatId: 'family@chatroom', messages: words }) : textResponse('没有排队'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const sending = createWechatSending({ ctx, file: join(root, 'outbox.sqlite'), worldId: 'test', hasSticker: async id => id === 'st_known' }); cleanup.push(() => sending.stop());
+  for (const tool of sending.tools) cleanup.push(agent.ctx.tools.register(tool));
+  await sending.poll(registration);
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '发个表情' }] })); await agent.whenIdle();
+  const failed = agent.session.snapshotEvents().find(event => event.type === 'tool/result');
+  assert.equal(failed?.type === 'tool/result' && failed.data.message.isError, true);
+  assert.match(JSON.stringify(failed), /表情库里没有 st_hello/);
+  assert.equal(await sending.poll(registration), undefined, 'nothing was queued');
 });
 
 test('claimed sends survive a host restart and group-origin sends respect the home-only archive', async t => {

@@ -3,7 +3,7 @@ import json
 from xml.etree import ElementTree
 from messages import MAX_CONTEXT_BYTES, messageOrder, recentEntries
 
-MAX_CONTEXT_MESSAGES = 8
+DEFAULT_CONTEXT_MESSAGES = 5
 
 
 def mentionedIds(source):
@@ -20,7 +20,7 @@ def mentionedIds(source):
     return [value.strip() for value in (root.findtext('atuserlist') or '').split(',') if value.strip()]
 
 
-def recentContext(database, chatId, current, normalize, pageSize=50, limit=MAX_CONTEXT_MESSAGES):
+def recentContext(database, chatId, current, normalize, pageSize=50, limit=DEFAULT_CONTEXT_MESSAGES):
     result = list(recentEntries(database, chatId, normalize, pageSize, limit, before=messageOrder(current)).values())
     while result and len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > MAX_CONTEXT_BYTES:
         result.pop(0)

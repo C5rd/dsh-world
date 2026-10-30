@@ -35,6 +35,7 @@ export interface SnapshotDeps {
   /** Turns her memory block carries. */
   memoryTurns(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
+  compactAfterReview?(): boolean;
   workspacePermissions?(): { defaultPermission: string; options: { value: string; name: string; description?: string }[] };
   /** The WeChat module's state; undefined while it is off or her world is stopped. */
   wechat?(): unknown;
@@ -69,6 +70,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
       workspace: deps.workspacePermissions?.() ?? null,
+      compactAfterReview: deps.compactAfterReview?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],

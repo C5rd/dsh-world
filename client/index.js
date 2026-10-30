@@ -363,6 +363,24 @@ window.__ModuleLoader__.load({
         selected && selected.description ? h('div', { className: 'dw-muted' }, selected.description) : null,
         h(Status, { msg: msg }))
     }
+    /** 回顾之后是否自动应用她改过的“我是谁”：开关即存，不需要再点保存。 */
+    function CompactAfterReview(props) {
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      function toggle(on) {
+        setBusy(true)
+        post('compact-after-review', { on: on }).then(function () {
+          setMsg(on ? '已开启。每晚回顾后会自动应用并压缩家会话。' : '已关闭。“我是谁”要等下一次压缩才生效。')
+          if (props.onSaved) props.onSaved()
+        }, failedTo(setMsg)).then(function () { setBusy(false) })
+      }
+      return h(Card, { title: '回顾后自动压缩' },
+        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动应用并压缩一次家会话，让她刚改写的“我是谁”生效；压缩后最近的聊天会重新放回她眼前。'),
+        h('label', { className: 'dw-setting' },
+          h('input', { type: 'checkbox', checked: props.on, disabled: busy, 'aria-label': '回顾后自动压缩', onChange: function (e) { toggle(e.target.checked) } }),
+          ' ', props.on ? '已开启' : '已关闭'),
+        h(Status, { msg: msg }))
+    }
     /** 微信：适配器每约 2 秒来问一次，最近一次来问的时间就是连接状态；两个读取参数在它下次来问时同步。 */
     function Wechat(props) {
       var w = props.wechat, zone = props.zone
@@ -620,6 +638,7 @@ window.__ModuleLoader__.load({
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
+          typeof snap.compactAfterReview === 'boolean' ? h(CompactAfterReview, { on: snap.compactAfterReview, onSaved: props.refresh }) : null,
           snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
     }
     function Records(props) {
@@ -713,7 +732,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { WorkspacePermission: WorkspacePermission, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

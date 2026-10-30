@@ -255,6 +255,44 @@ test('home apply submits only the explicit action and shows backend progress and
   snap = { ...snap, running: false }; render(); assert.equal(button().props!.disabled, true);
 });
 
+test('the compact-after-review switch saves at once, says what it does and shows a refusal', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [];
+  let at = 0, refreshed = 0, error = '';
+  const requests: { url: string; options: any }[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { CompactAfterReview: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+    fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
+  });
+  const component = loaded!.factory(() => react).__test.CompactAfterReview;
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand(el.type({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  let on = false, tree: El[] = [];
+  const render = () => { at = 0; tree = expand(component({ on, onSaved: () => { refreshed++; } })); };
+  const box = () => tree.find(el => el.type === 'input')!;
+  render();
+  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动应用并压缩一次家会话[\s\S]*我是谁/); assert.match(text(tree), /已关闭/);
+  box().props!.onChange({ target: { checked: true } }); render(); assert.equal(box().props!.disabled, true, 'busy while saving');
+  await new Promise(setImmediate); render();
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/console/compact-after-review');
+  assert.equal(requests[0].options.method, 'POST'); assert.equal(requests[0].options.headers['x-dsh-world'], '1');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { on: true });
+  assert.equal(refreshed, 1); assert.match(text(tree), /已开启/);
+  on = true; render(); assert.equal(box().props!.checked, true);
+  error = '保存失败'; box().props!.onChange({ target: { checked: false } }); await new Promise(setImmediate); render();
+  assert.match(text(tree), /保存失败/); assert.equal(refreshed, 1);
+});
+
 test('album shows metadata first, loads one selected image and paginates with the backend shape', async () => {
   type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
   const states: any[] = [], effects: { deps: unknown[] }[] = []; let at = 0, effectAt = 0;

@@ -27,6 +27,7 @@ function fakeActions() {
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
     setWorkspacePermission: permission => { calls.push(`permission:${permission}`); },
+    setCompactAfterReview: on => { calls.push(`compact-after-review:${on}`); },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
@@ -86,6 +87,23 @@ test('archive scope exposes only home and workspace and returns restart status',
   assert.deepEqual(await post('home'), { status: 200, body: { ok: true, restartRequired: false } });
   for (const scope of ['all', 'world', '', null, undefined]) assert.equal((await post(scope)).status, 400);
   assert.deepEqual(calls, ['scope:workspace', 'scope:home']);
+});
+
+test('the compact-after-review switch is a boolean write that survives a restart and is on until turned off', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-compact-review-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { actions, calls } = fakeActions();
+  const post = (on: unknown) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/compact-after-review', write: true, body: { on } });
+  assert.equal((await post(true)).status, 200); assert.equal((await post(false)).status, 200);
+  for (const bad of ['true', 1, null, undefined]) assert.equal((await post(bad)).status, 400, String(bad));
+  assert.deepEqual(calls, ['compact-after-review:true', 'compact-after-review:false']);
+  const power = createWorldSwitch(dir);
+  assert.equal(power.compactAfterReview(), true, 'on for a world that never said otherwise');
+  power.setCompactAfterReview(false);
+  assert.equal(createWorldSwitch(dir).compactAfterReview(), false);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')).compactAfterReview, false);
+  power.setCompactAfterReview(true);
+  assert.equal(createWorldSwitch(dir).compactAfterReview(), true);
+  assert.ok(!('compactAfterReview' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'))), 'on is the absence of the key');
 });
 
 test('workspace permission writes accept the host catalog and reject invalid or unauthorized requests without changing settings', async t => {
@@ -182,12 +200,12 @@ test('WeChat starts on and QQ off; only a switch away from its default is writte
 test('wechat settings default to 8 and 3, persist, and return to default', t => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-world-wechat-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const power = createWorldSwitch(dir);
-  assert.deepEqual([power.wechatContext(), power.wechatBufferSeconds()], [8, 3]);
+  assert.deepEqual([power.wechatContext(), power.wechatBufferSeconds()], [5, 3]);
   power.setWechat({ context: 12, bufferSeconds: 0 });
   const again = createWorldSwitch(dir);
   assert.deepEqual([again.wechatContext(), again.wechatBufferSeconds()], [12, 0]);
   again.setWechat({ context: null });
-  assert.deepEqual([createWorldSwitch(dir).wechatContext(), createWorldSwitch(dir).wechatBufferSeconds()], [8, 0]);
+  assert.deepEqual([createWorldSwitch(dir).wechatContext(), createWorldSwitch(dir).wechatBufferSeconds()], [5, 0]);
   again.setWechat({ bufferSeconds: 3 });
   assert.equal('wechatBufferSeconds' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false);
 });

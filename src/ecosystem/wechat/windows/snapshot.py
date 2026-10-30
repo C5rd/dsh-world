@@ -8,6 +8,14 @@ class SnapshotBusy(RuntimeError):
     pass
 
 
+class SnapshotTimeout(RuntimeError):
+    """No stable snapshot of the target chat could be read in time."""
+
+
+class NotSent(SnapshotBusy):
+    """A send gave up before anything reached WeChat, so the same job can safely be tried again."""
+
+
 def fileStamp(path):
     try:
         stat = Path(path).stat()

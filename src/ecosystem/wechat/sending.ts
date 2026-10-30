@@ -13,7 +13,7 @@ interface Job { id: string; accountId: string; chatId: string; messages: ReturnT
 interface Row { id: string; sessionId: string; messageId: string; status: string; body: string; confirmed: number; error: string | null }
 
 /** The existing adapter owns all sending; a claim survives disconnects until its receipt is recorded. */
-export function createWechatSending(deps: { ctx: Context; file: string; worldId: string; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+export function createWechatSending(deps: { ctx: Context; file: string; worldId: string; hasSticker?(id: string): Promise<boolean>; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const db = new DatabaseSync(deps.file);
   db.exec(`PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
     CREATE TABLE IF NOT EXISTS binding (accountId TEXT PRIMARY KEY);
@@ -107,6 +107,7 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
     },
   }), wechatSendTool(async (chatId, messages, context) => {
     const identity = target(chatId);
+    for (const message of messages) if ('stickerId' in message && deps.hasSticker && !await deps.hasSticker(message.stickerId)) throw new Error(`表情库里没有 ${message.stickerId}，先用 sticker_search 查到准确的 id`);
     const boundAccount = identity.accountId;
     const agent = context.agent;
     if (!agent) throw new Error('微信发送需要来源会话');

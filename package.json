@@ -1,6 +1,6 @@
 {
   "name": "dsh-world",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "Cross-session memory, persona and life routines for DSH, with a world console, tool-free compaction, native QQ and Windows WeChat messaging, group history and quoted replies",
   "license": "MIT",
   "publishConfig": {
@@ -39,7 +39,8 @@
     "CHANGELOG.md",
     "assets",
     "scripts/enable-tool-free-compaction.ps1",
-    "scripts/update-world.mjs"
+    "scripts/update-world.mjs",
+    "scripts/import-stickers.mjs"
   ],
   "engines": {
     "node": ">=22.16.0",

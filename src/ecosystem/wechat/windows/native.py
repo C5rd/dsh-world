@@ -3,7 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
-from snapshot import SnapshotBusy, checkedSnapshot, fileStamp, hasCurrentWalFrames
+from snapshot import NotSent, SnapshotBusy, SnapshotTimeout, checkedSnapshot, fileStamp, hasCurrentWalFrames
 from binding import findAccountProcess, checkAccountProcess, WechatOffline
 
 
@@ -145,8 +145,9 @@ def connect(config, stateDir):
                     return database.get_messages(chat['id'], limit=50)
                 except SnapshotBusy:
                     time.sleep(0.2)
-            raise RuntimeError('未能获取稳定的目标聊天快照，请人工核对本次发送')
-        before = {(row['shard'], row['local_id']) for row in stableRows(time.monotonic() + 20)}
+            raise SnapshotTimeout('未能获取稳定的目标聊天快照，请人工核对本次发送')
+        try: before = {(row['shard'], row['local_id']) for row in stableRows(time.monotonic() + 20)}
+        except SnapshotTimeout as error: raise NotSent(str(error)) from error  # nothing has been sent yet
         getSender().send(chat['id'], kind, value)
         digest = None
         if kind != 1:

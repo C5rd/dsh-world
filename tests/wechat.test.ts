@@ -14,7 +14,7 @@ import { replyMessages } from '../src/ecosystem/wechat/messages.ts';
 import { createWechatRecorder } from '../src/ecosystem/wechat/archive.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { channelContext } from '../src/ecosystem/shared/context.ts';
+import { channelContext, contextJson } from '../src/ecosystem/shared/context.ts';
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap { 'runtime-context': { kind: 'runtime-context' } & ContextFormed }
@@ -130,6 +130,23 @@ for (const waitingFor of ['idle', 'images'] as const) {
     assert.equal(agent.inbox.nextStep.length + agent.inbox.nextTurn.length, 0);
   });
 }
+
+test('rendered group context names each speaker but states the conversation only once (#token)', () => {
+  const here = { ...identity, conversationName: '一家人' };
+  const messages = [
+    { id: 'm.db:1', occurredAt: '2026-10-25T00:00:00Z', text: '前一句', identity: { ...here, speakerId: 'wechat:wxid_dad', speakerName: '爸爸', platformMessageId: 'm.db:1' } },
+    { id: 'm.db:2', occurredAt: '2026-10-25T00:01:00Z', text: '我回了', identity: { ...here, speakerId: 'wechat:wxid_bot', speakerName: '她' } },
+    { id: 'm.db:3', occurredAt: '2026-10-25T00:02:00Z', text: '带提及', identity: { ...here, speakerId: 'wechat:wxid_mom', mentionIds: ['wechat:wxid_bot'] } },
+  ];
+  const context = channelContext(messages, here);
+  const text = contextJson(context, here);
+  const rendered = JSON.parse(text) as { id: string; role: string; text: string; identity: Record<string, unknown> }[];
+  assert.deepEqual(rendered.map(message => [message.id, message.role, message.text]), [['m.db:1', 'user', '前一句'], ['m.db:2', 'assistant', '我回了'], ['m.db:3', 'user', '带提及']]);
+  assert.deepEqual(rendered[0].identity, { speakerId: 'wechat:wxid_dad', speakerName: '爸爸' }, 'only what differs per speaker');
+  assert.deepEqual(rendered[2].identity, { speakerId: 'wechat:wxid_mom', speakerName: '妈妈', mentionIds: ['wechat:wxid_bot'] }, 'fields that are not conversation-wide stay');
+  for (const shared of ['conversationId', 'conversationName', 'conversationType', 'accountId', 'channel']) assert.doesNotMatch(text, new RegExp(shared));
+  assert.ok(text.length < JSON.stringify(context.map(message => ({ ...message, role: 'user' }))).length * 0.65, 'clearly smaller than repeating the full identity');
+});
 
 test('group context preserves sender IDs without accepting another conversation or becoming a fresh user request', async t => {
   const previous = { id: 'm.db:1', occurredAt: '2026-10-25T00:00:00Z', identity: { ...identity, speakerId: 'wechat:dad', speakerName: '爸爸' }, text: '前一句' };
