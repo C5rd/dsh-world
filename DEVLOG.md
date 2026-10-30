@@ -14,6 +14,32 @@
 
 ---
 
+## 2026-10-30
+
+### 合入上游 0.6.5 与 0.6.6：四个冲突、一个交付复审挑出的 P2、一个和代码无关的 tar
+
+**撞到什么。** 我这条分支起于 `3306c6b`（0.5.6），停在 `d543063`（0.6.1）。这期间上游 `main` 走了两版：0.6.5（`79ab378`）与 0.6.6（`1c4ea61`）。拖下去只会更难合，所以今天合。
+
+见鹿先用 ChatGPT 做了一份预合并交付（`0.6.5-lianor.1`）。我逐项复审过：双父提交 `d4cdb01` 的两个 parent 分别是我的 `d543063` 和上游的 `79ab378`，我的六个提交都在，`frames` / `bili_look` / 分账 / `inWorldDir` 四处功能都在，`spent()` 那个冲突解对了（我的 `spend.sessions` 累加和上游的提醒逻辑都留着）。
+
+**为什么没直接把交付装上去。** 交付合的是 0.6.5，而上游已经出到 0.6.6。装上去等于刚合完就落后一版，还得再合一次。所以只把交付当"第一步合好的一段历史"接过来（`git merge --ff-only delivery/lianor-0.6.5`），在它上面再合 `upstream/main`。
+
+**四个冲突怎么解的。** `CHANGELOG.md`、`README.md`、`package.json`、`package-lock.json`，四个都是"两边都改了同一个位置"。一律留两边的：版本号取 `0.6.6-lianor.1`（我的分支自己的版本号，同时注明上游基线 0.6.6）；README 保留上游新的微信/QQ/注意事项三段，再改版本句；CHANGELOG 顶部新开本节所属的 `## 0.6.6-lianor.1`，其下原样保留上游的 `## 0.6.6`。
+
+**交付复审挑出的 P2 是真的，我改了。** 原来那段退款自愈硬编码 `session-b14f73f8…`，每次启动都查一遍。问题是：那扇窗以后真在这个世界目录里花了钱，重启时会被当成脏数据再退一次。现在 `Spend` 加 `reclaimed?: string[]`，退过的 id 记进去，`!reclaimed.includes(straySession)` 才算数；另加一条测试 `the reclaim is not repeated`，喂一份带 `reclaimed` 的 `life.json`，断言钱和份额都留着。
+
+**这里我犯了一个错，写下来。** 解 `package-lock.json` 冲突时我直接取了上游那份，结果它里面**没有** `@deepseek-ai/*` 这些 peer 的条目（我 0.6.1 的 lock 里有）。于是 `npm ci` 一路报 `Missing: @deepseek-ai/cordis from lock file`，typecheck 报 95 个 `Cannot find module`——全是缺 peer 的级联错，不是代码坏。绕了一圈才认出来：**冲突时取哪一边，要先看那一边有没有丢掉东西，不能只看它新。**
+
+**怎么确认。** 手工把 peer 装进 `node_modules`（`--save-dev` 装完再把 `package.json`/`package-lock.json` 还原，不把临时的东西带进提交）之后：
+
+- `npm run typecheck` → **0 个错**（这才是代码的真实状态）。
+- `npm test` → **464 个测试，463 过，1 挂**。挂的是 `tests/plugin.test.ts:836` 的 `WebSocket was closed before the connection was established`——QQ 在连接建立前被 stop 的时序问题，连跑两次中过一次，是 flaky。
+- 另有 9 个一开始也挂，查明与代码无关：`tests/updateWorld.test.mjs` 调 `tar -czf C:\...`，而 Git Bash 的 GNU tar 1.35 把 `C:` 当远端主机名（`tar (child): Cannot connect to C: resolve failed`）。把 `tar` 换成 Windows 自带的 bsdtar 之后 **13/13 全过**。
+
+**还欠一件事。** `npm ci` 在干净 checkout 上仍然装不起来（上游 0.6.6 的 `package-lock.json` 不含 peer 条目，且 `dsh-session` 的范围 `>=0.2.1-rc.2 <0.3.0-0` 与 `dsh-session-projection@0.2.1-rc.2` 的精确 peer 要求冲突）。这是上游的问题，不是这次合并带进来的——预合并交付包在干净 clone 上同样装不起来。要不要在分支里修，等真需要 CI 的时候再定。
+
+---
+
 ## 2026-10-29
 
 ### 账算到了不该算的窗口上：计价加一句工作目录判断
